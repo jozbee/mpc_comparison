@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // on apple silicon, call `grade < grade.in` as
+      //  ` ROSETTA_DEBUGSERVER_PORT=1234 ./grade`, and then start the vscode
+      //  debugging
+      "name": "cpp debug grade",
+      "type": "cppdbg",
+      "request": "launch",
+      "MIMode": "gdb",
+      "program": "${workspaceFolder}/grade",
+      // "preLaunchTask": "debug grade",  // difficult to use
+      "externalConsole": false,
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "miDebuggerServerAddress": "localhost:1234",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true,
+        }
+      ],
+    }
+  ]
+}
