@@ -2,8 +2,7 @@ import numpy as np
 from casadi import SX, vertcat
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
-n = 32
-acados_solver_type = 'SQP_RTI'
+n = 150
 x_min = 1.2
 x_mid = 1.5
 x_max = 1.8
@@ -14,6 +13,7 @@ dt = 1. / 250.
 
 def gen_leg_model():
     model = AcadosModel()
+    model.name = "leg"
 
     x = SX.sym('x')
     v = SX.sym('v')
@@ -23,7 +23,7 @@ def gen_leg_model():
     v_dot = SX.sym('v_dot')
     model.xdot = vertcat(x_dot, v_dot)
 
-    a = Sx.sym('a')
+    a = SX.sym('a')
     model.u = a
 
     f_expl = vertcat(v, a)
@@ -37,17 +37,19 @@ def gen_leg_ocp(model, acc_weight=1e3):
     ocp = AcadosOcp()
     ocp.model = model
 
-    ocp.dims.N = n
-
     ocp.cost.cost_type = 'LINEAR_LS'
 
-    ocp.cost.yref = np.zeros(2 * n)  # [x, a]
+    ocp.cost.yref = np.zeros(2)  # [x, a]
     ocp.cost.yref_e = np.zeros(1)  # [x]
     ocp.cost_y_expr = vertcat(ocp.model.x[0], ocp.model.u)
     ocp.cost_y_expr_e = ocp.model.x[0]
 
-    ocp.cost.W = np.diag([1.0, acc_weight])
-    ocp.cost.W_e = np.diag([1.0])
+    ocp.cost.Vx = np.diag([1., 0.])  # grap x-coord
+    ocp.cost.Vu = np.array([0., 1.]).reshape(2, 1)  # put a in 2nd coord
+    ocp.cost.W = np.diag([1., acc_weight])
+
+    ocp.cost.Vx_e = np.array([1., 0.]).reshape(1, 2)  # grap x-coord
+    ocp.cost.W_e = np.diag([1.])
 
     ocp.constraints.constr_type = 'BGH'
     ocp.constraints.idxbx = np.array([0, 1])
@@ -63,12 +65,16 @@ def gen_leg_ocp(model, acc_weight=1e3):
     ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
     ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
     ocp.solver_options.integrator_type = 'ERK'
-    ocp.solver_options.nlp_solver_type = 'SQP_RTI'
-    ocp.solver_options.qp_solver_iter_max = 1
-    ocp.solver_options.qp_solver_cond_N = 1
+
+    ocp.solver_options.nlp_solver_type = 'SQP'
+    ocp.solver_options.qp_solver_iter_max = 4
+    ocp.solver_options.qp_solver_cond_N = 16
+    ocp.solver_options.nlp_solver_max_iter = 1
+    ocp.solver_options.qp_solver_warm_start = 1
 
     # TODO(jozbee): non-uniform
-    # ocp.solver_options.tf = np.arange(n, dtype=float) * dt
+    ocp.solver_options.N_horizon = n
+    ocp.solver_options.tf = n * dt
     ocp.solver_options.shooting_nodes = np.arange(n + 1, dtype=float) * dt
 
     return ocp
@@ -77,6 +83,7 @@ def gen_leg_ocp(model, acc_weight=1e3):
 class LegMPC:
     """A model predictive controller for the leg."""
     def __init__(self, x0=None):
+        AcadosOcpSolver.generate(gen_leg_ocp(gen_leg_model()), json_file="leg_ocp.json")
         self.solver = AcadosOcpSolver(gen_leg_ocp(gen_leg_model()))
         self.reset(x0)
     
@@ -97,7 +104,7 @@ class LegMPC:
 
         # TODO(jozbee): needed for stable init?
         for i in range(n):
-            self.solver.set(i, "x", np.ones(2), x_mid)
+            self.solver.set(i, "x", np.array([x_mid, 0.]))
         self.solver.constraints_set(0, "lbx", x0)
         self.solver.constraints_set(0, "ubx", x0)
         self.solver.solve()
@@ -130,6 +137,9 @@ class LegMPC:
 
         return self.a_sol[0]
 
+    def errors(self):
+        return self.solver.get_residuals(recompute=True)
+
 
 if __name__ == "__main__":
     solver = LegMPC()
@@ -139,5 +149,6 @@ if __name__ == "__main__":
     a_ref = 0.1
     x0_ref = x_mid
     a = solver.solve(x0, v0, x0_ref, a_ref)
-    print(a)
-    print(solver.solve_time)
+    print(f"a={a}")
+    print(f"time={1e6*solver.solve_time}us")
+    print(f"errors={solver.errors()}")

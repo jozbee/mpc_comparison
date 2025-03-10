@@ -16,12 +16,15 @@ RUN apt install -y \
 RUN cd ~/acados && \
   mkdir -p build && \
   cd build && \
+  # openmp seems to add latency, which is undesirable for real-time control
   cmake -DACADOS_WITH_QPOASES=ON .. && \
+  # cmake -DACADOS_WITH_QPOASES=ON -DACADOS_WITH_OPENMP=ON .. && \
   make install -j
 RUN apt install -y \
   python3 \
   python3-pip \
-  python3-virtualenv
+  python3-virtualenv \
+  python3-tk
 RUN mkdir ~/envs
 RUN virtualenv ~/envs/acados_env --python=/usr/bin/python3
 RUN echo "source /root/envs/acados_env/bin/activate" >> /root/.bashrc
@@ -39,3 +42,7 @@ RUN cp /root/tera_renderer/target/release/t_renderer /root/acados/bin/t_renderer
 
 ENV LD_LIBRARY_PATH="/root/acados/lib"
 ENV ACADOS_SOURCE_DIR="/root/acados"
+
+RUN pip install \
+  ipython \
+  pytest
