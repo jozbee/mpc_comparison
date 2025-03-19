@@ -33,7 +33,8 @@ def gen_leg_model():
 
     return model
 
-def gen_leg_ocp(model, acc_weight=1e3):
+
+def gen_leg_ocp(model, acc_weight=1e0):
     ocp = AcadosOcp()
     ocp.model = model
 
@@ -82,8 +83,8 @@ def gen_leg_ocp(model, acc_weight=1e3):
 
 class LegMPC:
     """A model predictive controller for the leg."""
+
     def __init__(self, x0=None):
-        AcadosOcpSolver.generate(gen_leg_ocp(gen_leg_model()), json_file="leg_ocp.json")
         self.solver = AcadosOcpSolver(gen_leg_ocp(gen_leg_model()))
         self.reset(x0)
     
