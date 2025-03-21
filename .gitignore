@@ -3,3 +3,4 @@ rss*
 __pycache__
 trash
 ltex*
+*.png
