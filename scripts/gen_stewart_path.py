@@ -1,3 +1,5 @@
+import typing as tp
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -7,7 +9,7 @@ from exp_mpc.stewart_min.viz import visualize_trajectory
 
 def generate_constant_acceleration_path(
     acceleration: float = 0.05, duration: float = 5.0, dt_sim: float = 0.1
-) -> tuple[list[float], np.ndarray, np.ndarray]:
+) -> tuple[list[list[float]], np.ndarray, np.ndarray]:
     """Generate a path with constant acceleration in the x direction using MPC.
 
     Parameters
@@ -30,7 +32,7 @@ def generate_constant_acceleration_path(
     mpc.set_weights(w_a=10.0, w_omega=10.0, w_leg=1.0, w_control=0.1)
 
     # Set reference acceleration in x direction
-    a_ref = np.array([acceleration, 0.0, 0.0])
+    a_ref = np.array([acceleration, 0.0, -9.81])
     mpc.set_reference(a_ref=a_ref)
 
     # Number of simulation steps
@@ -39,18 +41,18 @@ def generate_constant_acceleration_path(
     # Initialize state (starting from the default state0)
     current_state = state0.copy()
 
-    # Initial velocity is zero (we'll accelerate from rest)
-    current_state[6] = 0.0  # x_dot
-
     # Initialize storage for waypoints, accelerations, and angular velocities
     waypoints = []
     linear_accelerations = []
     angular_velocities = []
 
     # Run simulation
-    for i in range(num_steps):
+    for _ in range(num_steps):
         # Solve MPC from current state
         mpc.solve(current_state)
+        # if _ % 100 == 0:
+        #     mpc.plot_solution().show()
+        #     input()
 
         # Store the current pose as a waypoint [x, y, z, roll, pitch, yaw]
         waypoints.append(
@@ -65,7 +67,8 @@ def generate_constant_acceleration_path(
         )
 
         # Store the current control inputs (accelerations)
-        linear_accelerations.append(mpc.control_sol[0][:3])
+        # Don't forget to copy (otherwise, everything will be the same)
+        linear_accelerations.append(mpc.control_sol[0, :3].copy())
 
         # Calculate angular velocities from the state
         phi = current_state[3]
@@ -158,9 +161,6 @@ if __name__ == "__main__":
 
     # Visualize the platform motion using the 3D visualizer
     print(f"Generated {len(waypoints)} waypoints.")
-    anim, fig_viz = visualize_trajectory(waypoints, dt=dt, sim_rate=1.0, fps=30)
-
-    # Save animation (uncomment if you want to save it)
-    # anim.save('stewart_path.mp4', writer='ffmpeg', fps=30)
+    anim, fig_viz = visualize_trajectory(waypoints, dt=dt, sim_rate=0.5, fps=30)
 
     plt.show()

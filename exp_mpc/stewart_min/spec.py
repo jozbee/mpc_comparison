@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import numpy as np
+import matplotlib.pyplot as plt
 import casadi as ca
 import acados_template as at
 
@@ -10,6 +11,8 @@ leg_min = 1.2
 leg_max = 1.8
 leg_mid = 1.5
 dt = 1.0 / 250.0
+
+gravity = np.array([0.0, 0.0, -9.81])
 
 center = np.array([-2.53480164e-05, -1.86958364e-04, -9.81776321e-02])
 center = center.reshape(1, 3)  # for broadcasting with tops and bots
@@ -37,22 +40,7 @@ tops = np.array(
 
 center_bots = bots - center
 center_tops = tops - center
-state0 = np.array(
-    [
-        center[0, 0],
-        center[0, 1],
-        center[0, 2],
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-    ]
-)
+state0 = np.zeros(12)
 
 
 def _ca_sx(name: str) -> ca.SX:
@@ -193,8 +181,6 @@ def get_PHI(phi: ca.SX, theta: ca.SX, psi: ca.SX) -> ca.SX:
 
 
 def get_acceleration(model: at.AcadosModel) -> ca.SX:
-    g = ca.vertcat(0.0, 0.0, 9.81)
-
     state = model.x
     control = model.u
 
@@ -209,7 +195,7 @@ def get_acceleration(model: at.AcadosModel) -> ca.SX:
 
     R = get_R(phi, theta, psi)
 
-    return R.T @ (acc - g)
+    return R.T @ (acc + gravity)
 
 
 def get_angular_velocity(model: at.AcadosModel) -> ca.SX:
@@ -301,7 +287,7 @@ def gen_stewart_ocp(model):
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "ERK"
     ocp.solver_options.nlp_solver_type = "SQP"
-    ocp.solver_options.qp_solver_iter_max = 4
+    ocp.solver_options.qp_solver_iter_max = 10
     ocp.solver_options.qp_solver_cond_N = n  # no condensing, for now
 
     # horizon
@@ -381,9 +367,9 @@ class TableMPC:
 
     x0: np.ndarray = dataclasses.field(default_factory=lambda: state0)
     leg_ref: np.ndarray = dataclasses.field(
-        default_factory=lambda: np.ones(6) * leg_mid**2
+        default_factory=lambda: np.ones(6) * leg_mid**2  # squared lengths
     )
-    a_ref: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    a_ref: np.ndarray = dataclasses.field(default_factory=lambda: gravity)
     omega_ref: np.ndarray = dataclasses.field(
         default_factory=lambda: np.zeros(3)
     )
@@ -446,10 +432,6 @@ class TableMPC:
     def solve(self, x0):
         assert x0.shape == (12,)
         self.x0 = x0
-
-        yref_e = np.concatenate([self.leg_ref])
-        self.solver.cost_set(n, "yref", yref_e)
-
         self.solver.constraints_set(0, "lbx", self.x0)
         self.solver.constraints_set(0, "ubx", self.x0)
 
@@ -463,11 +445,95 @@ class TableMPC:
             state = self.solver.get(i, "x")
             self.state_sol[i] = state
             self.control_sol[i] = self.solver.get(i, "u")
+        self.state_sol[n] = self.solver.get(n, "x")
 
-        return self.control_sol[0]
+        return self.control_sol[0].copy()
 
     def errors(self):
         return self.solver.get_residuals(recompute=True)
+
+    def plot_solution(self):
+        """
+        Plot all state and control variables from the solution.
+
+        Returns:
+            matplotlib.figure.Figure: The figure containing all plots
+        """
+        # Create time arrays for x-axis
+        t_states = np.arange(n + 1) * dt
+        t_controls = np.arange(n) * dt
+
+        # Create figure with subplots
+        fig = plt.figure(figsize=(10, 8))
+
+        # Position plot
+        ax1 = fig.add_subplot(3, 2, 1)
+        ax1.plot(t_states, self.state_sol[:, 0], label="x")
+        ax1.plot(t_states, self.state_sol[:, 1], label="y")
+        ax1.plot(t_states, self.state_sol[:, 2], label="z")
+        ax1.set_title("Position")
+        ax1.set_xlabel("Time [s]")
+        ax1.set_ylabel("Position [m]")
+        ax1.legend()
+        ax1.grid(True)
+
+        # Orientation plot
+        ax2 = fig.add_subplot(3, 2, 2)
+        ax2.plot(t_states, self.state_sol[:, 3], label="phi")
+        ax2.plot(t_states, self.state_sol[:, 4], label="theta")
+        ax2.plot(t_states, self.state_sol[:, 5], label="psi")
+        ax2.set_title("Orientation")
+        ax2.set_xlabel("Time [s]")
+        ax2.set_ylabel("Angle [rad]")
+        ax2.legend()
+        ax2.grid(True)
+
+        # Linear velocity plot
+        ax3 = fig.add_subplot(3, 2, 3)
+        ax3.plot(t_states, self.state_sol[:, 6], label="x_dot")
+        ax3.plot(t_states, self.state_sol[:, 7], label="y_dot")
+        ax3.plot(t_states, self.state_sol[:, 8], label="z_dot")
+        ax3.set_title("Linear Velocity")
+        ax3.set_xlabel("Time [s]")
+        ax3.set_ylabel("Velocity [m/s]")
+        ax3.legend()
+        ax3.grid(True)
+
+        # Angular velocity plot
+        ax4 = fig.add_subplot(3, 2, 4)
+        ax4.plot(t_states, self.state_sol[:, 9], label="phi_dot")
+        ax4.plot(t_states, self.state_sol[:, 10], label="theta_dot")
+        ax4.plot(t_states, self.state_sol[:, 11], label="psi_dot")
+        ax4.set_title("Angular Velocity")
+        ax4.set_xlabel("Time [s]")
+        ax4.set_ylabel("Angular Velocity [rad/s]")
+        ax4.legend()
+        ax4.grid(True)
+
+        # Linear acceleration (control) plot
+        ax5 = fig.add_subplot(3, 2, 5)
+        ax5.plot(t_controls, self.control_sol[:, 0], label="x_ddot")
+        ax5.plot(t_controls, self.control_sol[:, 1], label="y_ddot")
+        ax5.plot(t_controls, self.control_sol[:, 2], label="z_ddot")
+        ax5.set_title("Linear Acceleration (Control)")
+        ax5.set_xlabel("Time [s]")
+        ax5.set_ylabel("Acceleration [m/s²]")
+        ax5.legend()
+        ax5.grid(True)
+
+        # Angular acceleration (control) plot
+        ax6 = fig.add_subplot(3, 2, 6)
+        ax6.plot(t_controls, self.control_sol[:, 3], label="phi_ddot")
+        ax6.plot(t_controls, self.control_sol[:, 4], label="theta_ddot")
+        ax6.plot(t_controls, self.control_sol[:, 5], label="psi_ddot")
+        ax6.set_title("Angular Acceleration (Control)")
+        ax6.set_xlabel("Time [s]")
+        ax6.set_ylabel("Angular Acceleration [rad/s²]")
+        ax6.legend()
+        ax6.grid(True)
+
+        fig.tight_layout()
+        return fig
 
 
 if __name__ == "__main__":
@@ -482,3 +548,4 @@ if __name__ == "__main__":
     print(f"control={u}")
     print(f"state_sol={mpc.state_sol}")
     print(f"control_sol={mpc.control_sol}")
+    mpc.plot_solution().show()
