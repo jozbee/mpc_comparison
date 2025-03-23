@@ -9,7 +9,7 @@ import acados_template as at
 n = 40
 leg_min = 1.2
 leg_max = 1.8
-leg_mid = 1.5
+leg_mid = 1.465
 dt = 1.0 / 250.0
 
 gravity = np.array([0.0, 0.0, -9.81])
