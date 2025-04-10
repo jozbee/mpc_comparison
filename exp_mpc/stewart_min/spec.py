@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import dataclasses
 import numpy as np
+import matplotlib.figure as mpl_fig
 import matplotlib.pyplot as plt
 import casadi as ca
-import acados_template as at
+import acados_template as at  # type: ignore
 
 n = 40
+# n = 100
 leg_min = 1.2
 leg_max = 1.8
 leg_mid = 1.465
-dt = 1.0 / 250.0
+dt = 0.005
 
-gravity = np.array([0.0, 0.0, -9.81])
+# warning: positive
+# (think: to stay in place on earth, we are accelerating up wards to counteract
+#   gravity)
+gravity = np.array([0.0, 0.0, 9.81])
 
 center = np.array([-2.53480164e-05, -1.86958364e-04, -9.81776321e-02])
 center = center.reshape(1, 3)  # for broadcasting with tops and bots
@@ -356,6 +361,24 @@ class TableSol:
     def pose_dot2_at(self, i: int) -> PoseDot2:
         return PoseDot2(*self.u[i, :6])
 
+    @classmethod
+    def from_solver(cls, solver: at.AcadosOcpSolver) -> "TableSol":
+        x = np.zeros((n + 1, 12))
+        u = np.zeros((n, 6))
+
+        for i in range(n):
+            x[i] = solver.get(i, "x")
+            u[i] = solver.get(i, "u")
+        x[n] = solver.get(n, "x")
+
+        stats = TableStats(
+            time=float(solver.get_stats("time_tot")),
+            status=solver.get_status(),
+            cost=solver.get_cost(),
+        )
+
+        return cls(x=x, u=u, stats=stats)
+
 
 @dataclasses.dataclass
 class TableMPC:
@@ -393,7 +416,7 @@ class TableMPC:
         model = gen_stewart_model()
         ocp = gen_stewart_ocp(model)
         solver = at.AcadosOcpSolver(ocp)
-        mpc = cls(model, ocp, solver)
+        mpc = cls(model, ocp, solver)  # type: ignore
         mpc.set_weights()
         mpc.set_reference()
         return mpc
@@ -449,16 +472,15 @@ class TableMPC:
 
         return self.control_sol[0].copy()
 
+    def get_solution(self) -> TableSol:
+        """Get the last solution."""
+        return TableSol.from_solver(self.solver)
+
     def errors(self):
         return self.solver.get_residuals(recompute=True)
 
-    def plot_solution(self):
-        """
-        Plot all state and control variables from the solution.
-
-        Returns:
-            matplotlib.figure.Figure: The figure containing all plots
-        """
+    def plot_solution(self) -> mpl_fig.Figure:
+        """Plot all state and control variables from the solution."""
         # Create time arrays for x-axis
         t_states = np.arange(n + 1) * dt
         t_controls = np.arange(n) * dt

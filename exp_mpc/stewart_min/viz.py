@@ -276,7 +276,8 @@ def visualize_trajectory(trajectory, dt=0.02, sim_rate=1.0, fps=30):
         frames=frame_count,
         interval=interval,
         blit=True,
-        repeat=False,
+        # repeat=False,
+        repeat=True,
     )
 
     return anim, fig
