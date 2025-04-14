@@ -1,3 +1,4 @@
+import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -6,7 +7,8 @@ from exp_mpc.stewart_min.viz import visualize_trajectory
 
 
 def generate_constant_acceleration_path(
-    acceleration: float = 0.05, duration: float = 5.0, dt_sim: float = 0.1
+    acceleration: float = 0.05,
+    duration: float = 5.0,
 ) -> tuple[list[list[float]], np.ndarray, np.ndarray]:
     """Generate a path with constant acceleration in the x direction using MPC.
 
@@ -16,43 +18,30 @@ def generate_constant_acceleration_path(
         Desired acceleration in x direction (m/s^2)
     duration :
         Total duration of the path (seconds)
-    dt_sim :
-        Time step for simulation (seconds)
 
     Returns
     -------
     waypoints, linear_accelerations, angular_velocities
     """
-    # Initialize the MPC controller
+    # mpc init
     mpc = TableMPC.create_default()
-
-    # Set weights to prioritize smooth motion
     mpc.set_weights(w_a=1e1, w_omega=1e1, w_leg=1e2, w_control=1e-1)
 
-    # Set reference acceleration in x direction
-    a_ref = np.array([acceleration, 0.0, -9.81])
+    # set reference acceleration in x direction
+    a_ref = np.array([acceleration, 0.0, 0.0]) + gravity
     mpc.set_reference(a_ref=a_ref)
 
-    # Number of simulation steps
-    num_steps = int(duration / dt_sim)
-
-    # Initialize state (starting from the default state0)
-    current_state = state0.copy()
-
-    # Initialize storage for waypoints, accelerations, and angular velocities
+    # bookeeping
     waypoints = []
     linear_accelerations = []
     angular_velocities = []
 
-    # Run simulation
-    for _ in range(num_steps):
-        # Solve MPC from current state
+    # run simulation
+    current_state = state0.copy()
+    num_steps = int(duration / dt)
+    for _ in tqdm.tqdm(range(num_steps)):
         mpc.solve(current_state)
-        # if _ % 100 == 0:
-        #     mpc.plot_solution().show()
-        #     input()
 
-        # Store the current pose as a waypoint [x, y, z, roll, pitch, yaw]
         waypoints.append(
             [
                 current_state[0],  # x
@@ -64,11 +53,9 @@ def generate_constant_acceleration_path(
             ]
         )
 
-        # Store the current control inputs (accelerations)
-        # Don't forget to copy (otherwise, everything will be the same)
+        # don't forget to copy (otherwise, everything will be the same)
         linear_accelerations.append(mpc.control_sol[0, :3].copy())
 
-        # Calculate angular velocities from the state
         phi = current_state[3]
         theta = current_state[4]
         # psi = current_state[5]
@@ -88,8 +75,7 @@ def generate_constant_acceleration_path(
 
         angular_velocities.append([omega_x, omega_y, omega_z])
 
-        # Use MPC prediction for next state without manual modifications
-        current_state = mpc.state_sol[1].copy()
+        current_state = mpc.sim_next_state()
 
     return (
         waypoints,
@@ -124,9 +110,9 @@ def transform_to_head_frame(waypoints, linear_accelerations):
     return np.array(head_frame_accelerations)
 
 
-def plot_dynamics(linear_accelerations, angular_velocities, dt_sim):
+def plot_dynamics(linear_accelerations, angular_velocities):
     """Plot linear accelerations and angular velocities."""
-    time = np.arange(len(linear_accelerations)) * dt_sim
+    time = np.arange(len(linear_accelerations)) * dt
 
     fig, axs = plt.subplots(2, 3, figsize=(10, 6))
 
@@ -170,7 +156,6 @@ def plot_dynamics_with_head_frame(
     waypoints,
     linear_accelerations,
     angular_velocities,
-    dt_sim,
     a_ref=np.array([0.0, 0.0, 0.0]),
     omega_ref=np.array([0.0, 0.0, 0.0]),
 ):
@@ -184,8 +169,6 @@ def plot_dynamics_with_head_frame(
         Array of linear accelerations in world frame
     angular_velocities : ndarray
         Array of angular velocities in body frame
-    dt_sim : float
-        Time step for simulation
     a_ref : ndarray, shape (3,)
         Reference linear acceleration in head frame [x, y, z]
     omega_ref : ndarray, shape (3,)
@@ -200,7 +183,7 @@ def plot_dynamics_with_head_frame(
         f"omega_ref must have shape (3,), got {omega_ref.shape}"
     )
 
-    time = np.arange(len(linear_accelerations)) * dt_sim
+    time = np.arange(len(linear_accelerations)) * dt
 
     # Transform accelerations to head frame
     head_frame_accelerations = transform_to_head_frame(
@@ -290,25 +273,23 @@ if __name__ == "__main__":
     # Generate waypoints, accelerations, and angular velocities
     waypoints, linear_accelerations, angular_velocities = (
         generate_constant_acceleration_path(
-            acceleration=acceleration, duration=duration, dt_sim=dt
+            acceleration=acceleration,
+            duration=duration,
         )
     )
 
     # Plot the dynamics in world frame
-    fig_world = plot_dynamics(linear_accelerations, angular_velocities, dt)
+    fig_world = plot_dynamics(linear_accelerations, angular_velocities)
     plt.savefig("stewart_dynamics_world_frame.png")
 
     # Plot the dynamics in both world and head frames
-    a_ref = np.array(
-        [acceleration, 0.0, -9.81]
-    )  # Reference linear acceleration
+    a_ref = np.array([acceleration, 0.0, 0.0]) + gravity
     omega_ref = np.zeros(3)  # Reference angular velocity (zero)
 
     fig_both = plot_dynamics_with_head_frame(
         waypoints,
         linear_accelerations,
         angular_velocities,
-        dt,
         a_ref=a_ref,
         omega_ref=omega_ref,
     )

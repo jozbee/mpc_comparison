@@ -2,7 +2,7 @@ import numpy as np
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from exp_mpc.stewart_min.spec import bots, tops, leg_min, leg_max, center
+from exp_mpc.stewart_min.spec import bots, tops, leg_min, leg_max
 
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -23,13 +23,10 @@ def compute_leg_lengths(position, rotation_matrix):
 
     for i in range(6):
         # Transform platform attachment point to world coordinates
-        platform_point_local = tops[i] - center.flatten()
-        platform_point_world = (
-            center.flatten() + position + rotation_matrix @ platform_point_local
-        )
+        top_i = rotation_matrix @ tops[i] + position
 
         # Compute leg vector
-        leg_vector = platform_point_world - bots[i]
+        leg_vector = top_i - bots[i]
 
         # Compute leg length
         leg_length = np.linalg.norm(leg_vector)
@@ -208,10 +205,7 @@ def visualize_trajectory(trajectory, dt=0.02, sim_rate=1.0, fps=30):
         R = rotation_matrix_from_euler(roll, pitch, yaw)
 
         # Update platform position
-        tops_world = [
-            center.flatten() + position + R @ (p - center.flatten())
-            for p in tops
-        ]
+        tops_world = [R @ p + position for p in tops]
         platform_x = [p[0] for p in tops_world] + [tops_world[0][0]]
         platform_y = [p[1] for p in tops_world] + [tops_world[0][1]]
         platform_z = [p[2] for p in tops_world] + [tops_world[0][2]]

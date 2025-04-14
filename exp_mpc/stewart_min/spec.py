@@ -9,47 +9,46 @@ import acados_template as at  # type: ignore
 
 n = 40
 # n = 100
-leg_min = 1.2
-leg_max = 1.8
-leg_mid = 1.465
+leg_min = 1160.410000 * 1e-3
+leg_max = 1770.010000 * 1e-3
+leg_mid = (leg_min + leg_max) / 2.0  # 1.46521
+max_yaw = 35.0
 dt = 0.005
 
 # warning: positive
 # (think: to stay in place on earth, we are accelerating up wards to counteract
 #   gravity)
 gravity = np.array([0.0, 0.0, 9.81])
+human_displacement = np.array([0.0, 0.0, 0.588])
 
-center = np.array([-2.53480164e-05, -1.86958364e-04, -9.81776321e-02])
-center = center.reshape(1, 3)  # for broadcasting with tops and bots
 bots = np.array(
     [
-        [0.090902, -0.952057, -1.4],
-        [0.870168, 0.397276, -1.400285],
-        [0.779349, 0.554337, -1.4],
-        [-0.779347, 0.553952, -1.400037],
-        [-0.86997, 0.397276, -1.4],
-        [-0.090113, -0.952578, -1.400363],
+        [952.5055, 91.0723, -1410.0000],
+        [-398.5396, 869.5826, -1409.8621],
+        [-555.4801, 779.1038, -1410.0000],
+        [-555.0219, -779.3507, -1409.6010],
+        [-398.5396, -869.9006, -1410.0000],
+        [952.7381, -89.7865, -1409.8718],
     ]
 )
+bots *= 1e-3
 tops = np.array(
     [
-        [0.32637129, -0.32151598, -0.09877087],
-        [0.44215802, -0.118274, -0.09750311],
-        [0.1149581, 0.44309603, -0.09906373],
-        [-0.11874097, 0.4420145, -0.09723438],
-        [-0.44143789, -0.12203837, -0.09888594],
-        [-0.32346064, -0.32440392, -0.09760777],
+        [314.4868, 327.8608, -111.0000],
+        [126.7447, 436.2739, -111.1102],
+        [-441.2953, 107.9497, -111.0000],
+        [-441.2826, -108.6562, -111.3975],
+        [126.7447, -436.2688, -111.0000],
+        [314.5916, -328.3827, -110.9675],
     ]
 )
+tops *= 1e-3
 
-
-center_bots = bots - center
-center_tops = tops - center
 state0 = np.zeros(12)
 
 
 def _ca_sx(name: str) -> ca.SX:
-    """Create a casadi variable without errors"""
+    """Create a casadi variable without littered typing errors"""
     return ca.SX.sym(name)  # type: ignore
 
 
@@ -164,6 +163,125 @@ def get_R(phi: ca.SX, theta: ca.SX, psi: ca.SX) -> ca.SX:
     return R
 
 
+def get_R_ddot(
+    phi: ca.SX,
+    theta: ca.SX,
+    psi: ca.SX,
+    phi_dot: ca.SX,
+    theta_dot: ca.SX,
+    psi_dot: ca.SX,
+    phi_ddot: ca.SX,
+    theta_ddot: ca.SX,
+    psi_ddot: ca.SX,
+) -> ca.SX:
+    """Second time derivative of rotation matrix.
+
+    Derived from sympy, i.e., the form is not very readable.
+    """
+    R_ddot = ca.SX(3, 3)
+
+    # first row
+    R_ddot[0, 0] = (
+        -psi_ddot * ca.sin(psi) * ca.cos(theta)
+        - psi_dot**2 * ca.cos(psi) * ca.cos(theta)
+        + 2 * psi_dot * theta_dot * ca.sin(psi) * ca.sin(theta)
+        - theta_ddot * ca.sin(theta) * ca.cos(psi)
+        - theta_dot**2 * ca.cos(psi) * ca.cos(theta)
+    )
+    R_ddot[0, 1] = (
+        phi_ddot * ca.sin(phi) * ca.sin(psi)
+        + phi_ddot * ca.sin(theta) * ca.cos(phi) * ca.cos(psi)
+        - phi_dot**2 * ca.sin(phi) * ca.sin(theta) * ca.cos(psi)
+        + phi_dot**2 * ca.sin(psi) * ca.cos(phi)
+        + 2 * phi_dot * psi_dot * ca.sin(phi) * ca.cos(psi)
+        - 2 * phi_dot * psi_dot * ca.sin(psi) * ca.sin(theta) * ca.cos(phi)
+        + 2 * phi_dot * theta_dot * ca.cos(phi) * ca.cos(psi) * ca.cos(theta)
+        - psi_ddot * ca.sin(phi) * ca.sin(psi) * ca.sin(theta)
+        - psi_ddot * ca.cos(phi) * ca.cos(psi)
+        - psi_dot**2 * ca.sin(phi) * ca.sin(theta) * ca.cos(psi)
+        + psi_dot**2 * ca.sin(psi) * ca.cos(phi)
+        - 2 * psi_dot * theta_dot * ca.sin(phi) * ca.sin(psi) * ca.cos(theta)
+        + theta_ddot * ca.sin(phi) * ca.cos(psi) * ca.cos(theta)
+        - theta_dot**2 * ca.sin(phi) * ca.sin(theta) * ca.cos(psi)
+    )
+    R_ddot[0, 2] = (
+        -phi_ddot * ca.sin(phi) * ca.sin(theta) * ca.cos(psi)
+        + phi_ddot * ca.sin(psi) * ca.cos(phi)
+        - phi_dot**2 * ca.sin(phi) * ca.sin(psi)
+        - phi_dot**2 * ca.sin(theta) * ca.cos(phi) * ca.cos(psi)
+        + 2 * phi_dot * psi_dot * ca.sin(phi) * ca.sin(psi) * ca.sin(theta)
+        + 2 * phi_dot * psi_dot * ca.cos(phi) * ca.cos(psi)
+        - 2 * phi_dot * theta_dot * ca.sin(phi) * ca.cos(psi) * ca.cos(theta)
+        + psi_ddot * ca.sin(phi) * ca.cos(psi)
+        - psi_ddot * ca.sin(psi) * ca.sin(theta) * ca.cos(phi)
+        - psi_dot**2 * ca.sin(phi) * ca.sin(psi)
+        - psi_dot**2 * ca.sin(theta) * ca.cos(phi) * ca.cos(psi)
+        - 2 * psi_dot * theta_dot * ca.sin(psi) * ca.cos(phi) * ca.cos(theta)
+        + theta_ddot * ca.cos(phi) * ca.cos(psi) * ca.cos(theta)
+        - theta_dot**2 * ca.sin(theta) * ca.cos(phi) * ca.cos(psi)
+    )
+
+    # second row
+    R_ddot[1, 0] = (
+        psi_ddot * ca.cos(psi) * ca.cos(theta)
+        - psi_dot**2 * ca.sin(psi) * ca.cos(theta)
+        - 2 * psi_dot * theta_dot * ca.sin(theta) * ca.cos(psi)
+        - theta_ddot * ca.sin(psi) * ca.sin(theta)
+        - theta_dot**2 * ca.sin(psi) * ca.cos(theta)
+    )
+    R_ddot[1, 1] = (
+        -phi_ddot * ca.sin(phi) * ca.cos(psi)
+        + phi_ddot * ca.sin(psi) * ca.sin(theta) * ca.cos(phi)
+        - phi_dot**2 * ca.sin(phi) * ca.sin(psi) * ca.sin(theta)
+        - phi_dot**2 * ca.cos(phi) * ca.cos(psi)
+        + 2 * phi_dot * psi_dot * ca.sin(phi) * ca.sin(psi)
+        + 2 * phi_dot * psi_dot * ca.sin(theta) * ca.cos(phi) * ca.cos(psi)
+        + 2 * phi_dot * theta_dot * ca.sin(psi) * ca.cos(phi) * ca.cos(theta)
+        + psi_ddot * ca.sin(phi) * ca.sin(theta) * ca.cos(psi)
+        - psi_ddot * ca.sin(psi) * ca.cos(phi)
+        - psi_dot**2 * ca.sin(phi) * ca.sin(psi) * ca.sin(theta)
+        - psi_dot**2 * ca.cos(phi) * ca.cos(psi)
+        + 2 * psi_dot * theta_dot * ca.sin(phi) * ca.cos(psi) * ca.cos(theta)
+        + theta_ddot * ca.sin(phi) * ca.sin(psi) * ca.cos(theta)
+        - theta_dot**2 * ca.sin(phi) * ca.sin(psi) * ca.sin(theta)
+    )
+    R_ddot[1, 2] = (
+        -phi_ddot * ca.sin(phi) * ca.sin(psi) * ca.sin(theta)
+        - phi_ddot * ca.cos(phi) * ca.cos(psi)
+        + phi_dot**2 * ca.sin(phi) * ca.cos(psi)
+        - phi_dot**2 * ca.sin(psi) * ca.sin(theta) * ca.cos(phi)
+        - 2 * phi_dot * psi_dot * ca.sin(phi) * ca.sin(theta) * ca.cos(psi)
+        + 2 * phi_dot * psi_dot * ca.sin(psi) * ca.cos(phi)
+        - 2 * phi_dot * theta_dot * ca.sin(phi) * ca.sin(psi) * ca.cos(theta)
+        + psi_ddot * ca.sin(phi) * ca.sin(psi)
+        + psi_ddot * ca.sin(theta) * ca.cos(phi) * ca.cos(psi)
+        + psi_dot**2 * ca.sin(phi) * ca.cos(psi)
+        - psi_dot**2 * ca.sin(psi) * ca.sin(theta) * ca.cos(phi)
+        + 2 * psi_dot * theta_dot * ca.cos(phi) * ca.cos(psi) * ca.cos(theta)
+        + theta_ddot * ca.sin(psi) * ca.cos(phi) * ca.cos(theta)
+        - theta_dot**2 * ca.sin(psi) * ca.sin(theta) * ca.cos(phi)
+    )
+
+    # third row
+    R_ddot[2, 0] = -theta_ddot * ca.cos(theta) + theta_dot**2 * ca.sin(theta)
+    R_ddot[2, 1] = (
+        phi_ddot * ca.cos(phi) * ca.cos(theta)
+        - phi_dot**2 * ca.sin(phi) * ca.cos(theta)
+        - 2 * phi_dot * theta_dot * ca.sin(theta) * ca.cos(phi)
+        - theta_ddot * ca.sin(phi) * ca.sin(theta)
+        - theta_dot**2 * ca.sin(phi) * ca.cos(theta)
+    )
+    R_ddot[2, 2] = (
+        -phi_ddot * ca.sin(phi) * ca.cos(theta)
+        - phi_dot**2 * ca.cos(phi) * ca.cos(theta)
+        + 2 * phi_dot * theta_dot * ca.sin(phi) * ca.sin(theta)
+        - theta_ddot * ca.sin(theta) * ca.cos(phi)
+        - theta_dot**2 * ca.cos(phi) * ca.cos(theta)
+    )
+
+    return R_ddot
+
+
 def get_PHI(phi: ca.SX, theta: ca.SX, psi: ca.SX) -> ca.SX:
     PHI = ca.SX(3, 3)
 
@@ -192,6 +310,12 @@ def get_acceleration(model: at.AcadosModel) -> ca.SX:
     phi = state[3]
     theta = state[4]
     psi = state[5]
+    phi_dot = state[9]
+    theta_dot = state[10]
+    psi_dot = state[11]
+    phi_ddot = control[3]
+    theta_ddot = control[4]
+    psi_ddot = control[5]
 
     x_u = control[0]
     y_u = control[1]
@@ -199,8 +323,19 @@ def get_acceleration(model: at.AcadosModel) -> ca.SX:
     acc = ca.vertcat(x_u, y_u, z_u)
 
     R = get_R(phi, theta, psi)
+    R_ddot = get_R_ddot(
+        phi,
+        theta,
+        psi,
+        phi_dot,
+        theta_dot,
+        psi_dot,
+        phi_ddot,
+        theta_ddot,
+        psi_ddot,
+    )
 
-    return R.T @ (acc + gravity)
+    return R.T @ (R_ddot @ human_displacement + acc + gravity)
 
 
 def get_angular_velocity(model: at.AcadosModel) -> ca.SX:
@@ -234,7 +369,7 @@ def get_squared_lengths(model: at.AcadosModel) -> ca.DM:
     R = get_R(phi, theta, psi)
 
     diffs = []
-    for top, bot in zip(center_tops, center_bots):  # use center as reference
+    for top, bot in zip(tops, bots):  # use center as reference
         diff = (R @ top + t) - bot
         diffs.append(diff)
 
@@ -276,9 +411,12 @@ def gen_stewart_ocp(model):
 
     # constraints
     ocp.constraints.constr_type = "BGH"
-    ocp.model.con_h_expr = get_squared_lengths(ocp.model)
-    ocp.constraints.lh = np.ones(6) * leg_min**2
-    ocp.constraints.uh = np.ones(6) * leg_max**2
+    ocp.model.con_h_expr = ca.vertcat(
+        get_squared_lengths(ocp.model),
+        ocp.model.x[5],  # psi == yaw
+    )
+    ocp.constraints.lh = np.append(np.ones(6) * leg_min**2, -max_yaw)
+    ocp.constraints.uh = np.append(np.ones(6) * leg_max**2, max_yaw)
 
     ocp.model.con_h_expr_e = get_squared_lengths(ocp.model)
     ocp.constraints.lh_e = np.ones(6) * leg_min**2
@@ -471,6 +609,16 @@ class TableMPC:
         self.state_sol[n] = self.solver.get(n, "x")
 
         return self.control_sol[0].copy()
+
+    def sim_next_state(self) -> np.ndarray:
+        """Simulate the next state, using double integrator control."""
+        x0 = self.state_sol[0]
+        u = self.control_sol[0]
+
+        x = np.zeros(12)
+        x[6:12] = x[6:12] + dt * u
+        x[:6] = x0[:6] + dt * x0[6:12]
+        return x
 
     def get_solution(self) -> TableSol:
         """Get the last solution."""
