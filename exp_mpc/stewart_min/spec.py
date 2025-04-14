@@ -44,6 +44,29 @@ tops = np.array(
 )
 tops *= 1e-3
 
+top_normals = np.array(
+    [
+        [0.435014, -0.162005, -0.885729],
+        [-0.357803, 0.295803, -0.885708],
+        [-0.077200, 0.457799, -0.885698],
+        [-0.077200, -0.457799, -0.885698],
+        [-0.357803, -0.295803, -0.885708],
+        [0.435014, 0.162005, -0.885729],
+    ]
+)
+top_normals /= np.linalg.norm(top_normals, axis=1)[:, np.newaxis]
+bot_normals = np.array(
+    [
+        [-0.435014, 0.162005, 0.885729],
+        [0.357803, -0.295803, 0.885708],
+        [0.077200, -0.457799, 0.885698],
+        [0.077200, 0.457799, 0.885698],
+        [0.357803, 0.295803, 0.885708],
+        [-0.435014, -0.162005, 0.885729],
+    ]
+)
+bot_normals /= np.linalg.norm(bot_normals, axis=1)[:, np.newaxis]
+
 state0 = np.zeros(12)
 
 
@@ -452,6 +475,12 @@ class Pose:
     theta: float
     psi: float
 
+    def xyz(self) -> np.ndarray:
+        return np.array([self.x, self.y, self.z])
+
+    def rpy(self) -> np.ndarray:
+        return np.array([self.phi, self.theta, self.psi])
+
 
 @dataclasses.dataclass
 class PoseDot:
@@ -462,6 +491,12 @@ class PoseDot:
     theta_dot: float
     psi_dot: float
 
+    def xyz(self) -> np.ndarray:
+        return np.array([self.x_dot, self.y_dot, self.z_dot])
+
+    def rpy(self) -> np.ndarray:
+        return np.array([self.phi_dot, self.theta_dot, self.psi_dot])
+
 
 @dataclasses.dataclass
 class PoseDot2:
@@ -471,6 +506,12 @@ class PoseDot2:
     phi_dot2: float
     theta_dot2: float
     psi_dot2: float
+
+    def xyz(self) -> np.ndarray:
+        return np.array([self.x_dot2, self.y_dot2, self.z_dot2])
+
+    def rpy(self) -> np.ndarray:
+        return np.array([self.phi_dot2, self.theta_dot2, self.psi_dot2])
 
 
 @dataclasses.dataclass
