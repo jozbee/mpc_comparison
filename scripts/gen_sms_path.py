@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 
 from exp_mpc.stewart_min.spec import TableMPC, state0, get_R, gravity, TableSol
-from exp_mpc.stewart_min.viz import visualize_trajectory
+from exp_mpc.stewart_min.viz import animate_trajectory
 from viz_sms_data import load_sms_data
 
 
@@ -399,7 +399,7 @@ if __name__ == "__main__":
 
     # Visualize the platform motion using the 3D visualizer
     print(f"Generated {len(waypoints)} waypoints.")
-    anim, fig_viz = visualize_trajectory(
+    anim, fig_viz = animate_trajectory(
         trajectory=waypoints,
         # dt=resample_dt,
         # sim_rate=1.0,

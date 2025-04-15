@@ -346,12 +346,14 @@ def angle_joint_bot(sol: spec.TableSol) -> np.ndarray:
 def human_vel(sol: spec.TableSol) -> np.ndarray:
     """Human velocity."""
     vel = sol.pose_dot_at(0).xyz()
+    R = np.array(get_R(sol))
     R_dot = np.array(get_R_dot(sol))
-    return R_dot @ spec.human_displacement + vel
+    return R.T @ (R_dot @ spec.human_displacement + vel)
 
 
 def human_acc(sol: spec.TableSol) -> np.ndarray:
     """Human acceleration."""
     acc = sol.pose_dot2_at(0).xyz()
+    R = np.array(get_R(sol))
     R_dot2 = np.array(get_R_dot2(sol))
-    return R_dot2 @ spec.human_displacement + acc
+    return R @ (R_dot2 @ spec.human_displacement + acc + spec.gravity)

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import casadi as ca
 import acados_template as at  # type: ignore
 
+# used parameters
 n = 40
 # n = 100
 leg_min = 1160.410000 * 1e-3
@@ -14,6 +15,21 @@ leg_max = 1770.010000 * 1e-3
 leg_mid = (leg_min + leg_max) / 2.0  # 1.46521
 max_yaw = 35.0
 dt = 0.005
+
+# unused parameters
+top_max_angle = 42.0
+bot_max_angle = 42.0
+max_roll = 35.0
+max_pitch = 35.0
+# max_yaw = 35.0
+# min_leg_pos = 1160.410000 * 1e-3
+# max_leg_pos = 1770.010000 * 1e-3
+max_leg_vel = 20.0 / 39.37
+max_cart_table_acc = 8.0
+max_cart_vel = 10.0  # human
+max_cart_acc = 18.0  # human
+max_angle_vel = 4.8  # human
+max_angle_acc = 2100.0  # human
 
 # warning: positive
 # (think: to stay in place on earth, we are accelerating up wards to counteract
@@ -481,6 +497,12 @@ class Pose:
     def rpy(self) -> np.ndarray:
         return np.array([self.phi, self.theta, self.psi])
 
+    def __array__(self, copy: bool = False) -> np.ndarray:
+        assert type(copy) is bool
+        return np.array(
+            [self.x, self.y, self.z, self.phi, self.theta, self.psi]
+        )
+
 
 @dataclasses.dataclass
 class PoseDot:
@@ -497,6 +519,19 @@ class PoseDot:
     def rpy(self) -> np.ndarray:
         return np.array([self.phi_dot, self.theta_dot, self.psi_dot])
 
+    def __array__(self, copy: bool = False) -> np.ndarray:
+        assert type(copy) is bool
+        return np.array(
+            [
+                self.x_dot,
+                self.y_dot,
+                self.z_dot,
+                self.phi_dot,
+                self.theta_dot,
+                self.psi_dot,
+            ]
+        )
+
 
 @dataclasses.dataclass
 class PoseDot2:
@@ -512,6 +547,19 @@ class PoseDot2:
 
     def rpy(self) -> np.ndarray:
         return np.array([self.phi_dot2, self.theta_dot2, self.psi_dot2])
+
+    def __array__(self, copy: bool = False) -> np.ndarray:
+        assert type(copy) is bool
+        return np.array(
+            [
+                self.x_dot2,
+                self.y_dot2,
+                self.z_dot2,
+                self.phi_dot2,
+                self.theta_dot2,
+                self.psi_dot2,
+            ]
+        )
 
 
 @dataclasses.dataclass
@@ -545,6 +593,7 @@ class TableSol:
         x = np.zeros((n + 1, 12))
         u = np.zeros((n, 6))
 
+        # numpy implicitly copies here
         for i in range(n):
             x[i] = solver.get(i, "x")
             u[i] = solver.get(i, "u")
