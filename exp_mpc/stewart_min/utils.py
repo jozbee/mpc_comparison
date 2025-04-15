@@ -10,6 +10,7 @@ Given a table solution, we compute
 In general, we implement a (private) jax implementation and a (public) numpy
 implementation.
 """
+import functools
 
 import jax
 import jax.numpy as jnp
@@ -199,24 +200,34 @@ def angle_pos(sol: spec.TableSol) -> np.ndarray:
     return sol.pose_at(0).rpy()
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=("world",))
 def _get_PHI(
     phi: float,
     theta: float,
-    psi: float,  # unused, apparently...
+    psi: float,
+    world: bool = False,
 ) -> jax.Array:
     """Matrix to map table euler angle derivatives to head angular velocity."""
     # sympy generated
-    return jnp.array(
-        [
-            [1, 0, -jnp.sin(theta)],
-            [0, jnp.cos(phi), jnp.sin(phi) * jnp.cos(theta)],
-            [0, -jnp.sin(phi), jnp.cos(phi) * jnp.cos(theta)],
-        ]
-    )
+    if not world:
+        return jnp.array(
+            [
+                [1, 0, -jnp.sin(theta)],
+                [0, jnp.cos(phi), jnp.sin(phi) * jnp.cos(theta)],
+                [0, -jnp.sin(phi), jnp.cos(phi) * jnp.cos(theta)],
+            ]
+        )
+    else:
+        return jnp.array(
+            [
+                [jnp.cos(psi) * jnp.cos(theta), -jnp.sin(psi), 0],
+                [jnp.sin(psi) * jnp.cos(theta), jnp.cos(psi), 0],
+                [-jnp.sin(theta), 0, 1],
+            ]
+        )
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=("world",))
 def _angle_vel(
     phi: float,
     theta: float,
@@ -224,13 +235,14 @@ def _angle_vel(
     phi_dot: float,
     theta_dot: float,
     psi_dot: float,
+    world: bool = False,
 ) -> jax.Array:
     """Angular velocity."""
-    PHI = _get_PHI(phi, theta, psi)
+    PHI = _get_PHI(phi, theta, psi, world)
     return jnp.linalg.inv(PHI) @ jnp.array([phi_dot, theta_dot, psi_dot])
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=("world",))
 def _angle_acc(
     phi: float,
     theta: float,
@@ -241,16 +253,19 @@ def _angle_acc(
     phi_dot2: float,
     theta_dot2: float,
     psi_dot2: float,
+    world: bool = False,
 ) -> jax.Array:
     """Angular acceleration."""
     # no product rule this time, because we already have the angular velocity
     primals = (phi, theta, psi, phi_dot, theta_dot, psi_dot)
     tangents = (phi_dot, theta_dot, psi_dot, phi_dot2, theta_dot2, psi_dot2)
-    return jax.jvp(_angle_vel, primals, tangents)[1]
+    return jax.jvp(
+        functools.partial(_angle_vel, world=world), primals, tangents
+    )[1]
 
 
-def angle_vel(sol: spec.TableSol) -> np.ndarray:
-    """Angular velocity."""
+def human_angle_vel(sol: spec.TableSol) -> np.ndarray:
+    """Human angular velocity."""
     pose = sol.pose_at(0)
     pose_dot = sol.pose_dot_at(0)
     return np.array(_angle_vel(
@@ -258,7 +273,14 @@ def angle_vel(sol: spec.TableSol) -> np.ndarray:
     ))
 
 
-def angle_acc(sol: spec.TableSol) -> np.ndarray:
+def table_angle_vel(sol: spec.TableSol) -> np.ndarray:
+    """Table angular velocity."""
+    pose = sol.pose_at(0)
+    pose_dot = sol.pose_dot_at(0)
+    return np.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
+
+
+def human_angle_acc(sol: spec.TableSol) -> np.ndarray:
     """Angular acceleration."""
     pose = sol.pose_at(0)
     pose_dot = sol.pose_dot_at(0)
@@ -268,7 +290,30 @@ def angle_acc(sol: spec.TableSol) -> np.ndarray:
     ))
 
 
+def table_angle_acc(sol: spec.TableSol) -> np.ndarray:
+    """Table angular acceleration."""
+    pose = sol.pose_at(0)
+    pose_dot = sol.pose_dot_at(0)
+    pose_dot2 = sol.pose_dot2_at(0)
+    return np.array(
+        _angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy(), world=True)
+    )
+
+
+def table_pos(sol: spec.TableSol) -> np.ndarray:
+    """Table position."""
+    pose = sol.pose_at(0)
+    return np.array(pose.xyz())
+
+
+def table_vel(sol: spec.TableSol) -> np.ndarray:
+    """Table velocity."""
+    pose_dot = sol.pose_dot_at(0)
+    return np.array(pose_dot.xyz())
+
+
 def table_acc(sol: spec.TableSol) -> np.ndarray:
+    """Table acceleration."""
     pose_dot2 = sol.pose_dot2_at(0)
     return pose_dot2.xyz()
 

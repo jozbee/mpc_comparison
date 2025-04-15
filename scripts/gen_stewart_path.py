@@ -63,7 +63,7 @@ if __name__ == "__main__":
         "xyz-acceleration": np.tile(a_ref, reps=(len(solutions), 1)),
         "angular-velocity": np.tile(omega_ref, reps=(len(solutions), 1)),
     }
-    fig_head = viz.plot_head_trajectory(solutions, references)
+    fig_head = viz.plot_human_trajectory(solutions, references)
 
     # visualize the platform motion using the 3D visualizer
     anim, fig_viz = viz.animate_trajectory(solutions, sim_rate=1.0, fps=30)

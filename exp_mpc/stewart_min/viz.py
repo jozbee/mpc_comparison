@@ -1,5 +1,8 @@
+import typing as tp
+
 import numpy as np
 import matplotlib.figure as mpl_fig
+import matplotlib.axes as mpl_ax
 import matplotlib.animation as mpl_anim
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -259,31 +262,59 @@ def _get_limits(data: np.ndarray) -> tuple[float, float]:
     return limits
 
 
-def plot_head_trajectory(
+def simple_plot(
+    axis: mpl_ax.Axes,
+    time: np.ndarray,
+    data: np.ndarray,
+    title: str,
+    data_label: str,
+    min_limit: float,
+    max_limit: float,
+    reference: tp.Optional[np.ndarray] = None,
+):
+    axis.set_title(title)
+    axis.set_ylabel(data_label)
+    axis.set_xlabel("Time (s)")
+    axis.plot(time, data, color="blue")
+    if reference is not None:
+        axis.plot(time, reference, color="orange", linestyle="--")
+        data = np.concatenate([data, reference])
+    axis.axhline(y=min_limit, linestyle="-", alpha=0.5, color="red")
+    axis.axhline(y=max_limit, linestyle="-", alpha=0.5, color="red")
+    axis.set_ylim(*_get_limits(data))
+    axis.set_xlim(time[0], time[-1])
+    axis.grid()
+
+
+def _reference_helper(
+    reference: tp.Optional[np.ndarray], index: int
+) -> np.ndarray | None:
+    """Helper function to get the reference data for a specific axis."""
+    if reference is None:
+        return None
+    if reference.ndim == 1:
+        return reference
+    if reference.ndim == 2 and reference.shape[1] == 3:
+        return reference[:, index]
+    raise ValueError(
+        "Invalid reference shape. Must be 1D or 2D with shape (N, 3)."
+    )
+
+
+def _plot_cartesian_trajectory(
     trajectory: list[spec.TableSol],
+    xyz_vel_fun: tp.Callable,
+    angle_vel_fun: tp.Callable,
+    xyz_acc_fun: tp.Callable,
+    angle_acc_fun: tp.Callable,
     references: dict[str, np.ndarray] = {},
+    fig_title: str = "Cartesian Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
-    """Plot the head trajectory from the solutions of a simulation run.
-
-    Parameters
-    ----------
-    trajectory :
-        List of initial conditions to plot.
-    references :
-        References that the head should follow.
-        Supports keys 'xyz-acceleration' and 'angular-velocity'.
-        The values should be arrays with shape (len(trajectory), 3).
-    fig_kwds :
-        Other figure keywords.
-
-    Returns
-    -------
-    Figure with xyz-velocity, angular-velocity, xyz-acceleration, and
-    angular acceleration.
-    """
+    """Common cartesian trajectory routine."""
     # setup
     fig = plt.figure(figsize=(16, 10), **fig_kwds)
+    fig.suptitle(fig_title, fontsize=16)
     gs = gridspec.GridSpec(
         nrows=4,
         ncols=3,
@@ -300,330 +331,259 @@ def plot_head_trajectory(
     ################
 
     # compute
-    xyz_vels = np.array([utils.human_vel(sol) for sol in trajectory])
+    xyz_vels = np.array([xyz_vel_fun(sol) for sol in trajectory])
 
     # setup
     ax_x_vel = fig.add_subplot(gs[0, 0])
     ax_y_vel = fig.add_subplot(gs[0, 1])
     ax_z_vel = fig.add_subplot(gs[0, 2])
 
-    ax_x_vel.set_title("X Velocity")
-    ax_y_vel.set_title("Y Velocity")
-    ax_z_vel.set_title("Z Velocity")
-
-    ax_x_vel.set_ylabel("Velocity (m/s)")
-    ax_y_vel.set_ylabel("Velocity (m/s)")
-    ax_z_vel.set_ylabel("Velocity (m/s)")
-
-    ax_x_vel.set_xlabel("Time (s)")
-    ax_y_vel.set_xlabel("Time (s)")
-    ax_z_vel.set_xlabel("Time (s)")
-
     # plot
-    ax_x_vel.plot(times, xyz_vels[:, 0])
-    ax_y_vel.plot(times, xyz_vels[:, 1])
-    ax_z_vel.plot(times, xyz_vels[:, 2])
-
-    # limits
-    ax_x_vel.set_ylim(*_get_limits(xyz_vels[:, 0]))
-    ax_y_vel.set_ylim(*_get_limits(xyz_vels[:, 1]))
-    ax_z_vel.set_ylim(*_get_limits(xyz_vels[:, 2]))
-
-    ax_x_vel.set_xlim(times[0], times[-1])
-    ax_y_vel.set_xlim(times[0], times[-1])
-    ax_z_vel.set_xlim(times[0], times[-1])
-
-    # bounds
-    ax_x_vel.axhline(
-        y=-spec.max_cart_vel,
-        linestyle="-",
-        alpha=0.5,
+    simple_plot(
+        axis=ax_x_vel,
+        time=times,
+        data=xyz_vels[:, 0],
+        title="X Velocity",
+        data_label="Velocity (m/s)",
+        min_limit=-spec.max_cart_vel,
+        max_limit=spec.max_cart_vel,
     )
-    ax_x_vel.axhline(
-        y=spec.max_cart_vel,
-        linestyle="-",
-        alpha=0.5,
+    simple_plot(
+        axis=ax_y_vel,
+        time=times,
+        data=xyz_vels[:, 1],
+        title="Y Velocity",
+        data_label="Velocity (m/s)",
+        min_limit=-spec.max_cart_vel,
+        max_limit=spec.max_cart_vel,
     )
-    ax_y_vel.axhline(
-        y=-spec.max_cart_vel,
-        linestyle="-",
-        alpha=0.5,
+    simple_plot(
+        axis=ax_z_vel,
+        time=times,
+        data=xyz_vels[:, 2],
+        title="Z Velocity",
+        data_label="Velocity (m/s)",
+        min_limit=-spec.max_cart_vel,
+        max_limit=spec.max_cart_vel,
     )
-    ax_y_vel.axhline(
-        y=spec.max_cart_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_z_vel.axhline(
-        y=-spec.max_cart_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_z_vel.axhline(
-        y=spec.max_cart_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-
-    # refine
-    ax_x_vel.grid()
-    ax_y_vel.grid()
-    ax_z_vel.grid()
 
     ####################
     # angular velocity #
     ####################
 
     # compute
-    angle_vels = np.array([utils.angle_vel(sol) for sol in trajectory])
+    angle_vels = np.array([angle_vel_fun(sol) for sol in trajectory])
 
     # setup
     ax_omega_x_vel = fig.add_subplot(gs[1, 0])
     ax_omega_y_vel = fig.add_subplot(gs[1, 1])
     ax_omega_z_vel = fig.add_subplot(gs[1, 2])
 
-    ax_omega_x_vel.set_title("X Angular Velocity")
-    ax_omega_y_vel.set_title("Y Angular Velocity")
-    ax_omega_z_vel.set_title("Z Angular Velocity")
-
-    ax_omega_x_vel.set_ylabel("Angular Velocity (rad/s)")
-    ax_omega_y_vel.set_ylabel("Angular Velocity (rad/s)")
-    ax_omega_z_vel.set_ylabel("Angular Velocity (rad/s)")
-
-    ax_omega_x_vel.set_xlabel("Time (s)")
-    ax_omega_y_vel.set_xlabel("Time (s)")
-    ax_omega_z_vel.set_xlabel("Time (s)")
-
-    # plot
-    ax_omega_x_vel.plot(times, angle_vels[:, 0])
-    ax_omega_y_vel.plot(times, angle_vels[:, 1])
-    ax_omega_z_vel.plot(times, angle_vels[:, 2])
-
     # references?
-    angle_vel_ref = np.empty(shape=(0, 3))
+    angle_vel_ref = None
     if "angular-velocity" in references:
         angle_vel_ref = references["angular-velocity"]
-        ax_omega_x_vel.plot(times, angle_vel_ref[:, 0], linestyle="--")
-        ax_omega_y_vel.plot(times, angle_vel_ref[:, 1], linestyle="--")
-        ax_omega_z_vel.plot(times, angle_vel_ref[:, 2], linestyle="--")
 
-    # limits
-    ax_omega_x_vel.set_ylim(
-        *_get_limits(np.concatenate([angle_vels[:, 0], angle_vel_ref[:, 0]]))
+    # plot
+    simple_plot(
+        axis=ax_omega_x_vel,
+        time=times,
+        data=angle_vels[:, 0],
+        title="X Angular Velocity",
+        data_label="Angular Velocity (rad/s)",
+        min_limit=-spec.max_angle_vel,
+        max_limit=spec.max_angle_vel,
+        reference=_reference_helper(angle_vel_ref, 0),
     )
-    ax_omega_y_vel.set_ylim(
-        *_get_limits(np.concatenate([angle_vels[:, 1], angle_vel_ref[:, 1]]))
+    simple_plot(
+        axis=ax_omega_y_vel,
+        time=times,
+        data=angle_vels[:, 1],
+        title="Y Angular Velocity",
+        data_label="Angular Velocity (rad/s)",
+        min_limit=-spec.max_angle_vel,
+        max_limit=spec.max_angle_vel,
+        reference=_reference_helper(angle_vel_ref, 1),
     )
-    ax_omega_z_vel.set_ylim(
-        *_get_limits(np.concatenate([angle_vels[:, 2], angle_vel_ref[:, 2]]))
+    simple_plot(
+        axis=ax_omega_z_vel,
+        time=times,
+        data=angle_vels[:, 2],
+        title="Z Angular Velocity",
+        data_label="Angular Velocity (rad/s)",
+        min_limit=-spec.max_angle_vel,
+        max_limit=spec.max_angle_vel,
+        reference=_reference_helper(angle_vel_ref, 2),
     )
-
-    ax_omega_x_vel.set_xlim(times[0], times[-1])
-    ax_omega_y_vel.set_xlim(times[0], times[-1])
-    ax_omega_z_vel.set_xlim(times[0], times[-1])
-
-    # bounds
-    ax_omega_x_vel.axhline(
-        y=-spec.max_angle_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_x_vel.axhline(
-        y=spec.max_angle_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_y_vel.axhline(
-        y=-spec.max_angle_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_y_vel.axhline(
-        y=spec.max_angle_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_z_vel.axhline(
-        y=-spec.max_angle_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_z_vel.axhline(
-        y=spec.max_angle_vel,
-        linestyle="-",
-        alpha=0.5,
-    )
-
-    # refine
-    ax_omega_x_vel.grid()
-    ax_omega_y_vel.grid()
-    ax_omega_z_vel.grid()
 
     ####################
     # xyz acceleration #
     ####################
 
     # compute
-    xyz_accs = np.array([utils.human_acc(sol) for sol in trajectory])
+    xyz_accs = np.array([xyz_acc_fun(sol) for sol in trajectory])
 
     # setup
     ax_x_acc = fig.add_subplot(gs[2, 0])
     ax_y_acc = fig.add_subplot(gs[2, 1])
     ax_z_acc = fig.add_subplot(gs[2, 2])
 
-    ax_x_acc.set_title("X Acceleration")
-    ax_y_acc.set_title("Y Acceleration")
-    ax_z_acc.set_title("Z Acceleration")
-
-    ax_x_acc.set_ylabel("Acceleration (m/s^2)")
-    ax_y_acc.set_ylabel("Acceleration (m/s^2)")
-    ax_z_acc.set_ylabel("Acceleration (m/s^2)")
-
-    ax_x_acc.set_xlabel("Time (s)")
-    ax_y_acc.set_xlabel("Time (s)")
-    ax_z_acc.set_xlabel("Time (s)")
-
-    # plot
-    ax_x_acc.plot(times, xyz_accs[:, 0])
-    ax_y_acc.plot(times, xyz_accs[:, 1])
-    ax_z_acc.plot(times, xyz_accs[:, 2])
-
     # references?
-    xyz_acc_ref = np.empty(shape=(0, 3))
+    xyz_acc_ref = None
     if "xyz-acceleration" in references:
         xyz_acc_ref = references["xyz-acceleration"]
-        ax_x_acc.plot(times, xyz_acc_ref[:, 0], linestyle="--")
-        ax_y_acc.plot(times, xyz_acc_ref[:, 1], linestyle="--")
-        ax_z_acc.plot(times, xyz_acc_ref[:, 2], linestyle="--")
 
-    # limits
-    ax_x_acc.set_ylim(
-        *_get_limits(np.concatenate([xyz_accs[:, 0], xyz_acc_ref[:, 0]]))
+    # plot
+    simple_plot(
+        axis=ax_x_acc,
+        time=times,
+        data=xyz_accs[:, 0],
+        title="X Acceleration",
+        data_label="Acceleration (m/s^2)",
+        min_limit=-spec.max_cart_acc,
+        max_limit=spec.max_cart_acc,
+        reference=_reference_helper(xyz_acc_ref, 0),
     )
-    ax_y_acc.set_ylim(
-        *_get_limits(np.concatenate([xyz_accs[:, 1], xyz_acc_ref[:, 1]]))
+    simple_plot(
+        axis=ax_y_acc,
+        time=times,
+        data=xyz_accs[:, 1],
+        title="Y Acceleration",
+        data_label="Acceleration (m/s^2)",
+        min_limit=-spec.max_cart_acc,
+        max_limit=spec.max_cart_acc,
+        reference=_reference_helper(xyz_acc_ref, 1),
     )
-    ax_z_acc.set_ylim(
-        *_get_limits(np.concatenate([xyz_accs[:, 2], xyz_acc_ref[:, 2]]))
+    simple_plot(
+        axis=ax_z_acc,
+        time=times,
+        data=xyz_accs[:, 2],
+        title="Z Acceleration",
+        data_label="Acceleration (m/s^2)",
+        min_limit=-spec.max_cart_acc,
+        max_limit=spec.max_cart_acc,
+        reference=_reference_helper(xyz_acc_ref, 2),
     )
-
-    ax_x_acc.set_xlim(times[0], times[-1])
-    ax_y_acc.set_xlim(times[0], times[-1])
-    ax_z_acc.set_xlim(times[0], times[-1])
-
-    # bounds
-    ax_x_acc.axhline(
-        y=-spec.max_cart_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_x_acc.axhline(
-        y=spec.max_cart_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_y_acc.axhline(
-        y=-spec.max_cart_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_y_acc.axhline(
-        y=spec.max_cart_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_z_acc.axhline(
-        y=-spec.max_cart_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_z_acc.axhline(
-        y=spec.max_cart_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-
-    # refine
-    ax_x_acc.grid()
-    ax_y_acc.grid()
-    ax_z_acc.grid()
 
     ########################
     # angular acceleration #
     ########################
 
     # compute
-    angle_accs = np.array([utils.angle_acc(sol) for sol in trajectory])
+    angle_accs = np.array([angle_acc_fun(sol) for sol in trajectory])
 
     # setup
     ax_omega_x_acc = fig.add_subplot(gs[3, 0])
     ax_omega_y_acc = fig.add_subplot(gs[3, 1])
     ax_omega_z_acc = fig.add_subplot(gs[3, 2])
 
-    ax_omega_x_acc.set_title("X Angular Acceleration")
-    ax_omega_y_acc.set_title("Y Angular Acceleration")
-    ax_omega_z_acc.set_title("Z Angular Acceleration")
-
-    ax_omega_x_acc.set_ylabel("Angular Acceleration (rad/s^2)")
-    ax_omega_y_acc.set_ylabel("Angular Acceleration (rad/s^2)")
-    ax_omega_z_acc.set_ylabel("Angular Acceleration (rad/s^2)")
-
-    ax_omega_x_acc.set_xlabel("Time (s)")
-    ax_omega_y_acc.set_xlabel("Time (s)")
-    ax_omega_z_acc.set_xlabel("Time (s)")
-
     # plot
-    ax_omega_x_acc.plot(times, angle_accs[:, 0])
-    ax_omega_y_acc.plot(times, angle_accs[:, 1])
-    ax_omega_z_acc.plot(times, angle_accs[:, 2])
-
-    # limits
-    ax_omega_x_acc.set_ylim(*_get_limits(angle_accs[:, 0]))
-    ax_omega_y_acc.set_ylim(*_get_limits(angle_accs[:, 1]))
-    ax_omega_z_acc.set_ylim(*_get_limits(angle_accs[:, 2]))
-
-    ax_omega_x_acc.set_xlim(times[0], times[-1])
-    ax_omega_y_acc.set_xlim(times[0], times[-1])
-    ax_omega_z_acc.set_xlim(times[0], times[-1])
-
-    # bounds
-    ax_omega_x_acc.axhline(
-        y=-spec.max_angle_acc,
-        linestyle="-",
-        alpha=0.5,
+    simple_plot(
+        axis=ax_omega_x_acc,
+        time=times,
+        data=angle_accs[:, 0],
+        title="X Angular Acceleration",
+        data_label="Angular Acceleration (rad/s^2)",
+        min_limit=-spec.max_angle_acc,
+        max_limit=spec.max_angle_acc,
     )
-    ax_omega_x_acc.axhline(
-        y=spec.max_angle_acc,
-        linestyle="-",
-        alpha=0.5,
+    simple_plot(
+        axis=ax_omega_y_acc,
+        time=times,
+        data=angle_accs[:, 1],
+        title="Y Angular Acceleration",
+        data_label="Angular Acceleration (rad/s^2)",
+        min_limit=-spec.max_angle_acc,
+        max_limit=spec.max_angle_acc,
     )
-    ax_omega_y_acc.axhline(
-        y=-spec.max_angle_acc,
-        linestyle="-",
-        alpha=0.5,
+    simple_plot(
+        axis=ax_omega_z_acc,
+        time=times,
+        data=angle_accs[:, 2],
+        title="Z Angular Acceleration",
+        data_label="Angular Acceleration (rad/s^2)",
+        min_limit=-spec.max_angle_acc,
+        max_limit=spec.max_angle_acc,
     )
-    ax_omega_y_acc.axhline(
-        y=spec.max_angle_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_z_acc.axhline(
-        y=-spec.max_angle_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-    ax_omega_z_acc.axhline(
-        y=spec.max_angle_acc,
-        linestyle="-",
-        alpha=0.5,
-    )
-
-    # refine
-    ax_omega_x_acc.grid()
-    ax_omega_y_acc.grid()
-    ax_omega_z_acc.grid()
 
     return fig
+
+
+def plot_human_trajectory(
+    trajectory: list[spec.TableSol],
+    references: dict[str, np.ndarray] = {},
+    fig_title: str = "Head Trajectory",
+    fig_kwds: dict = {},
+) -> mpl_fig.Figure:
+    """Plot the head trajectory from the solutions of a simulation run.
+
+    Parameters
+    ----------
+    trajectory :
+        List of initial conditions to plot.
+    references :
+        References that the head should follow.
+        Supports keys 'xyz-acceleration' and 'angular-velocity'.
+        The values should be arrays with shape (len(trajectory), 3).
+    fig_title :
+        Suptitle of the figure.
+    fig_kwds :
+        Other figure keywords.
+
+    Returns
+    -------
+    Figure with xyz-velocity, angular-velocity, xyz-acceleration, and
+    angular acceleration.
+    """
+    return _plot_cartesian_trajectory(
+        trajectory=trajectory,
+        xyz_vel_fun=utils.human_vel,
+        angle_vel_fun=utils.human_angle_vel,
+        xyz_acc_fun=utils.human_acc,
+        angle_acc_fun=utils.human_angle_acc,
+        references=references,
+        fig_title=fig_title,
+        fig_kwds=fig_kwds,
+    )
+
+
+def plot_cartesian_table_trajectory(
+    trajectory: list[spec.TableSol],
+    references: dict[str, np.ndarray] = {},
+    fig_title: str = "Robot Trajectory",
+    fig_kwds: dict = {},
+) -> mpl_fig.Figure:
+    """Plot the table trajectory from the solutions of a simulation run.
+
+    Parameters
+    ----------
+    trajectory :
+        List of initial conditions to plot.
+    references :
+        References that the table should follow.
+        Supports keys 'xyz-acceleration' and 'angular-velocity'.
+        The values should be arrays with shape (len(trajectory), 3).
+    fig_title :
+        Suptitle of the figure.
+    fig_kwds :
+        Other figure keywords.
+
+    Returns
+    -------
+    Figure with xyz-velocity, angular-velocity, xyz-acceleration, and
+    angular acceleration.
+    """
+    # TODO(jozbee): update calling functions
+    return _plot_cartesian_trajectory(
+        trajectory=trajectory,
+        xyz_vel_fun=utils.table_vel,
+        angle_vel_fun=utils.table_angle_vel,
+        xyz_acc_fun=utils.table_acc,
+        angle_acc_fun=utils.table_angle_acc,
+        references=references,
+        fig_title=fig_title,
+        fig_kwds=fig_kwds,
+    )
 
 
 if __name__ == "__main__":
