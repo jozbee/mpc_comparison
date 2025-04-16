@@ -268,8 +268,8 @@ def simple_plot(
     data: np.ndarray,
     title: str,
     data_label: str,
-    min_limit: float,
-    max_limit: float,
+    min_limit: tp.Optional[float] = None,
+    max_limit: tp.Optional[float] = None,
     reference: tp.Optional[np.ndarray] = None,
 ):
     axis.set_title(title)
@@ -279,8 +279,10 @@ def simple_plot(
     if reference is not None:
         axis.plot(time, reference, color="orange", linestyle="--")
         data = np.concatenate([data, reference])
-    axis.axhline(y=min_limit, linestyle="-", alpha=0.5, color="red")
-    axis.axhline(y=max_limit, linestyle="-", alpha=0.5, color="red")
+    if min_limit is not None:
+        axis.axhline(y=min_limit, linestyle="-", alpha=0.5, color="red")
+    if max_limit is not None:
+        axis.axhline(y=max_limit, linestyle="-", alpha=0.5, color="red")
     axis.set_ylim(*_get_limits(data))
     axis.set_xlim(time[0], time[-1])
     axis.grid()
@@ -302,27 +304,105 @@ def _reference_helper(
 
 
 def _plot_cartesian_trajectory(
+    axes: np.ndarray,
+    trajectory: list[spec.TableSol],
+    xyz_fun: tp.Callable,
+    angle_fun: tp.Callable,
+):
+    """Common cartesian trajectory routines, for positions."""
+    assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
+    assert len(trajectory) > 0
+
+    times = np.arange(0, len(trajectory), dtype=float) * spec.dt
+
+    ################
+    # xyz position #
+    ################
+
+    # compute
+    xyzs = np.array([xyz_fun(sol) for sol in trajectory])
+
+    # setup
+    ax_x = axes[0, 0]
+    ax_y = axes[0, 1]
+    ax_z = axes[0, 2]
+
+    # plot
+    simple_plot(
+        axis=ax_x,
+        time=times,
+        data=xyzs[:, 0],
+        title="X Position",
+        data_label="Position (m)",
+    )
+    simple_plot(
+        axis=ax_y,
+        time=times,
+        data=xyzs[:, 1],
+        title="Y Position",
+        data_label="Position (m)",
+    )
+    simple_plot(
+        axis=ax_z,
+        time=times,
+        data=xyzs[:, 2],
+        title="Z Position",
+        data_label="Position (m)",
+    )
+
+    ####################
+    # angular position #
+    ####################
+
+    # compute
+    angles = np.array([angle_fun(sol) for sol in trajectory])
+
+    # setup
+    ax_roll = axes[1, 0]
+    ax_pitch = axes[1, 1]
+    ax_yaw = axes[1, 2]
+
+    # plot
+    simple_plot(
+        axis=ax_roll,
+        time=times,
+        data=angles[:, 0],
+        title="Roll Angle",
+        data_label="Angle (rad)",
+        min_limit=-spec.max_roll,
+        max_limit=spec.max_roll,
+    )
+    simple_plot(
+        axis=ax_pitch,
+        time=times,
+        data=angles[:, 1],
+        title="Pitch Angle",
+        data_label="Angle (rad)",
+        min_limit=-spec.max_pitch,
+        max_limit=spec.max_pitch,
+    )
+    simple_plot(
+        axis=ax_yaw,
+        time=times,
+        data=angles[:, 2],
+        title="Yaw Angle",
+        data_label="Angle (rad)",
+        min_limit=-spec.max_yaw,
+        max_limit=spec.max_yaw,
+    )
+
+
+def _plot_cartesian_trajectory_p(
+    axes: np.ndarray,
     trajectory: list[spec.TableSol],
     xyz_vel_fun: tp.Callable,
     angle_vel_fun: tp.Callable,
     xyz_acc_fun: tp.Callable,
     angle_acc_fun: tp.Callable,
     references: dict[str, np.ndarray] = {},
-    fig_title: str = "Cartesian Trajectory",
-    fig_kwds: dict = {},
-) -> mpl_fig.Figure:
-    """Common cartesian trajectory routine."""
-    # setup
-    fig = plt.figure(figsize=(16, 10), **fig_kwds)
-    fig.suptitle(fig_title, fontsize=16)
-    gs = gridspec.GridSpec(
-        nrows=4,
-        ncols=3,
-        height_ratios=[1.0, 1.0, 1.0, 1.0],
-        width_ratios=[1.0, 1.0, 1.0],
-        wspace=0.35,
-        hspace=0.7,
-    )
+):
+    """Common cartesian trajectory routines, for derivatives."""
+    assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
 
     times = np.arange(0, len(trajectory), dtype=float) * spec.dt
 
@@ -334,9 +414,9 @@ def _plot_cartesian_trajectory(
     xyz_vels = np.array([xyz_vel_fun(sol) for sol in trajectory])
 
     # setup
-    ax_x_vel = fig.add_subplot(gs[0, 0])
-    ax_y_vel = fig.add_subplot(gs[0, 1])
-    ax_z_vel = fig.add_subplot(gs[0, 2])
+    ax_x_vel = axes[0, 0]
+    ax_y_vel = axes[0, 1]
+    ax_z_vel = axes[0, 2]
 
     # plot
     simple_plot(
@@ -375,9 +455,9 @@ def _plot_cartesian_trajectory(
     angle_vels = np.array([angle_vel_fun(sol) for sol in trajectory])
 
     # setup
-    ax_omega_x_vel = fig.add_subplot(gs[1, 0])
-    ax_omega_y_vel = fig.add_subplot(gs[1, 1])
-    ax_omega_z_vel = fig.add_subplot(gs[1, 2])
+    ax_omega_x_vel = axes[1, 0]
+    ax_omega_y_vel = axes[1, 1]
+    ax_omega_z_vel = axes[1, 2]
 
     # references?
     angle_vel_ref = None
@@ -424,9 +504,9 @@ def _plot_cartesian_trajectory(
     xyz_accs = np.array([xyz_acc_fun(sol) for sol in trajectory])
 
     # setup
-    ax_x_acc = fig.add_subplot(gs[2, 0])
-    ax_y_acc = fig.add_subplot(gs[2, 1])
-    ax_z_acc = fig.add_subplot(gs[2, 2])
+    ax_x_acc = axes[2, 0]
+    ax_y_acc = axes[2, 1]
+    ax_z_acc = axes[2, 2]
 
     # references?
     xyz_acc_ref = None
@@ -473,9 +553,9 @@ def _plot_cartesian_trajectory(
     angle_accs = np.array([angle_acc_fun(sol) for sol in trajectory])
 
     # setup
-    ax_omega_x_acc = fig.add_subplot(gs[3, 0])
-    ax_omega_y_acc = fig.add_subplot(gs[3, 1])
-    ax_omega_z_acc = fig.add_subplot(gs[3, 2])
+    ax_omega_x_acc = axes[3, 0]
+    ax_omega_y_acc = axes[3, 1]
+    ax_omega_z_acc = axes[3, 2]
 
     # plot
     simple_plot(
@@ -506,8 +586,6 @@ def _plot_cartesian_trajectory(
         max_limit=spec.max_angle_acc,
     )
 
-    return fig
-
 
 def plot_human_trajectory(
     trajectory: list[spec.TableSol],
@@ -535,22 +613,32 @@ def plot_human_trajectory(
     Figure with xyz-velocity, angular-velocity, xyz-acceleration, and
     angular acceleration.
     """
-    return _plot_cartesian_trajectory(
+    # setup
+    gridspec_kw = {
+        # "height_ratios": [1.0, 1.0, 1.0, 1.0],
+        # "width_ratios": [1.0, 1.0, 1.0],
+        "wspace": 0.35,
+        "hspace": 0.7,
+    }
+    fig, axes = plt.subplots(
+        nrows=4, ncols=3, gridspec_kw=gridspec_kw, figsize=(16, 10), **fig_kwds
+    )
+    fig.suptitle(fig_title, fontsize=16)
+    _plot_cartesian_trajectory_p(
+        axes=axes,
         trajectory=trajectory,
         xyz_vel_fun=utils.human_vel,
         angle_vel_fun=utils.human_angle_vel,
         xyz_acc_fun=utils.human_acc,
         angle_acc_fun=utils.human_angle_acc,
         references=references,
-        fig_title=fig_title,
-        fig_kwds=fig_kwds,
     )
+    return fig
 
 
 def plot_cartesian_table_trajectory(
     trajectory: list[spec.TableSol],
-    references: dict[str, np.ndarray] = {},
-    fig_title: str = "Robot Trajectory",
+    fig_title: str = "Table Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
     """Plot the table trajectory from the solutions of a simulation run.
@@ -573,17 +661,31 @@ def plot_cartesian_table_trajectory(
     Figure with xyz-velocity, angular-velocity, xyz-acceleration, and
     angular acceleration.
     """
-    # TODO(jozbee): update calling functions
-    return _plot_cartesian_trajectory(
+    gs_kwds = {
+        # "height_ratios": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        # "width_ratios": [1.0, 1.0, 1.0],
+        "wspace": 0.35,
+        "hspace": 1.0,
+    }
+    fig, axes = plt.subplots(
+        nrows=6, ncols=3, gridspec_kw=gs_kwds, figsize=(16, 10), **fig_kwds
+    )
+    fig.suptitle(fig_title, fontsize=16)
+    _plot_cartesian_trajectory(
+        axes=axes[:2, :],
+        trajectory=trajectory,
+        xyz_fun=utils.table_pos,
+        angle_fun=utils.table_angle,
+    )
+    _plot_cartesian_trajectory_p(
+        axes=axes[2:, :],
         trajectory=trajectory,
         xyz_vel_fun=utils.table_vel,
         angle_vel_fun=utils.table_angle_vel,
         xyz_acc_fun=utils.table_acc,
         angle_acc_fun=utils.table_angle_acc,
-        references=references,
-        fig_title=fig_title,
-        fig_kwds=fig_kwds,
     )
+    return fig
 
 
 if __name__ == "__main__":
