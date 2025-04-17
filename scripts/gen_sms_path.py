@@ -114,7 +114,7 @@ def generate_stewart_path_from_sms(
 
     # Set weights to prioritize tracking reference dynamics
     # mpc.set_weights(w_a=1e2, w_omega=1e2, w_leg=1e0, w_control=1e-1)
-    mpc.set_weights(w_a=1e1, w_omega=5e2, w_leg=1e2, w_control=1e-1)
+    mpc.set_weights(w_acc_x=1e1, w_omega=5e2, w_leg=1e2, w_control=1e-1)
 
     # Limit the duration if specified
     if max_duration is not None:

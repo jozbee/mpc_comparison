@@ -407,4 +407,5 @@ def human_acc(sol: spec.TableSol) -> np.ndarray:
     acc = sol.pose_dot2_at(0).xyz()
     R = np.array(get_R(sol))
     R_dot2 = np.array(get_R_dot2(sol))
-    return R @ (R_dot2 @ spec.human_displacement + acc + spec.gravity)
+    # return R.T @ (R_dot2 @ spec.human_displacement + acc + spec.gravity)
+    return R.T @ (acc + spec.gravity)

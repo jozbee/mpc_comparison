@@ -25,7 +25,18 @@ def generate_constant_acceleration_path(
     """
     # mpc init
     mpc = spec.TableMPC.create_default()
-    mpc.set_weights(w_a=1e1, w_omega=1e1, w_leg=1e2, w_control=1e-1)
+    # mpc.set_weights(
+    #     w_a=1e-2, w_omega=1e-5, w_control=1e-1, w_leg=1e2, w_yaw=1e0
+    # )
+    mpc.set_weights(
+        w_acc_x=1e2,
+        w_acc_y=1e2,
+        w_acc_z=1e1,
+        w_omega=1e0,
+        w_control=1e0,
+        w_leg=1e2,
+        w_yaw=1e0,
+    )
 
     # set reference acceleration in x direction
     a_ref = np.array([acceleration, 0.0, 0.0]) + spec.gravity
@@ -48,7 +59,7 @@ def generate_constant_acceleration_path(
 if __name__ == "__main__":
     # parameters
     acceleration = 1.0  # m/s^2
-    duration = 10.0  # seconds
+    duration = 1.0  # seconds
     a_ref = np.array([acceleration, 0.0, 0.0]) + spec.gravity
 
     # generate waypoints, accelerations, and angular velocities
@@ -63,8 +74,8 @@ if __name__ == "__main__":
         "xyz-acceleration": np.tile(a_ref, reps=(len(solutions), 1)),
         "angular-velocity": np.tile(omega_ref, reps=(len(solutions), 1)),
     }
-    fig_head = viz.plot_human_trajectory(solutions, references)
     fig_table = viz.plot_cartesian_table_trajectory(solutions)
+    fig_head = viz.plot_human_trajectory(solutions, references)
 
     # visualize the platform motion using the 3D visualizer
     anim, fig_viz = viz.animate_trajectory(solutions, sim_rate=1.0, fps=30)

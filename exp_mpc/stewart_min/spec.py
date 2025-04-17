@@ -8,20 +8,19 @@ import casadi as ca
 import acados_template as at  # type: ignore
 
 # used parameters
-n = 40
-# n = 100
+n = 200
 leg_min = 1160.410000 * 1e-3
 leg_max = 1770.010000 * 1e-3
 leg_mid = (leg_min + leg_max) / 2.0  # 1.46521
-max_yaw = 35.0
+max_yaw = 35.0 * np.pi / 180.0
 dt = 0.005
 
 # unused parameters
-top_max_angle = 42.0
-bot_max_angle = 42.0
-max_roll = 35.0
-max_pitch = 35.0
-# max_yaw = 35.0
+top_max_angle = 42.0 * np.pi / 180.0
+bot_max_angle = 42.0 * np.pi / 180.0
+max_roll = 35.0 * np.pi / 180.0
+max_pitch = 35.0 * np.pi / 180.0
+# max_yaw = 35.0 * np.pi / 180.0
 # min_leg_pos = 1160.410000 * 1e-3
 # max_leg_pos = 1770.010000 * 1e-3
 max_leg_vel = 20.0 / 39.37
@@ -202,7 +201,7 @@ def get_R(phi: ca.SX, theta: ca.SX, psi: ca.SX) -> ca.SX:
     return R
 
 
-def get_R_ddot(
+def get_R_dot2(
     phi: ca.SX,
     theta: ca.SX,
     psi: ca.SX,
@@ -362,7 +361,7 @@ def get_acceleration(model: at.AcadosModel) -> ca.SX:
     acc = ca.vertcat(x_u, y_u, z_u)
 
     R = get_R(phi, theta, psi)
-    R_ddot = get_R_ddot(
+    R_ddot = get_R_dot2(
         phi,
         theta,
         psi,
@@ -374,7 +373,8 @@ def get_acceleration(model: at.AcadosModel) -> ca.SX:
         psi_ddot,
     )
 
-    return R.T @ (R_ddot @ human_displacement + acc + gravity)
+    # return R.T @ (R_ddot @ human_displacement + acc + gravity)
+    return R.T @ (acc + gravity)
 
 
 def get_angular_velocity(model: at.AcadosModel) -> ca.SX:
@@ -394,7 +394,7 @@ def get_angular_velocity(model: at.AcadosModel) -> ca.SX:
     return PHI @ euler_dot
 
 
-def get_squared_lengths(model: at.AcadosModel) -> ca.DM:
+def get_length_cost(model: at.AcadosModel) -> ca.SX:
     state = model.x
 
     x = state[0]
@@ -412,12 +412,28 @@ def get_squared_lengths(model: at.AcadosModel) -> ca.DM:
         diff = (R @ top + t) - bot
         diffs.append(diff)
 
-    squared_lengths = []
+    leg_costs = 0
     for diff in diffs:
         squared_length = diff.T @ diff  # compute squared Euclidean norm
-        squared_lengths.append(squared_length)
 
-    return ca.vertcat(*squared_lengths)
+        leg_cost = squared_length - leg_mid**2
+
+        # leg_cost = 1.0 / (squared_length - leg_min**2)
+        # leg_cost += 1.0 / (leg_max**2 - squared_length)
+        # # scale to approximately unity for most of the workspace
+        # leg_cost /= 10.0
+
+        leg_costs += leg_cost
+
+    assert type(leg_costs) is ca.SX
+    return leg_costs
+
+
+def get_yaw_cost(model: at.AcadosModel) -> ca.SX:
+    state = model.x
+    psi = state[5]  # yaw
+    yaw_cost = 1.0 / (psi**2 - max_yaw**2) ** 2
+    return yaw_cost / 50.0
 
 
 def gen_stewart_ocp(model):
@@ -428,38 +444,29 @@ def gen_stewart_ocp(model):
     ocp.cost.cost_type_e = "NONLINEAR_LS"
 
     # reference trajectory
-    ocp.cost.yref = np.zeros(18)
-    ocp.cost.yref_e = np.zeros(6)
+    ocp.cost.yref = np.zeros(14)
+    ocp.cost.yref_e = np.zeros(2)
 
     # cost weights (need to be set at runtime)
-    ocp.cost.W = np.diag(np.zeros(18))
-    ocp.cost.W_e = np.diag(np.zeros(6))
+    ocp.cost.W = np.diag(np.zeros(14))
+    ocp.cost.W_e = np.diag(np.zeros(2))
 
     # cost expressions
     ocp.model.cost_y_expr = ca.vertcat(
         get_acceleration(ocp.model),
         get_angular_velocity(ocp.model),
-        get_squared_lengths(ocp.model),
         ocp.model.u,
+        # other costs, without reference
+        get_length_cost(ocp.model),
+        get_yaw_cost(ocp.model),
     )
     ocp.model.cost_y_expr_e = ca.vertcat(
         # get_acceleration(ocp.model),  # uses control, so not in final cost
         # get_angular_velocity(ocp.model),  # no acc, so no omega
-        get_squared_lengths(ocp.model),
+        # other costs, without reference
+        get_length_cost(ocp.model),
+        get_yaw_cost(ocp.model),
     )
-
-    # constraints
-    ocp.constraints.constr_type = "BGH"
-    ocp.model.con_h_expr = ca.vertcat(
-        get_squared_lengths(ocp.model),
-        ocp.model.x[5],  # psi == yaw
-    )
-    ocp.constraints.lh = np.append(np.ones(6) * leg_min**2, -max_yaw)
-    ocp.constraints.uh = np.append(np.ones(6) * leg_max**2, max_yaw)
-
-    ocp.model.con_h_expr_e = get_squared_lengths(ocp.model)
-    ocp.constraints.lh_e = np.ones(6) * leg_min**2
-    ocp.constraints.uh_e = np.ones(6) * leg_max**2
 
     # initial state
     ocp.constraints.x0 = state0
@@ -469,7 +476,7 @@ def gen_stewart_ocp(model):
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "ERK"
     ocp.solver_options.nlp_solver_type = "SQP"
-    ocp.solver_options.qp_solver_iter_max = 10
+    ocp.solver_options.qp_solver_iter_max = 1
     ocp.solver_options.qp_solver_cond_N = n  # no condensing, for now
 
     # horizon
@@ -645,22 +652,43 @@ class TableMPC:
         ocp = gen_stewart_ocp(model)
         solver = at.AcadosOcpSolver(ocp)
         mpc = cls(model, ocp, solver)  # type: ignore
+        # mpc.stable_init()  # cf. openpilot
         mpc.set_weights()
         mpc.set_reference()
         return mpc
 
-    def set_weights(self, w_a=1.0, w_omega=1.0, w_leg=1.0, w_control=1.0):
+    def stable_init(self):
+        x0 = state0.copy()
+        for i in range(n):
+            self.solver.set(i, "x", np.zeros(12))
+            self.solver.set(i, "u", np.zeros(6))
+        self.solver.set(n, "x", np.zeros(12))
+        self.solver.constraints_set(0, "lbx", x0)
+        self.solver.constraints_set(0, "ubx", x0)
+        self.solver.solve()
+
+    def set_weights(
+        self,
+        w_acc_x=1.0,
+        w_acc_y=1.0,
+        w_acc_z=1.0,
+        w_omega=1.0,
+        w_control=1.0,
+        w_leg=1.0,
+        w_yaw=1.0,
+    ):
         W = np.diag(
             np.concat(
                 [
-                    np.ones(3) * w_a,
+                    np.array([w_acc_x, w_acc_y, w_acc_z]),
                     np.ones(3) * w_omega,
-                    np.ones(6) * w_leg,
                     np.ones(6) * w_control,
+                    np.ones(1) * w_leg,
+                    np.ones(1) * w_yaw,
                 ]
             )
         )
-        W_e = np.diag(np.ones(6) * w_leg)
+        W_e = np.diag(np.array([w_leg, w_yaw]))
         for i in range(n):
             self.solver.cost_set(i, "W", W)
         self.solver.cost_set(n, "W", W_e)
@@ -673,11 +701,11 @@ class TableMPC:
 
         for i in range(n):
             yref = np.concatenate(
-                [self.a_ref, self.omega_ref, self.leg_ref, self.zero_control]
+                [self.a_ref, self.omega_ref, self.zero_control, np.zeros(2)]
             )
             self.solver.cost_set(i, "yref", yref)
 
-        yref_e = np.concatenate([self.leg_ref])
+        yref_e = np.zeros(2)
         self.solver.cost_set(n, "yref", yref_e)
 
     def solve(self, x0):
@@ -706,8 +734,8 @@ class TableMPC:
         u = self.control_sol[0]
 
         x = np.zeros(12)
-        x[6:12] = x[6:12] + dt * u
-        x[:6] = x0[:6] + dt * x0[6:12]
+        x[6:12] = x0[6:12] + dt * u
+        x[:6] = x0[:6] + dt * x[6:12]
         return x
 
     def get_solution(self) -> TableSol:
