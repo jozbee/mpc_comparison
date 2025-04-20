@@ -16,6 +16,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import exp_mpc.stewart_min.spec as spec
+import exp_mpc.stewart_min.const as const
+
+
+################
+# jax routines #
+################
 
 
 @jax.jit
@@ -90,53 +96,12 @@ def _get_R_dot2(
     return res0[1] + res1[1]
 
 
-def get_R(sol: spec.TableSol) -> jax.Array:
-    """Get the rotation matrix.
-
-    We return a jax array, because this is really a private function.
-    """
-    pose = sol.pose_at(0)
-    return _get_R(pose.phi, pose.theta, pose.psi)
-
-
-def get_R_dot(sol: spec.TableSol) -> jax.Array:
-    """Get the rotation matrix derivative."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
-    return _get_R_dot(
-        pose.phi,
-        pose.theta,
-        pose.psi,
-        pose_dot.phi_dot,
-        pose_dot.theta_dot,
-        pose_dot.psi_dot,
-    )
-
-
-def get_R_dot2(sol: spec.TableSol) -> jax.Array:
-    """Get the second derivative of the rotation matrix."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
-    pose_ddot = sol.pose_dot2_at(0)
-    return _get_R_dot2(
-        pose.phi,
-        pose.theta,
-        pose.psi,
-        pose_dot.phi_dot,
-        pose_dot.theta_dot,
-        pose_dot.psi_dot,
-        pose_ddot.phi_dot2,
-        pose_ddot.theta_dot2,
-        pose_ddot.psi_dot2,
-    )
-
-
 @jax.jit
 def _leg_pos(R: jax.Array, t: jax.Array) -> jax.Array:
     lengths = []
     for i in range(6):
-        top_i = R @ spec.tops[i] + t
-        diff = top_i - spec.bots[i]
+        top_i = R @ const.tops[i] + t
+        diff = top_i - const.bots[i]
         lengths.append(jnp.linalg.norm(diff))
     return jnp.array(lengths)
 
@@ -166,38 +131,6 @@ def _leg_acc(
     res0 = jax.jvp(_leg_pos_0, (R, t), (R_dot, t_dot))[1]
     res1 = jax.jvp(_leg_pos_1, (R_dot, t_dot), (R_dot2, t_dot2))[1]
     return res0 + res1
-
-
-def leg_pos(sol: spec.TableSol) -> np.ndarray:
-    """All leg lengths."""
-    R = get_R(sol)
-    t = sol.pose_at(0).xyz()
-    return np.array(_leg_pos(R, t))
-
-
-def leg_vel(sol: spec.TableSol) -> np.ndarray:
-    """All leg velocities."""
-    R = get_R(sol)
-    R_dot = get_R_dot(sol)
-    t = sol.pose_at(0).xyz()
-    t_dot = sol.pose_dot_at(0).xyz()
-    return np.array(_leg_vel(R, t, R_dot, t_dot))
-
-
-def leg_acc(sol: spec.TableSol) -> np.ndarray:
-    """All leg accelerations."""
-    R = get_R(sol)
-    R_dot = get_R_dot(sol)
-    R_dot2 = get_R_dot2(sol)
-    t = sol.pose_at(0).xyz()
-    t_dot = sol.pose_dot_at(0).xyz()
-    t_dot2 = sol.pose_dot2_at(0).xyz()
-    return np.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
-
-
-def angle_pos(sol: spec.TableSol) -> np.ndarray:
-    """Angle position."""
-    return sol.pose_at(0).rpy()
 
 
 @functools.partial(jax.jit, static_argnames=("world",))
@@ -264,6 +197,137 @@ def _angle_acc(
     )[1]
 
 
+def _angle_joint(
+    x: float,
+    y: float,
+    z: float,
+    phi: float,
+    theta: float,
+    psi: float,
+) -> tuple[jax.Array, jax.Array]:
+    """Joint angles, both top and bottom."""
+    R = _get_R(phi, theta, psi)
+    t = jnp.array([x, y, z])
+    top_angles = []
+    bot_angles = []
+    for i in range(6):
+        top_i = R @ const.tops[i] + t
+        diff = top_i - const.bots[i]
+        leg_dir = diff / jnp.linalg.norm(diff)
+
+        top_mag = jnp.linalg.norm(jnp.cross(const.top_normals[i], leg_dir))
+        top_angles.append(jnp.asin(top_mag))
+
+        bot_mag = jnp.linalg.norm(jnp.cross(const.bot_normals[i], leg_dir))
+        bot_angles.append(jnp.asin(bot_mag))
+
+    return jnp.array(top_angles), jnp.array(bot_angles)
+
+
+@jax.jit
+def _angle_joint_top(
+    x: float,
+    y: float,
+    z: float,
+    phi: float,
+    theta: float,
+    psi: float,
+) -> jax.Array:
+    """Top joint angles."""
+    return _angle_joint(x, y, z, phi, theta, psi)[0]
+
+
+@jax.jit
+def _angle_joint_bot(
+    x: float,
+    y: float,
+    z: float,
+    phi: float,
+    theta: float,
+    psi: float,
+) -> jax.Array:
+    """Bottom joint angles."""
+    return _angle_joint(x, y, z, phi, theta, psi)[1]
+
+
+############
+# wrappers #
+############
+
+
+def get_R(sol: spec.TableSol) -> jax.Array:
+    """Get the rotation matrix.
+
+    We return a jax array, because this is really a private function.
+    """
+    pose = sol.pose_at(0)
+    return _get_R(pose.phi, pose.theta, pose.psi)
+
+
+def get_R_dot(sol: spec.TableSol) -> jax.Array:
+    """Get the rotation matrix derivative."""
+    pose = sol.pose_at(0)
+    pose_dot = sol.pose_dot_at(0)
+    return _get_R_dot(
+        pose.phi,
+        pose.theta,
+        pose.psi,
+        pose_dot.phi_dot,
+        pose_dot.theta_dot,
+        pose_dot.psi_dot,
+    )
+
+
+def get_R_dot2(sol: spec.TableSol) -> jax.Array:
+    """Get the second derivative of the rotation matrix."""
+    pose = sol.pose_at(0)
+    pose_dot = sol.pose_dot_at(0)
+    pose_ddot = sol.pose_dot2_at(0)
+    return _get_R_dot2(
+        pose.phi,
+        pose.theta,
+        pose.psi,
+        pose_dot.phi_dot,
+        pose_dot.theta_dot,
+        pose_dot.psi_dot,
+        pose_ddot.phi_dot2,
+        pose_ddot.theta_dot2,
+        pose_ddot.psi_dot2,
+    )
+
+
+def leg_pos(sol: spec.TableSol) -> np.ndarray:
+    """All leg lengths."""
+    R = get_R(sol)
+    t = sol.pose_at(0).xyz()
+    return np.array(_leg_pos(R, t))
+
+
+def leg_vel(sol: spec.TableSol) -> np.ndarray:
+    """All leg velocities."""
+    R = get_R(sol)
+    R_dot = get_R_dot(sol)
+    t = sol.pose_at(0).xyz()
+    t_dot = sol.pose_dot_at(0).xyz()
+    return np.array(_leg_vel(R, t, R_dot, t_dot))
+
+
+def leg_acc(sol: spec.TableSol) -> np.ndarray:
+    """All leg accelerations."""
+    R = get_R(sol)
+    R_dot = get_R_dot(sol)
+    R_dot2 = get_R_dot2(sol)
+    t = sol.pose_at(0).xyz()
+    t_dot = sol.pose_dot_at(0).xyz()
+    t_dot2 = sol.pose_dot2_at(0).xyz()
+    return np.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
+
+
+def angle_pos(sol: spec.TableSol) -> np.ndarray:
+    """Angle position."""
+    return sol.pose_at(0).rpy()
+
+
 def human_angle_vel(sol: spec.TableSol) -> np.ndarray:
     """Human angular velocity."""
     pose = sol.pose_at(0)
@@ -324,60 +388,6 @@ def table_acc(sol: spec.TableSol) -> np.ndarray:
     return pose_dot2.xyz()
 
 
-@jax.jit
-def _angle_joint(
-    x: float,
-    y: float,
-    z: float,
-    phi: float,
-    theta: float,
-    psi: float,
-) -> tuple[jax.Array, jax.Array]:
-    """Joint angles, both top and bottom."""
-    R = _get_R(phi, theta, psi)
-    t = jnp.array([x, y, z])
-    top_angles = []
-    bot_angles = []
-    for i in range(6):
-        top_i = R @ spec.tops[i] + t
-        diff = top_i - spec.bots[i]
-        leg_dir = diff / jnp.linalg.norm(diff)
-
-        top_mag = jnp.linalg.norm(jnp.cross(spec.top_normals[i], leg_dir))
-        top_angles.append(jnp.asin(top_mag))
-
-        bot_mag = jnp.linalg.norm(jnp.cross(spec.bot_normals[i], leg_dir))
-        bot_angles.append(jnp.asin(bot_mag))
-
-    return jnp.array(top_angles), jnp.array(bot_angles)
-
-
-@jax.jit
-def _angle_joint_top(
-    x: float,
-    y: float,
-    z: float,
-    phi: float,
-    theta: float,
-    psi: float,
-) -> jax.Array:
-    """Top joint angles."""
-    return _angle_joint(x, y, z, phi, theta, psi)[0]
-
-
-@jax.jit
-def _angle_joint_bot(
-    x: float,
-    y: float,
-    z: float,
-    phi: float,
-    theta: float,
-    psi: float,
-) -> jax.Array:
-    """Bottom joint angles."""
-    return _angle_joint(x, y, z, phi, theta, psi)[1]
-
-
 def angle_joint_top(sol: spec.TableSol) -> np.ndarray:
     """Top joint angles."""
     pose = sol.pose_at(0)
@@ -399,13 +409,13 @@ def human_vel(sol: spec.TableSol) -> np.ndarray:
     vel = sol.pose_dot_at(0).xyz()
     R = np.array(get_R(sol))
     R_dot = np.array(get_R_dot(sol))
-    return R.T @ (R_dot @ spec.human_displacement + vel)
+    return R.T @ (R_dot @ const.human_displacement + vel)
 
 
 def human_acc(sol: spec.TableSol) -> np.ndarray:
     """Human acceleration."""
     acc = sol.pose_dot2_at(0).xyz()
     R = np.array(get_R(sol))
-    R_dot2 = np.array(get_R_dot2(sol))
+    # R_dot2 = np.array(get_R_dot2(sol))
     # return R.T @ (R_dot2 @ spec.human_displacement + acc + spec.gravity)
-    return R.T @ (acc + spec.gravity)
+    return R.T @ (acc + const.gravity)

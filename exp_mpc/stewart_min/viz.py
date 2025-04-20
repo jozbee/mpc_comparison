@@ -6,7 +6,7 @@ import matplotlib.axes as mpl_ax
 import matplotlib.animation as mpl_anim
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-import exp_mpc.stewart_min.spec as spec
+import exp_mpc.stewart_min.spec as const
 import exp_mpc.stewart_min.utils as utils
 
 import matplotlib.pyplot as plt
@@ -14,14 +14,14 @@ import matplotlib.gridspec as gridspec
 
 
 def waypoints_from_solutions(
-    trajectory: list[spec.TableSol],
+    trajectory: list[const.TableSol],
 ) -> list[np.ndarray]:
     """Convert a list of solutions to a list of waypoints."""
     return [np.array(sol.pose_at(0)) for sol in trajectory]
 
 
 def animate_trajectory(
-    trajectory: list[list[float]] | list[np.ndarray] | list[spec.TableSol],
+    trajectory: list[list[float]] | list[np.ndarray] | list[const.TableSol],
     sim_rate: float = 1.0,
     fps: float = 30.0,
 ) -> tuple[mpl_anim.FuncAnimation, mpl_fig.Figure]:
@@ -48,8 +48,8 @@ def animate_trajectory(
 
     # possible conversion needed
     waypoints: list[np.ndarray] | list[list[float]]
-    if type(trajectory[0]) is spec.TableSol:
-        assert all(type(sol) is spec.TableSol for sol in trajectory)
+    if type(trajectory[0]) is const.TableSol:
+        assert all(type(sol) is const.TableSol for sol in trajectory)
         waypoints = waypoints_from_solutions(trajectory)  # type: ignore
     else:
         waypoints = trajectory  # type: ignore
@@ -73,17 +73,17 @@ def animate_trajectory(
 
     # Create a margin around the workspace
     x_lims = np.array(
-        [point[0] for point in spec.bots] + [point[0] for point in spec.tops]
+        [point[0] for point in const.bots] + [point[0] for point in const.tops]
     )
     x_min = np.min(x_lims) - 0.5
     x_max = np.max(x_lims) + 0.5
     y_lims = np.array(
-        [point[1] for point in spec.bots] + [point[1] for point in spec.tops]
+        [point[1] for point in const.bots] + [point[1] for point in const.tops]
     )
     y_min = np.min(y_lims) - 0.5
     y_max = np.max(y_lims) + 0.5
     z_lims = np.array(
-        [point[2] for point in spec.bots] + [point[2] for point in spec.tops]
+        [point[2] for point in const.bots] + [point[2] for point in const.tops]
     )
     z_min = np.min(z_lims) - 0.5
     z_max = np.max(z_lims) + 1.0  # for extra height
@@ -112,12 +112,12 @@ def animate_trajectory(
     # ax_legs.set_title('Leg Lengths')
     ax_legs.set_xlim(0.5, 6.5)
     ax_legs.set_xticks(range(1, 7))
-    ax_legs.set_ylim(spec.leg_min * 0.9, spec.leg_max * 1.1)
+    ax_legs.set_ylim(const.leg_min * 0.9, const.leg_max * 1.1)
     ax_legs.axhline(
-        y=spec.leg_min, color="r", linestyle="-", alpha=0.5, label="Min Length"
+        y=const.leg_min, color="r", linestyle="-", alpha=0.5, label="Min Length"
     )
     ax_legs.axhline(
-        y=spec.leg_max, color="r", linestyle="-", alpha=0.5, label="Max Length"
+        y=const.leg_max, color="r", linestyle="-", alpha=0.5, label="Max Length"
     )
 
     # Initialize visualization elements
@@ -132,9 +132,9 @@ def animate_trajectory(
     )
 
     # Connect base points to form a polygon
-    base_x = [spec.bots[i][0] for i in range(6)] + [spec.bots[0][0]]
-    base_y = [spec.bots[i][1] for i in range(6)] + [spec.bots[0][1]]
-    base_z = [spec.bots[i][2] for i in range(6)] + [spec.bots[0][2]]
+    base_x = [const.bots[i][0] for i in range(6)] + [const.bots[0][0]]
+    base_y = [const.bots[i][1] for i in range(6)] + [const.bots[0][1]]
+    base_z = [const.bots[i][2] for i in range(6)] + [const.bots[0][2]]
     base_polygon.set_data(base_x, base_y)
     base_polygon.set_3d_properties(base_z)  # type: ignore
 
@@ -142,8 +142,8 @@ def animate_trajectory(
 
     # Interpolate trajectory for smoother animation
     num_points = len(trajectory)
-    t_values = np.arange(0, spec.dt * num_points, spec.dt)
-    t_interp = np.arange(0, spec.dt * num_points, 1.0 / fps * sim_rate)
+    t_values = np.arange(0, const.dt * num_points, const.dt)
+    t_interp = np.arange(0, const.dt * num_points, 1.0 / fps * sim_rate)
 
     # Interpolate positions (x, y, z)
     positions = np.array([point[:3] for point in waypoints])
@@ -170,7 +170,7 @@ def animate_trajectory(
         R = utils._get_R(roll, pitch, yaw)
 
         # Update platform position
-        tops_world = [R @ p + position for p in spec.tops]
+        tops_world = [R @ p + position for p in const.tops]
         platform_x = [p[0] for p in tops_world] + [tops_world[0][0]]
         platform_y = [p[1] for p in tops_world] + [tops_world[0][1]]
         platform_z = [p[2] for p in tops_world] + [tops_world[0][2]]
@@ -180,7 +180,7 @@ def animate_trajectory(
         # Update legs
         leg_lengths = []
         for j in range(6):
-            start_point = spec.bots[j]
+            start_point = const.bots[j]
             end_point = tops_world[j]
             legs[j].set_data(
                 [start_point[0], end_point[0]], [start_point[1], end_point[1]]
@@ -197,7 +197,7 @@ def animate_trajectory(
             bar.set_height(leg_lengths[j])
 
             # Color the bar based on how close it is to limits
-            if leg_lengths[j] < spec.leg_min or leg_lengths[j] > spec.leg_max:
+            if leg_lengths[j] < const.leg_min or leg_lengths[j] > const.leg_max:
                 bar.set_color("red")
             else:
                 bar.set_color("black")
@@ -213,8 +213,8 @@ def animate_trajectory(
         # Update progress bar
         progress = i / (len(interp_trajectory) - 1)
         progress_bar[0].set_width(progress)
-        sim_time = i * len(trajectory) / len(interp_trajectory) * spec.dt
-        sim_time_tot = (len(trajectory) - 1) * spec.dt
+        sim_time = i * len(trajectory) / len(interp_trajectory) * const.dt
+        sim_time_tot = (len(trajectory) - 1) * const.dt
         time_text.set_text(f"Time: {sim_time:.1f}s / {sim_time_tot:.1f}s")
 
         return (
@@ -305,7 +305,7 @@ def _reference_helper(
 
 def _plot_cartesian_trajectory(
     axes: np.ndarray,
-    trajectory: list[spec.TableSol],
+    trajectory: list[const.TableSol],
     xyz_fun: tp.Callable,
     angle_fun: tp.Callable,
 ):
@@ -313,7 +313,7 @@ def _plot_cartesian_trajectory(
     assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
     assert len(trajectory) > 0
 
-    times = np.arange(0, len(trajectory), dtype=float) * spec.dt
+    times = np.arange(0, len(trajectory), dtype=float) * const.dt
 
     ################
     # xyz position #
@@ -369,8 +369,8 @@ def _plot_cartesian_trajectory(
         data=angles[:, 0],
         title="Roll Angle",
         data_label="Angle (rad)",
-        min_limit=-spec.max_roll,
-        max_limit=spec.max_roll,
+        min_limit=-const.max_roll,
+        max_limit=const.max_roll,
     )
     simple_plot(
         axis=ax_pitch,
@@ -378,8 +378,8 @@ def _plot_cartesian_trajectory(
         data=angles[:, 1],
         title="Pitch Angle",
         data_label="Angle (rad)",
-        min_limit=-spec.max_pitch,
-        max_limit=spec.max_pitch,
+        min_limit=-const.max_pitch,
+        max_limit=const.max_pitch,
     )
     simple_plot(
         axis=ax_yaw,
@@ -387,14 +387,14 @@ def _plot_cartesian_trajectory(
         data=angles[:, 2],
         title="Yaw Angle",
         data_label="Angle (rad)",
-        min_limit=-spec.max_yaw,
-        max_limit=spec.max_yaw,
+        min_limit=-const.max_yaw,
+        max_limit=const.max_yaw,
     )
 
 
 def _plot_cartesian_trajectory_p(
     axes: np.ndarray,
-    trajectory: list[spec.TableSol],
+    trajectory: list[const.TableSol],
     xyz_vel_fun: tp.Callable,
     angle_vel_fun: tp.Callable,
     xyz_acc_fun: tp.Callable,
@@ -404,7 +404,7 @@ def _plot_cartesian_trajectory_p(
     """Common cartesian trajectory routines, for derivatives."""
     assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
 
-    times = np.arange(0, len(trajectory), dtype=float) * spec.dt
+    times = np.arange(0, len(trajectory), dtype=float) * const.dt
 
     ################
     # xyz velocity #
@@ -425,8 +425,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_vels[:, 0],
         title="X Velocity",
         data_label="Velocity (m/s)",
-        min_limit=-spec.max_cart_vel,
-        max_limit=spec.max_cart_vel,
+        min_limit=-const.max_cart_vel,
+        max_limit=const.max_cart_vel,
     )
     simple_plot(
         axis=ax_y_vel,
@@ -434,8 +434,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_vels[:, 1],
         title="Y Velocity",
         data_label="Velocity (m/s)",
-        min_limit=-spec.max_cart_vel,
-        max_limit=spec.max_cart_vel,
+        min_limit=-const.max_cart_vel,
+        max_limit=const.max_cart_vel,
     )
     simple_plot(
         axis=ax_z_vel,
@@ -443,8 +443,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_vels[:, 2],
         title="Z Velocity",
         data_label="Velocity (m/s)",
-        min_limit=-spec.max_cart_vel,
-        max_limit=spec.max_cart_vel,
+        min_limit=-const.max_cart_vel,
+        max_limit=const.max_cart_vel,
     )
 
     ####################
@@ -471,8 +471,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_vels[:, 0],
         title="X Angular Velocity",
         data_label="Angular Velocity (rad/s)",
-        min_limit=-spec.max_angle_vel,
-        max_limit=spec.max_angle_vel,
+        min_limit=-const.max_angle_vel,
+        max_limit=const.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 0),
     )
     simple_plot(
@@ -481,8 +481,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_vels[:, 1],
         title="Y Angular Velocity",
         data_label="Angular Velocity (rad/s)",
-        min_limit=-spec.max_angle_vel,
-        max_limit=spec.max_angle_vel,
+        min_limit=-const.max_angle_vel,
+        max_limit=const.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 1),
     )
     simple_plot(
@@ -491,8 +491,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_vels[:, 2],
         title="Z Angular Velocity",
         data_label="Angular Velocity (rad/s)",
-        min_limit=-spec.max_angle_vel,
-        max_limit=spec.max_angle_vel,
+        min_limit=-const.max_angle_vel,
+        max_limit=const.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 2),
     )
 
@@ -520,8 +520,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_accs[:, 0],
         title="X Acceleration",
         data_label="Acceleration (m/s^2)",
-        min_limit=-spec.max_cart_acc,
-        max_limit=spec.max_cart_acc,
+        min_limit=-const.max_cart_acc,
+        max_limit=const.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 0),
     )
     simple_plot(
@@ -530,8 +530,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_accs[:, 1],
         title="Y Acceleration",
         data_label="Acceleration (m/s^2)",
-        min_limit=-spec.max_cart_acc,
-        max_limit=spec.max_cart_acc,
+        min_limit=-const.max_cart_acc,
+        max_limit=const.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 1),
     )
     simple_plot(
@@ -540,8 +540,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_accs[:, 2],
         title="Z Acceleration",
         data_label="Acceleration (m/s^2)",
-        min_limit=-spec.max_cart_acc,
-        max_limit=spec.max_cart_acc,
+        min_limit=-const.max_cart_acc,
+        max_limit=const.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 2),
     )
 
@@ -564,8 +564,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_accs[:, 0],
         title="X Angular Acceleration",
         data_label="Angular Acceleration (rad/s^2)",
-        min_limit=-spec.max_angle_acc,
-        max_limit=spec.max_angle_acc,
+        min_limit=-const.max_angle_acc,
+        max_limit=const.max_angle_acc,
     )
     simple_plot(
         axis=ax_omega_y_acc,
@@ -573,8 +573,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_accs[:, 1],
         title="Y Angular Acceleration",
         data_label="Angular Acceleration (rad/s^2)",
-        min_limit=-spec.max_angle_acc,
-        max_limit=spec.max_angle_acc,
+        min_limit=-const.max_angle_acc,
+        max_limit=const.max_angle_acc,
     )
     simple_plot(
         axis=ax_omega_z_acc,
@@ -582,13 +582,13 @@ def _plot_cartesian_trajectory_p(
         data=angle_accs[:, 2],
         title="Z Angular Acceleration",
         data_label="Angular Acceleration (rad/s^2)",
-        min_limit=-spec.max_angle_acc,
-        max_limit=spec.max_angle_acc,
+        min_limit=-const.max_angle_acc,
+        max_limit=const.max_angle_acc,
     )
 
 
 def plot_human_trajectory(
-    trajectory: list[spec.TableSol],
+    trajectory: list[const.TableSol],
     references: dict[str, np.ndarray] = {},
     fig_title: str = "Head Trajectory",
     fig_kwds: dict = {},
@@ -637,7 +637,7 @@ def plot_human_trajectory(
 
 
 def plot_cartesian_table_trajectory(
-    trajectory: list[spec.TableSol],
+    trajectory: list[const.TableSol],
     fig_title: str = "Table Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:

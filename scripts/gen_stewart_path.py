@@ -2,14 +2,14 @@ import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 
-import exp_mpc.stewart_min.spec as spec
+import exp_mpc.stewart_min.spec as const
 import exp_mpc.stewart_min.viz as viz
 
 
 def generate_constant_acceleration_path(
-    a_ref: np.ndarray = np.array([1.0, 0.0, 0.0]) + spec.gravity,
+    a_ref: np.ndarray = np.array([1.0, 0.0, 0.0]) + const.gravity,
     duration: float = 5.0,
-) -> list[spec.TableSol]:
+) -> list[const.TableSol]:
     """Generate a path with constant acceleration in the x direction using MPC.
 
     Parameters
@@ -24,7 +24,7 @@ def generate_constant_acceleration_path(
     MPC solutions
     """
     # mpc init
-    mpc = spec.TableMPC.create_default()
+    mpc = const.TableMPC.create_default()
     # mpc.set_weights(
     #     w_a=1e-2, w_omega=1e-5, w_control=1e-1, w_leg=1e2, w_yaw=1e0
     # )
@@ -39,15 +39,15 @@ def generate_constant_acceleration_path(
     )
 
     # set reference acceleration in x direction
-    a_ref = np.array([acceleration, 0.0, 0.0]) + spec.gravity
+    a_ref = np.array([acceleration, 0.0, 0.0]) + const.gravity
     mpc.set_reference(a_ref=a_ref)
 
     # bookeeping
     solutions = []
 
     # run simulation
-    current_state = spec.state0.copy()
-    num_steps = int(duration / spec.dt)
+    current_state = const.state0.copy()
+    num_steps = int(duration / const.dt)
     for _ in tqdm.tqdm(range(num_steps)):
         mpc.solve(current_state)
         solutions.append(mpc.get_solution())
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     # parameters
     acceleration = 1.0  # m/s^2
     duration = 1.0  # seconds
-    a_ref = np.array([acceleration, 0.0, 0.0]) + spec.gravity
+    a_ref = np.array([acceleration, 0.0, 0.0]) + const.gravity
 
     # generate waypoints, accelerations, and angular velocities
     solutions = generate_constant_acceleration_path(
