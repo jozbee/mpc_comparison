@@ -6,7 +6,8 @@ import matplotlib.axes as mpl_ax
 import matplotlib.animation as mpl_anim
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-import exp_mpc.stewart_min.spec as const
+import exp_mpc.stewart_min.spec as spec
+import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.utils as utils
 
 import matplotlib.pyplot as plt
@@ -14,14 +15,14 @@ import matplotlib.gridspec as gridspec
 
 
 def waypoints_from_solutions(
-    trajectory: list[const.TableSol],
+    trajectory: list[spec.TableSol],
 ) -> list[np.ndarray]:
     """Convert a list of solutions to a list of waypoints."""
     return [np.array(sol.pose_at(0)) for sol in trajectory]
 
 
 def animate_trajectory(
-    trajectory: list[list[float]] | list[np.ndarray] | list[const.TableSol],
+    trajectory: list[list[float]] | list[np.ndarray] | list[spec.TableSol],
     sim_rate: float = 1.0,
     fps: float = 30.0,
 ) -> tuple[mpl_anim.FuncAnimation, mpl_fig.Figure]:
@@ -48,8 +49,8 @@ def animate_trajectory(
 
     # possible conversion needed
     waypoints: list[np.ndarray] | list[list[float]]
-    if type(trajectory[0]) is const.TableSol:
-        assert all(type(sol) is const.TableSol for sol in trajectory)
+    if type(trajectory[0]) is spec.TableSol:
+        assert all(type(sol) is spec.TableSol for sol in trajectory)
         waypoints = waypoints_from_solutions(trajectory)  # type: ignore
     else:
         waypoints = trajectory  # type: ignore
@@ -305,7 +306,7 @@ def _reference_helper(
 
 def _plot_cartesian_trajectory(
     axes: np.ndarray,
-    trajectory: list[const.TableSol],
+    trajectory: list[spec.TableSol],
     xyz_fun: tp.Callable,
     angle_fun: tp.Callable,
 ):
@@ -394,7 +395,7 @@ def _plot_cartesian_trajectory(
 
 def _plot_cartesian_trajectory_p(
     axes: np.ndarray,
-    trajectory: list[const.TableSol],
+    trajectory: list[spec.TableSol],
     xyz_vel_fun: tp.Callable,
     angle_vel_fun: tp.Callable,
     xyz_acc_fun: tp.Callable,
@@ -588,7 +589,7 @@ def _plot_cartesian_trajectory_p(
 
 
 def plot_human_trajectory(
-    trajectory: list[const.TableSol],
+    trajectory: list[spec.TableSol],
     references: dict[str, np.ndarray] = {},
     fig_title: str = "Head Trajectory",
     fig_kwds: dict = {},
@@ -637,7 +638,7 @@ def plot_human_trajectory(
 
 
 def plot_cartesian_table_trajectory(
-    trajectory: list[const.TableSol],
+    trajectory: list[spec.TableSol],
     fig_title: str = "Table Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:

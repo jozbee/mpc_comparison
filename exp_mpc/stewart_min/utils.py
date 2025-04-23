@@ -198,12 +198,12 @@ def _angle_acc(
 
 
 def _angle_joint(
-    x: float,
-    y: float,
-    z: float,
-    phi: float,
-    theta: float,
-    psi: float,
+    x: jax.Array,
+    y: jax.Array,
+    z: jax.Array,
+    phi: jax.Array,
+    theta: jax.Array,
+    psi: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     """Joint angles, both top and bottom."""
     R = _get_R(phi, theta, psi)
@@ -226,12 +226,12 @@ def _angle_joint(
 
 @jax.jit
 def _angle_joint_top(
-    x: float,
-    y: float,
-    z: float,
-    phi: float,
-    theta: float,
-    psi: float,
+    x: jax.Array,
+    y: jax.Array,
+    z: jax.Array,
+    phi: jax.Array,
+    theta: jax.Array,
+    psi: jax.Array,
 ) -> jax.Array:
     """Top joint angles."""
     return _angle_joint(x, y, z, phi, theta, psi)[0]
@@ -239,12 +239,12 @@ def _angle_joint_top(
 
 @jax.jit
 def _angle_joint_bot(
-    x: float,
-    y: float,
-    z: float,
-    phi: float,
-    theta: float,
-    psi: float,
+    x: jax.Array,
+    y: jax.Array,
+    z: jax.Array,
+    phi: jax.Array,
+    theta: jax.Array,
+    psi: jax.Array,
 ) -> jax.Array:
     """Bottom joint angles."""
     return _angle_joint(x, y, z, phi, theta, psi)[1]
@@ -260,14 +260,14 @@ def get_R(sol: spec.TableSol) -> jax.Array:
 
     We return a jax array, because this is really a private function.
     """
-    pose = sol.pose_at(0)
+    pose = sol.pose_at(1)
     return _get_R(pose.phi, pose.theta, pose.psi)
 
 
 def get_R_dot(sol: spec.TableSol) -> jax.Array:
     """Get the rotation matrix derivative."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
+    pose = sol.pose_at(1)
+    pose_dot = sol.pose_dot_at(1)
     return _get_R_dot(
         pose.phi,
         pose.theta,
@@ -280,8 +280,8 @@ def get_R_dot(sol: spec.TableSol) -> jax.Array:
 
 def get_R_dot2(sol: spec.TableSol) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
+    pose = sol.pose_at(1)
+    pose_dot = sol.pose_dot_at(1)
     pose_ddot = sol.pose_dot2_at(0)
     return _get_R_dot2(
         pose.phi,
@@ -299,7 +299,7 @@ def get_R_dot2(sol: spec.TableSol) -> jax.Array:
 def leg_pos(sol: spec.TableSol) -> np.ndarray:
     """All leg lengths."""
     R = get_R(sol)
-    t = sol.pose_at(0).xyz()
+    t = sol.pose_at(1).xyz()
     return np.array(_leg_pos(R, t))
 
 
@@ -307,8 +307,8 @@ def leg_vel(sol: spec.TableSol) -> np.ndarray:
     """All leg velocities."""
     R = get_R(sol)
     R_dot = get_R_dot(sol)
-    t = sol.pose_at(0).xyz()
-    t_dot = sol.pose_dot_at(0).xyz()
+    t = sol.pose_at(1).xyz()
+    t_dot = sol.pose_dot_at(1).xyz()
     return np.array(_leg_vel(R, t, R_dot, t_dot))
 
 
@@ -317,21 +317,21 @@ def leg_acc(sol: spec.TableSol) -> np.ndarray:
     R = get_R(sol)
     R_dot = get_R_dot(sol)
     R_dot2 = get_R_dot2(sol)
-    t = sol.pose_at(0).xyz()
-    t_dot = sol.pose_dot_at(0).xyz()
+    t = sol.pose_at(1).xyz()
+    t_dot = sol.pose_dot_at(1).xyz()
     t_dot2 = sol.pose_dot2_at(0).xyz()
     return np.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
 
 
 def angle_pos(sol: spec.TableSol) -> np.ndarray:
     """Angle position."""
-    return sol.pose_at(0).rpy()
+    return sol.pose_at(1).rpy()
 
 
 def human_angle_vel(sol: spec.TableSol) -> np.ndarray:
     """Human angular velocity."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
+    pose = sol.pose_at(1)
+    pose_dot = sol.pose_dot_at(1)
     return np.array(_angle_vel(
         *pose.rpy(), *pose_dot.rpy()
     ))
@@ -339,15 +339,15 @@ def human_angle_vel(sol: spec.TableSol) -> np.ndarray:
 
 def table_angle_vel(sol: spec.TableSol) -> np.ndarray:
     """Table angular velocity."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
+    pose = sol.pose_at(1)
+    pose_dot = sol.pose_dot_at(1)
     return np.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
 
 
 def human_angle_acc(sol: spec.TableSol) -> np.ndarray:
     """Angular acceleration."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
+    pose = sol.pose_at(1)
+    pose_dot = sol.pose_dot_at(1)
     pose_dot2 = sol.pose_dot2_at(0)
     return np.array(_angle_acc(
         *pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy()
@@ -356,8 +356,8 @@ def human_angle_acc(sol: spec.TableSol) -> np.ndarray:
 
 def table_angle_acc(sol: spec.TableSol) -> np.ndarray:
     """Table angular acceleration."""
-    pose = sol.pose_at(0)
-    pose_dot = sol.pose_dot_at(0)
+    pose = sol.pose_at(1)
+    pose_dot = sol.pose_dot_at(1)
     pose_dot2 = sol.pose_dot2_at(0)
     return np.array(
         _angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy(), world=True)
@@ -366,19 +366,19 @@ def table_angle_acc(sol: spec.TableSol) -> np.ndarray:
 
 def table_angle(sol: spec.TableSol) -> np.ndarray:
     """Table angle."""
-    pose = sol.pose_at(0)
+    pose = sol.pose_at(1)
     return np.array(pose.rpy())
 
 
 def table_pos(sol: spec.TableSol) -> np.ndarray:
     """Table position."""
-    pose = sol.pose_at(0)
+    pose = sol.pose_at(1)
     return np.array(pose.xyz())
 
 
 def table_vel(sol: spec.TableSol) -> np.ndarray:
     """Table velocity."""
-    pose_dot = sol.pose_dot_at(0)
+    pose_dot = sol.pose_dot_at(1)
     return np.array(pose_dot.xyz())
 
 
@@ -390,7 +390,7 @@ def table_acc(sol: spec.TableSol) -> np.ndarray:
 
 def angle_joint_top(sol: spec.TableSol) -> np.ndarray:
     """Top joint angles."""
-    pose = sol.pose_at(0)
+    pose = sol.pose_at(1)
     return np.array(_angle_joint_top(
         *pose.xyz(), *pose.rpy()
     ))
@@ -398,7 +398,7 @@ def angle_joint_top(sol: spec.TableSol) -> np.ndarray:
 
 def angle_joint_bot(sol: spec.TableSol) -> np.ndarray:
     """Bottom joint angles."""
-    pose = sol.pose_at(0)
+    pose = sol.pose_at(1)
     return np.array(_angle_joint_bot(
         *pose.xyz(), *pose.rpy()
     ))
@@ -406,7 +406,7 @@ def angle_joint_bot(sol: spec.TableSol) -> np.ndarray:
 
 def human_vel(sol: spec.TableSol) -> np.ndarray:
     """Human velocity."""
-    vel = sol.pose_dot_at(0).xyz()
+    vel = sol.pose_dot_at(1).xyz()
     R = np.array(get_R(sol))
     R_dot = np.array(get_R_dot(sol))
     return R.T @ (R_dot @ const.human_displacement + vel)
@@ -416,6 +416,6 @@ def human_acc(sol: spec.TableSol) -> np.ndarray:
     """Human acceleration."""
     acc = sol.pose_dot2_at(0).xyz()
     R = np.array(get_R(sol))
-    # R_dot2 = np.array(get_R_dot2(sol))
-    # return R.T @ (R_dot2 @ spec.human_displacement + acc + spec.gravity)
-    return R.T @ (acc + const.gravity)
+    R_dot2 = np.array(get_R_dot2(sol))
+    return R.T @ (R_dot2 @ const.human_displacement + acc + const.gravity)
+    # return R.T @ (acc + const.gravity)

@@ -176,7 +176,7 @@ def _quartic_cost(
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class QuarticCost:
-    """Quartic cost function.
+    """(Jit-able) Quartic cost function.
 
     The internal coefficient representation is scaled to the interval [0, 1],
     and we apply a symmetric definition to extend to [-1, 0].
@@ -184,7 +184,7 @@ class QuarticCost:
     interval [0, 1], and we apply the quartic cost function.
     The calling function is differentiable and jit-able from jax.
     Use the `from_bounds` method for initialization.
-    
+
     Attributes
     ----------
     coeffs :

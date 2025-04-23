@@ -1,19 +1,17 @@
 import numpy as np
 
+
 leg_min = 1160.410000 * 1e-3
 leg_max = 1770.010000 * 1e-3
 leg_mid = (leg_min + leg_max) / 2.0  # 1.46521
-max_yaw = 35.0 * np.pi / 180.0
 dt = 0.005
 
-# unused parameters
-top_max_angle = 42.0 * np.pi / 180.0
-bot_max_angle = 42.0 * np.pi / 180.0
+joint_max_angle = 42.0 * np.pi / 180.0
+# top_max_angle = 42.0 * np.pi / 180.0
+# bot_max_angle = 42.0 * np.pi / 180.0
 max_roll = 35.0 * np.pi / 180.0
 max_pitch = 35.0 * np.pi / 180.0
-# max_yaw = 35.0 * np.pi / 180.0
-# min_leg_pos = 1160.410000 * 1e-3
-# max_leg_pos = 1770.010000 * 1e-3
+max_yaw = 35.0 * np.pi / 180.0
 max_leg_vel = 20.0 / 39.37
 max_cart_table_acc = 8.0
 max_cart_vel = 10.0  # human
