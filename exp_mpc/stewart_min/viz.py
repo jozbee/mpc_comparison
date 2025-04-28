@@ -1,6 +1,7 @@
 import typing as tp
 
 import numpy as np
+import matplotlib as mpl
 import matplotlib.figure as mpl_fig
 import matplotlib.axes as mpl_ax
 import matplotlib.animation as mpl_anim
@@ -275,7 +276,7 @@ def simple_plot(
 ):
     axis.set_title(title)
     axis.set_ylabel(data_label)
-    axis.set_xlabel("Time (s)")
+    axis.set_xlabel("[s]")
     axis.plot(time, data, color="blue")
     if reference is not None:
         axis.plot(time, reference, color="orange", linestyle="--")
@@ -334,21 +335,21 @@ def _plot_cartesian_trajectory(
         time=times,
         data=xyzs[:, 0],
         title="X Position",
-        data_label="Position (m)",
+        data_label="[m]",
     )
     simple_plot(
         axis=ax_y,
         time=times,
         data=xyzs[:, 1],
         title="Y Position",
-        data_label="Position (m)",
+        data_label="[m]",
     )
     simple_plot(
         axis=ax_z,
         time=times,
         data=xyzs[:, 2],
         title="Z Position",
-        data_label="Position (m)",
+        data_label="[m]",
     )
 
     ####################
@@ -369,7 +370,7 @@ def _plot_cartesian_trajectory(
         time=times,
         data=angles[:, 0],
         title="Roll Angle",
-        data_label="Angle (rad)",
+        data_label="[rad]",
         min_limit=-const.max_roll,
         max_limit=const.max_roll,
     )
@@ -378,7 +379,7 @@ def _plot_cartesian_trajectory(
         time=times,
         data=angles[:, 1],
         title="Pitch Angle",
-        data_label="Angle (rad)",
+        data_label="[rad]",
         min_limit=-const.max_pitch,
         max_limit=const.max_pitch,
     )
@@ -387,7 +388,7 @@ def _plot_cartesian_trajectory(
         time=times,
         data=angles[:, 2],
         title="Yaw Angle",
-        data_label="Angle (rad)",
+        data_label="[rad]",
         min_limit=-const.max_yaw,
         max_limit=const.max_yaw,
     )
@@ -425,7 +426,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=xyz_vels[:, 0],
         title="X Velocity",
-        data_label="Velocity (m/s)",
+        data_label="[m/s]",
         min_limit=-const.max_cart_vel,
         max_limit=const.max_cart_vel,
     )
@@ -434,7 +435,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=xyz_vels[:, 1],
         title="Y Velocity",
-        data_label="Velocity (m/s)",
+        data_label="[m/s]",
         min_limit=-const.max_cart_vel,
         max_limit=const.max_cart_vel,
     )
@@ -443,7 +444,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=xyz_vels[:, 2],
         title="Z Velocity",
-        data_label="Velocity (m/s)",
+        data_label="[m/s]",
         min_limit=-const.max_cart_vel,
         max_limit=const.max_cart_vel,
     )
@@ -471,7 +472,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=angle_vels[:, 0],
         title="X Angular Velocity",
-        data_label="Angular Velocity (rad/s)",
+        data_label="[rad/s]",
         min_limit=-const.max_angle_vel,
         max_limit=const.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 0),
@@ -481,7 +482,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=angle_vels[:, 1],
         title="Y Angular Velocity",
-        data_label="Angular Velocity (rad/s)",
+        data_label="[rad/s]",
         min_limit=-const.max_angle_vel,
         max_limit=const.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 1),
@@ -491,7 +492,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=angle_vels[:, 2],
         title="Z Angular Velocity",
-        data_label="Angular Velocity (rad/s)",
+        data_label="[rad/s]",
         min_limit=-const.max_angle_vel,
         max_limit=const.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 2),
@@ -520,7 +521,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=xyz_accs[:, 0],
         title="X Acceleration",
-        data_label="Acceleration (m/s^2)",
+        data_label="[m/s^2]",
         min_limit=-const.max_cart_acc,
         max_limit=const.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 0),
@@ -530,7 +531,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=xyz_accs[:, 1],
         title="Y Acceleration",
-        data_label="Acceleration (m/s^2)",
+        data_label="[m/s^2]",
         min_limit=-const.max_cart_acc,
         max_limit=const.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 1),
@@ -540,7 +541,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=xyz_accs[:, 2],
         title="Z Acceleration",
-        data_label="Acceleration (m/s^2)",
+        data_label="[m/s^2]",
         min_limit=-const.max_cart_acc,
         max_limit=const.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 2),
@@ -564,7 +565,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=angle_accs[:, 0],
         title="X Angular Acceleration",
-        data_label="Angular Acceleration (rad/s^2)",
+        data_label="[rad/s^2]",
         min_limit=-const.max_angle_acc,
         max_limit=const.max_angle_acc,
     )
@@ -573,7 +574,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=angle_accs[:, 1],
         title="Y Angular Acceleration",
-        data_label="Angular Acceleration (rad/s^2)",
+        data_label="[rad/s^2]",
         min_limit=-const.max_angle_acc,
         max_limit=const.max_angle_acc,
     )
@@ -582,7 +583,7 @@ def _plot_cartesian_trajectory_p(
         time=times,
         data=angle_accs[:, 2],
         title="Z Angular Acceleration",
-        data_label="Angular Acceleration (rad/s^2)",
+        data_label="[rad/s^2]",
         min_limit=-const.max_angle_acc,
         max_limit=const.max_angle_acc,
     )
@@ -687,6 +688,206 @@ def plot_cartesian_table_trajectory(
         angle_acc_fun=utils.table_angle_acc,
     )
     return fig
+
+
+def plot_actuator_trajectory(
+    trajectory: list[spec.TableSol],
+    fig_title: str = "Actuator Trajectory",
+    fig_kwds: dict = {},
+) -> mpl_fig.Figure:
+    """Plot the actuator trajectory from the solutions of a simulation run.
+
+    Specifically, we plot leg lengths, leg velocities, leg accelerations,
+    and joint angles.
+
+    Parameters
+    ----------
+    trajectory :
+        List of initial conditions to plot.
+    fig_title :
+        Suptitle of the figure.
+    fig_kwds :
+        Other figure keywords.
+
+    Returns
+    -------
+    Figure with actuator lengths, velocities, accelerations, and joint angles.
+    """
+    fig, axes = plt.subplots(
+        nrows=2,
+        ncols=2,
+        figsize=(16, 10),
+        gridspec_kw={"wspace": 0.35},
+        **fig_kwds,
+    )
+    fig.suptitle(fig_title, fontsize=16)
+
+    times = np.arange(0, len(trajectory), dtype=float) * const.dt
+
+    colors = [mpl.colormaps["viridis"](c) for c in np.linspace(0, 1, 6)]
+
+    ###############
+    # leg lengths #
+    ###############
+
+    leg_pos = [utils.leg_pos(sol) for sol in trajectory]
+    leg_pos = np.array(leg_pos)
+
+    ax_pos = axes[0, 0]
+    ax_pos.set_title("Leg Lengths")
+    ax_pos.set_xlabel("[s]")
+    ax_pos.set_ylabel("[m]")
+    ax_pos.set_xlim(times[0], times[-1])
+    ax_pos.set_ylim(*_get_limits(leg_pos))
+    ax_pos.grid()
+
+    for leg_num, color in zip(range(leg_pos.shape[1]), colors):
+        ax_pos.plot(
+            times,
+            leg_pos[:, leg_num],
+            color=color,
+            label=f"Leg {leg_num + 1}",
+        )
+    ax_pos.axhline(
+        y=const.leg_min,
+        linestyle="-",
+        alpha=0.5,
+        color="red",
+        label="Min Length",
+    )
+    ax_pos.axhline(
+        y=const.leg_max,
+        linestyle="-",
+        alpha=0.5,
+        color="red",
+        label="Max Length",
+    )
+    ax_pos.legend()
+
+    ##################
+    # leg velocities #
+    ##################
+
+    leg_vel = [utils.leg_vel(sol) for sol in trajectory]
+    leg_vel = np.array(leg_vel)
+
+    ax_vel = axes[0, 1]
+    ax_vel.set_title("Leg Velocities")
+    ax_vel.set_xlabel("[s]")
+    ax_vel.set_ylabel("[m/s]")
+    ax_vel.set_xlim(times[0], times[-1])
+    ax_vel.set_ylim(*_get_limits(leg_vel))
+    ax_vel.grid()
+
+    for leg_num, color in zip(range(leg_vel.shape[1]), colors):
+        ax_vel.plot(
+            times,
+            leg_vel[:, leg_num],
+            color=color,
+            label=f"Leg {leg_num + 1}",
+        )
+    ax_vel.axhline(
+        y=-const.max_leg_vel,
+        linestyle="-",
+        alpha=0.5,
+        color="red",
+        label="Min Velocity",
+    )
+    ax_vel.axhline(
+        y=const.max_leg_vel,
+        linestyle="-",
+        alpha=0.5,
+        color="red",
+        label="Max Velocity",
+    )
+    ax_vel.legend()
+
+    #####################
+    # leg accelerations #
+    #####################
+
+    leg_acc = [utils.leg_acc(sol) for sol in trajectory]
+    leg_acc = np.array(leg_acc)
+
+    ax_acc = axes[1, 0]
+    ax_acc.set_title("Leg Accelerations")
+    ax_acc.set_xlabel("[s]")
+    ax_acc.set_ylabel("[m/s^2]")
+    ax_acc.set_xlim(times[0], times[-1])
+    ax_acc.set_ylim(*_get_limits(leg_acc))
+    ax_acc.grid()
+
+    for leg_num, color in zip(range(leg_acc.shape[1]), colors):
+        ax_acc.plot(
+            times,
+            leg_acc[:, leg_num],
+            color=color,
+            label=f"Leg {leg_num + 1}",
+        )
+    ax_acc.legend()
+
+    ################
+    # joint angles #
+    ################
+
+    top_joint_angles = [utils.angle_joint_top(sol) for sol in trajectory]
+    top_joint_angles = np.array(top_joint_angles)
+    top_joint_angles = np.degrees(top_joint_angles)
+
+    bot_joint_angles = [utils.angle_joint_bot(sol) for sol in trajectory]
+    bot_joint_angles = np.array(bot_joint_angles)
+    bot_joint_angles = np.degrees(bot_joint_angles)
+
+    ax_angles = axes[1, 1]
+    ax_angles.set_title("Joint Angles")
+    ax_angles.set_xlabel("[s]")
+    ax_angles.set_ylabel("[deg]")
+    ax_angles.set_xlim(times[0], times[-1])
+    y_lim_data = np.concatenate(
+        [top_joint_angles.flatten(), bot_joint_angles.flatten()]
+    )
+    ax_angles.set_ylim(*_get_limits(y_lim_data))
+    ax_angles.grid()
+
+    joint_colors = [mpl.colormaps["viridis"](c) for c in np.linspace(0, 1, 12)]
+
+    for leg_num, color in zip(
+        range(top_joint_angles.shape[1]), joint_colors[:6]
+    ):
+        ax_angles.plot(
+            times,
+            top_joint_angles[:, leg_num],
+            color=color,
+            label=f"Top Joint {leg_num + 1}",
+        )
+    for leg_num, color in zip(
+        range(bot_joint_angles.shape[1]), joint_colors[6:]
+    ):
+        ax_angles.plot(
+            times,
+            bot_joint_angles[:, leg_num],
+            color=color,
+            label=f"Bottom Joint {leg_num + 1}",
+        )
+    ax_angles.axhline(
+        y=np.degrees(const.joint_max_angle),
+        linestyle="-",
+        alpha=0.5,
+        color="red",
+        label="Max Joint Angle",
+    )
+    ax_angles.legend()
+
+    return fig
+
+
+def split_tablesol(table_sol: spec.TableSol) -> list[spec.TableSol]:
+    """Split a TableSol into a list of of 2 point horizon TableSol."""
+    assert table_sol.u.shape[0] > 1
+    split_sols = []
+    for i in range(table_sol.u.shape[0] - 1):
+        split_sols.append(table_sol[i : i + 2])
+    return split_sols
 
 
 if __name__ == "__main__":

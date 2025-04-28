@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import typing as tp
 import dataclasses
 import numpy as np
 import matplotlib.figure as mpl_fig
@@ -543,6 +544,25 @@ class TableSol:
         )
 
         return cls(x=x, u=u, stats=stats)
+
+    def __iter__(self) -> tp.Iterator:
+        for field in dataclasses.fields(self):
+            yield getattr(self, field.name)
+
+    def __getitem__(
+        self, key: int | slice | tuple[int | slice, ...]
+    ) -> "TableSol":
+        if isinstance(key, slice):
+            x_key = slice(key.start, key.stop, key.step)
+            u_key = slice(key.start, key.stop - 1, key.step)
+        else:
+            x_key = key
+            u_key = key
+        return TableSol(
+            x=self.x[x_key],
+            u=self.u[u_key],
+            stats=self.stats,
+        )
 
 
 @dataclasses.dataclass
