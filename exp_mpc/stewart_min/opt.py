@@ -155,6 +155,11 @@ class Control:
     pitch: jax.Array
     yaw: jax.Array
 
+    @property
+    def size(self) -> int:
+        """Get the size of the control vector."""
+        return self.x.size
+
     def __iter__(self) -> tp.Iterator[jax.Array]:
         for field in dataclasses.fields(self):
             yield getattr(self, field.name)
@@ -316,12 +321,108 @@ def _get_joint_angles(state: State) -> jax.Array:
     )
 
 
+################
+# weight class #
+################
+
+
+def _init_field(arr: jax.Array) -> jax.Array:
+    """Initialize a field with the same shape as the input array."""
+    return dataclasses.field(
+        default_factory=lambda: jnp.ones(arr.shape),
+    )
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class Weights:
+    """Cost function weights."""
+
+    acc: jax.Array = _init_field(jnp.ones(3))
+    omega: jax.Array = _init_field(jnp.ones(3))
+    leg: jax.Array = _init_field(jnp.ones(6))
+    joint_angle: jax.Array = _init_field(jnp.ones(12))
+    yaw: jax.Array = _init_field(jnp.ones(1))
+    control: jax.Array = _init_field(jnp.ones(6))
+
+    def __post_init__(self) -> None:
+        assert self.acc.ndim == 1
+        assert self.acc.shape[0] == 3
+        assert self.omega.ndim == 1
+        assert self.omega.shape[0] == 3
+        assert self.leg.ndim == 1
+        assert self.leg.shape[0] == 6
+        assert self.joint_angle.ndim == 1
+        assert self.joint_angle.shape[0] == 12
+        assert self.yaw.ndim == 1
+        assert self.yaw.shape[0] == 1
+        assert self.control.ndim == 1
+        assert self.control.shape[0] == 6
+
+        assert jnp.issubdtype(self.acc.dtype, jnp.floating)
+        assert jnp.issubdtype(self.omega.dtype, jnp.floating)
+        assert jnp.issubdtype(self.leg.dtype, jnp.floating)
+        assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
+        assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
+        assert jnp.issubdtype(self.control.dtype, jnp.floating)
+
+    def _time_scale(self, n: int) -> jax.Array:
+        """Get time scale weights for flat array."""
+        # TODO(jozbee): add interesting time scales
+        return jnp.ones(n, dtype=float)
+
+    def scale_acc(self, n: int) -> jax.Array:
+        """Get scale weights for flat acceleration array."""
+        time_scale = self._time_scale(n)
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.acc.size))
+        val_scale = jnp.tile(self.acc, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_omega(self, n: int) -> jax.Array:
+        """Get scale weights for flat angular velocity array."""
+        time_scale = self._time_scale(n)
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.omega.size))
+        val_scale = jnp.tile(self.omega, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_leg(self, n: int) -> jax.Array:
+        """Get scale weights for flat leg length array."""
+        time_scale = self._time_scale(n)
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg.size))
+        val_scale = jnp.tile(self.leg, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_joint_angle(self, n: int) -> jax.Array:
+        """Get scale weights for flat joint angle array."""
+        time_scale = self._time_scale(n)
+        time_scale = jnp.tile(
+            time_scale.reshape(-1, 1), (1, self.joint_angle.size)
+        )
+        val_scale = jnp.tile(self.joint_angle, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_yaw(self, n: int) -> jax.Array:
+        """Get scale weights for flat yaw angle array."""
+        time_scale = self._time_scale(n)
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw.size))
+        val_scale = jnp.tile(self.yaw, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_control(self, n: int) -> jax.Array:
+        """Get scale weights for flat control array."""
+        time_scale = self._time_scale(n)
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.control.size))
+        val_scale = jnp.tile(self.control, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+
 ########
 # cost #
 ########
 
 
 def _head_xyz_acc_cost(
+    weights: Weights,
     acc_ref: jax.Array,
     state0: jax.Array,
     control: Control,
@@ -341,14 +442,16 @@ def _head_xyz_acc_cost(
         _world = _R_dot2 @ const.human_displacement + _acc + const.gravity
         _head = _R_T @ _world
         _diff = _head - _ref
-        return _diff @ _diff  # sum squares
+        return _diff * _diff
 
     # skip initial conditions in state
-    costs = jax.vmap(_single)(acc_ref, state[1:], control)
-    return jnp.mean(costs)
+    costs = jnp.ravel(jax.vmap(_single)(acc_ref, state[1:], control))
+    w = weights.scale_acc(control.size)
+    return jnp.mean(costs * w)
 
 
 def _get_omega_cost(
+    weights: Weights,
     omega_ref: jax.Array,
     state0: jax.Array,
     control: Control,
@@ -369,14 +472,16 @@ def _get_omega_cost(
             [_omega_mat[2, 1], _omega_mat[0, 2], _omega_mat[1, 0]]
         )
         _diff = _omega - _ref
-        return _diff @ _diff
+        return _diff * _diff
 
     # skip initial conditions in state
-    costs = jax.vmap(_single)(omega_ref, state[1:])
-    return jnp.mean(costs)
+    costs = jnp.ravel(jax.vmap(_single)(omega_ref, state[1:]))
+    w = weights.scale_omega(control.size)
+    return jnp.mean(costs * w)
 
 
 def _get_leg_boundary(
+    weights: Weights,
     cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control: Control,
@@ -384,10 +489,12 @@ def _get_leg_boundary(
     state = control.get_state(state0)
     lengths = jnp.ravel(jax.vmap(_get_squared_lengths)(state[1:]))
     costs = jax.vmap(cost)(lengths)
-    return jnp.mean(costs)
+    w = weights.scale_leg(control.size)
+    return jnp.mean(costs * w)
 
 
 def _get_joint_angle_boundary(
+    weights: Weights,
     cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control: Control,
@@ -399,25 +506,38 @@ def _get_joint_angle_boundary(
     """
     state = control.get_state(state0)
     angles = jnp.ravel(jax.vmap(_get_joint_angles)(state[1:]))
-    return jnp.mean(jax.vmap(cost)(angles))
+    costs = jax.vmap(cost)(angles)
+    w = weights.scale_joint_angle(control.size)
+    return jnp.mean(costs * w)
 
 
 def _get_yaw_boundary(
+    weights: Weights,
     cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control: Control,
 ) -> jax.Array:
     state = control.get_state(state0)
-    return jnp.mean(jax.vmap(cost)(state.yaw[1:]))
+    yaw = state.yaw[1:]
+    costs = jax.vmap(cost)(yaw)
+    w = weights.scale_yaw(control.size)
+    return jnp.mean(costs * w)
 
 
 def _control_cost(
+    weights: Weights,
     control: Control,
 ) -> jax.Array:
-    return jnp.mean(jnp.square(control.flatten()))  # sum squares
+    control_arr = control.flatten().reshape(-1, 6)
+    control_arr = jax.vmap(lambda ell: ell * weights.control)(control_arr)
+    control_arr = jnp.ravel(control_arr)
+    costs = jnp.square(control_arr)
+    w = weights.scale_control(control.size)
+    return jnp.mean(costs * w)
 
 
 def _cost(
+    weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
@@ -427,12 +547,14 @@ def _cost(
     control: Control,
 ) -> jax.Array:
     cost = jnp.array(0.0)
-    cost = cost + _head_xyz_acc_cost(acc_ref, state0, control)
-    cost = cost + _get_omega_cost(omega_ref, state0, control)
-    cost = cost + _get_leg_boundary(leg_cost, state0, control)  # * 5e2
-    cost = cost + _get_joint_angle_boundary(joint_angle_cost, state0, control)
-    cost = cost + _get_yaw_boundary(yaw_cost, state0, control)
-    cost = cost + _control_cost(control)
+    cost = cost + _head_xyz_acc_cost(weights, acc_ref, state0, control)
+    cost = cost + _get_omega_cost(weights, omega_ref, state0, control)
+    cost = cost + _get_leg_boundary(weights, leg_cost, state0, control)  # * 5e2
+    cost = cost + _get_joint_angle_boundary(
+        weights, joint_angle_cost, state0, control
+    )
+    cost = cost + _get_yaw_boundary(weights, yaw_cost, state0, control)
+    cost = cost + _control_cost(weights, control)
     return cost
 
 
@@ -447,6 +569,7 @@ def _cost(
 
 @jax.jit
 def _cost_flat(
+    weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
@@ -457,6 +580,7 @@ def _cost_flat(
 ) -> jax.Array:
     control = Control.from_flat(control_flat)
     return _cost(
+        weights,
         acc_ref,
         omega_ref,
         leg_cost,
@@ -469,6 +593,7 @@ def _cost_flat(
 
 @jax.jit
 def _cost_jac(
+    weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
@@ -479,6 +604,7 @@ def _cost_jac(
 ) -> jax.Array:
     cost = functools.partial(
         _cost_flat,
+        weights,
         acc_ref,
         omega_ref,
         leg_cost,
@@ -491,6 +617,7 @@ def _cost_jac(
 
 @jax.jit
 def _cost_hessp(
+    weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
@@ -502,6 +629,7 @@ def _cost_hessp(
 ) -> jax.Array:
     cost = functools.partial(
         _cost_flat,
+        weights,
         acc_ref,
         omega_ref,
         leg_cost,
@@ -518,6 +646,7 @@ def _cost_hessp(
 
 @jax.jit
 def _cost_hess_mat(
+    weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
@@ -528,6 +657,7 @@ def _cost_hess_mat(
 ) -> jax.Array:
     cost = functools.partial(
         _cost_flat,
+        weights,
         acc_ref,
         omega_ref,
         leg_cost,
@@ -539,6 +669,7 @@ def _cost_hess_mat(
 
 
 def get_cost(
+    weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
@@ -576,7 +707,15 @@ def get_cost(
     -------
     Cost function, gradient function, and hessian function.
     """
-    params = (acc_ref, omega_ref, leg_cost, joint_angle_cost, yaw_cost, state0)
+    params = (
+        weights,
+        acc_ref,
+        omega_ref,
+        leg_cost,
+        joint_angle_cost,
+        yaw_cost,
+        state0,
+    )
     cost = functools.partial(_cost_flat, *params)
     cost_jac = functools.partial(_cost_jac, *params)
     cost_hessp = functools.partial(_cost_hessp, *params)
@@ -634,6 +773,8 @@ if __name__ == "__main__":
 
     state0 = jnp.zeros(12, dtype=float)
 
+    weights = Weights()
+
     acc_ref = jnp.array([1.0, 0.0, 0.0]) + const.gravity  # m/s^2
     acc_ref = jnp.tile(A=acc_ref, reps=(n, 1))
     omega_ref = jnp.array([0.0, 0.0, 0.0])  # rad/s
@@ -662,6 +803,7 @@ if __name__ == "__main__":
 
     acados_get_cost = functools.partial(
         get_cost,
+        weights=weights,
         acc_ref=acc_ref,
         omega_ref=omega_ref,
         leg_cost=leg_cost,
