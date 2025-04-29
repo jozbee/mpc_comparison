@@ -344,6 +344,12 @@ class Weights:
     joint_angle: jax.Array = _init_field(jnp.ones(12))
     yaw: jax.Array = _init_field(jnp.ones(1))
     control: jax.Array = _init_field(jnp.ones(6))
+    alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
+    alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
+    alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
 
     def __post_init__(self) -> None:
         assert self.acc.ndim == 1
@@ -366,35 +372,38 @@ class Weights:
         assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
         assert jnp.issubdtype(self.control.dtype, jnp.floating)
 
-    def _time_scale(self, n: int) -> jax.Array:
+    def _time_scale(self, n: int, alpha: jax.Array) -> jax.Array:
         """Get time scale weights for flat array."""
-        # TODO(jozbee): add interesting time scales
-        return jnp.ones(n, dtype=float)
+        # identity
+        # return jnp.ones(n, dtype=float)
+
+        # exponential decrease
+        return jnp.exp(-jnp.arange(n, dtype=float) / n * alpha)
 
     def scale_acc(self, n: int) -> jax.Array:
         """Get scale weights for flat acceleration array."""
-        time_scale = self._time_scale(n)
+        time_scale = self._time_scale(n, self.alpha_acc)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.acc.size))
         val_scale = jnp.tile(self.acc, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_omega(self, n: int) -> jax.Array:
         """Get scale weights for flat angular velocity array."""
-        time_scale = self._time_scale(n)
+        time_scale = self._time_scale(n, self.alpha_omega)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.omega.size))
         val_scale = jnp.tile(self.omega, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_leg(self, n: int) -> jax.Array:
         """Get scale weights for flat leg length array."""
-        time_scale = self._time_scale(n)
+        time_scale = self._time_scale(n, self.alpha_leg)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg.size))
         val_scale = jnp.tile(self.leg, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_joint_angle(self, n: int) -> jax.Array:
         """Get scale weights for flat joint angle array."""
-        time_scale = self._time_scale(n)
+        time_scale = self._time_scale(n, self.alpha_joint_angle)
         time_scale = jnp.tile(
             time_scale.reshape(-1, 1), (1, self.joint_angle.size)
         )
@@ -403,14 +412,14 @@ class Weights:
 
     def scale_yaw(self, n: int) -> jax.Array:
         """Get scale weights for flat yaw angle array."""
-        time_scale = self._time_scale(n)
+        time_scale = self._time_scale(n, self.alpha_yaw)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw.size))
         val_scale = jnp.tile(self.yaw, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_control(self, n: int) -> jax.Array:
         """Get scale weights for flat control array."""
-        time_scale = self._time_scale(n)
+        time_scale = self._time_scale(n, self.alpha_control)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.control.size))
         val_scale = jnp.tile(self.control, (n, 1))
         return jnp.ravel(time_scale * val_scale)
@@ -528,10 +537,12 @@ def _control_cost(
     weights: Weights,
     control: Control,
 ) -> jax.Array:
-    control_arr = control.flatten().reshape(-1, 6)
-    control_arr = jax.vmap(lambda ell: ell * weights.control)(control_arr)
-    control_arr = jnp.ravel(control_arr)
-    costs = jnp.square(control_arr)
+    # control_arr = control.flatten().reshape(-1, 6)
+    # control_diff = jnp.ravel(jnp.diff(control_arr, axis=0))
+    # costs = jnp.square(
+    #     jnp.concatenate([control_arr.at[0, :].get(), control_diff])
+    # )
+    costs = jnp.square(control.flatten())
     w = weights.scale_control(control.size)
     return jnp.mean(costs * w)
 
