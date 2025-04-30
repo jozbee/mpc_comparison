@@ -367,7 +367,7 @@ def table_angle_acc(sol: spec.TableSol) -> np.ndarray:
 def table_angle(sol: spec.TableSol) -> np.ndarray:
     """Table angle."""
     pose = sol.pose_at(1)
-    return np.array(pose.rpy())
+    return np.degrees(pose.rpy())
 
 
 def table_pos(sol: spec.TableSol) -> np.ndarray:

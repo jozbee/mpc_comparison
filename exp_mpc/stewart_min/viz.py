@@ -370,27 +370,27 @@ def _plot_cartesian_trajectory(
         time=times,
         data=angles[:, 0],
         title="Roll Angle",
-        data_label="[rad]",
-        min_limit=-const.max_roll,
-        max_limit=const.max_roll,
+        data_label="[deg]",
+        min_limit=-np.degrees(const.max_roll),
+        max_limit=np.degrees(const.max_roll),
     )
     simple_plot(
         axis=ax_pitch,
         time=times,
         data=angles[:, 1],
         title="Pitch Angle",
-        data_label="[rad]",
-        min_limit=-const.max_pitch,
-        max_limit=const.max_pitch,
+        data_label="[deg]",
+        min_limit=-np.degrees(const.max_pitch),
+        max_limit=np.degrees(const.max_pitch),
     )
     simple_plot(
         axis=ax_yaw,
         time=times,
         data=angles[:, 2],
         title="Yaw Angle",
-        data_label="[rad]",
-        min_limit=-const.max_yaw,
-        max_limit=const.max_yaw,
+        data_label="[deg]",
+        min_limit=-np.degrees(const.max_yaw),
+        max_limit=np.degrees(const.max_yaw),
     )
 
 
