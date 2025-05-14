@@ -385,14 +385,14 @@ class Weights:
         time_scale = self._time_scale(n, self.alpha_acc)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.acc.size))
         val_scale = jnp.tile(self.acc, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
+        return time_scale * val_scale
 
     def scale_omega(self, n: int) -> jax.Array:
         """Get scale weights for flat angular velocity array."""
         time_scale = self._time_scale(n, self.alpha_omega)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.omega.size))
         val_scale = jnp.tile(self.omega, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
+        return time_scale * val_scale
 
     def scale_leg(self, n: int) -> jax.Array:
         """Get scale weights for flat leg length array."""
@@ -425,6 +425,40 @@ class Weights:
         return jnp.ravel(time_scale * val_scale)
 
 
+###################
+# hyperbolic cost #
+###################
+
+
+def _hyper(x: jax.Array) -> jax.Array:
+    """Hyperbolic cost function.
+
+    When composed with the vector L^2 norm, this function is quadratic, but
+    has the same linear asymptotics as the L^1 norm.
+
+    Note
+    ----
+    We modified the hyperbolic tangent function to work better with auto-diff.
+    The original function is
+
+    .. math:: \\sqrt{1 + \frac{x^2}{a^2}} - 1.
+
+    Instead, we use
+
+    .. math:: \\sqrt{1 + \frac{x}{a}} - 1.
+
+    So, instead of passing the L^2 norm, we should pass the squared L^2 norm.
+    Even though the two forms are equivalent under these norm conventions,
+    the compiler will _not_ cancel the square root and the square, which causes
+    intermediate values to become nan.
+    """
+    # we can scale the input to make the quadratic region of attraction larger
+    # for us, unity works quite well
+    # a = 2**-6
+    a = 2**0
+    return jnp.sqrt(1.0 + x / a) - 1.0
+
+
 ########
 # cost #
 ########
@@ -443,20 +477,25 @@ def _head_xyz_acc_cost(
 
     state = control.get_state(state0)
 
-    def _single(_ref: jax.Array, _state: State, _control: Control) -> jax.Array:
+    def _single(
+        _ref: jax.Array, _state: State, _control: Control, _w: jax.Array
+    ) -> jax.Array:
         """Cost for a single input pairing."""
         _R_T = _get_R_T(_state)
         _R_dot2 = _get_R_dot2(_state, _control)
         _acc = _control.xyz()
         _world = _R_dot2 @ const.human_displacement + _acc + const.gravity
         _head = _R_T @ _world
-        _diff = _head - _ref
-        return _diff * _diff
+        _diff = (_head - _ref) * _w
+        _delta_z = _diff.at[2].get()
+        _delta_xy = _diff.at[:2].get()
+        return _hyper(_delta_xy @ _delta_xy) + _hyper(_delta_z * _delta_z)
 
     # skip initial conditions in state
-    costs = jnp.ravel(jax.vmap(_single)(acc_ref, state[1:], control))
     w = weights.scale_acc(control.size)
-    return jnp.mean(costs * w)
+    assert w.shape == acc_ref.shape
+    costs = jnp.ravel(jax.vmap(_single)(acc_ref, state[1:], control, w))
+    return jnp.mean(costs)
 
 
 def _get_omega_cost(
@@ -472,7 +511,7 @@ def _get_omega_cost(
 
     state = control.get_state(state0)
 
-    def _single(_ref: jax.Array, _state: State) -> jax.Array:
+    def _single(_ref: jax.Array, _state: State, _w: jax.Array) -> jax.Array:
         """Cost for a single input pairing."""
         _R_T = _get_R_T(_state)
         _R_dot = _get_R_dot(_state)
@@ -480,13 +519,17 @@ def _get_omega_cost(
         _omega = jnp.array(
             [_omega_mat[2, 1], _omega_mat[0, 2], _omega_mat[1, 0]]
         )
-        _diff = _omega - _ref
-        return _diff * _diff
+        _diff = (_omega - _ref) * _w
+        return _hyper(_diff @ _diff)
+        # return _hyper(_diff @ _diff)
+        # return _hyper(jnp.sqrt(_diff @ _diff))
+        # return _hyper(jnp.linalg.norm(_diff))
 
     # skip initial conditions in state
-    costs = jnp.ravel(jax.vmap(_single)(omega_ref, state[1:]))
     w = weights.scale_omega(control.size)
-    return jnp.mean(costs * w)
+    assert w.shape == omega_ref.shape
+    costs = jnp.ravel(jax.vmap(_single)(omega_ref, state[1:], w))
+    return jnp.mean(costs)
 
 
 def _get_leg_boundary(
@@ -560,7 +603,7 @@ def _cost(
     cost = jnp.array(0.0)
     cost = cost + _head_xyz_acc_cost(weights, acc_ref, state0, control)
     cost = cost + _get_omega_cost(weights, omega_ref, state0, control)
-    cost = cost + _get_leg_boundary(weights, leg_cost, state0, control)  # * 5e2
+    cost = cost + _get_leg_boundary(weights, leg_cost, state0, control)
     cost = cost + _get_joint_angle_boundary(
         weights, joint_angle_cost, state0, control
     )
@@ -579,7 +622,7 @@ def _cost(
 
 
 @jax.jit
-def _cost_flat(
+def cost_flat_jax(
     weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
@@ -603,7 +646,7 @@ def _cost_flat(
 
 
 @jax.jit
-def _cost_jac(
+def cost_jac_jax(
     weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
@@ -614,7 +657,7 @@ def _cost_jac(
     control_flat: jax.Array,
 ) -> jax.Array:
     cost = functools.partial(
-        _cost_flat,
+        cost_flat_jax,
         weights,
         acc_ref,
         omega_ref,
@@ -623,11 +666,12 @@ def _cost_jac(
         yaw_cost,
         state0,
     )
-    return jax.grad(cost)(control_flat)
+    res = jax.grad(cost)(control_flat)
+    return res
 
 
 @jax.jit
-def _cost_hessp(
+def cost_hessp_jax(
     weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
@@ -639,7 +683,7 @@ def _cost_hessp(
     v: jax.Array,
 ) -> jax.Array:
     cost = functools.partial(
-        _cost_flat,
+        cost_flat_jax,
         weights,
         acc_ref,
         omega_ref,
@@ -656,7 +700,7 @@ def _cost_hessp(
 
 
 @jax.jit
-def _cost_hess_mat(
+def cost_hess_mat_jax(
     weights: Weights,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
@@ -667,7 +711,7 @@ def _cost_hess_mat(
     control_flat: jax.Array,
 ) -> jax.Array:
     cost = functools.partial(
-        _cost_flat,
+        cost_flat_jax,
         weights,
         acc_ref,
         omega_ref,
@@ -727,10 +771,10 @@ def get_cost(
         yaw_cost,
         state0,
     )
-    cost = functools.partial(_cost_flat, *params)
-    cost_jac = functools.partial(_cost_jac, *params)
-    cost_hessp = functools.partial(_cost_hessp, *params)
-    cost_hess_mat = functools.partial(_cost_hess_mat, *params)
+    cost = functools.partial(cost_flat_jax, *params)
+    cost_jac = functools.partial(cost_jac_jax, *params)
+    cost_hessp = functools.partial(cost_hessp_jax, *params)
+    cost_hess_mat = functools.partial(cost_hess_mat_jax, *params)
 
     def cost_wrapper(control_flat: np.ndarray) -> float:
         control = jnp.array(control_flat)
@@ -776,7 +820,7 @@ if __name__ == "__main__":
     # example usage
     import time
     import scipy.optimize as sci_opt
-    import tqdm
+    import tqdm  # type: ignore
 
     T = 4.0  # s
     num_steps = int(T / const.dt)

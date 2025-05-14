@@ -40,3 +40,5 @@ line-length = 80
 typeCheckingMode = "standard"
 reportIncompatibleMethodOverride = false
 reportIncompatibleVariableOverride = false
+reportCallIssue = false
+reportOperatorIssue = false
