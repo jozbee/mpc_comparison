@@ -142,6 +142,14 @@ class State:
         z = self.z.reshape(-1)
         return jnp.concatenate([x, y, z])
 
+    def xyz_dot(self) -> jax.Array:
+        """Get the x, y, z velocities of the state points."""
+        # enforce 1d
+        x_dot = self.x_dot.reshape(-1)
+        y_dot = self.y_dot.reshape(-1)
+        z_dot = self.z_dot.reshape(-1)
+        return jnp.concatenate([x_dot, y_dot, z_dot])
+
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
@@ -308,6 +316,20 @@ def _get_squared_lengths(state: State) -> jax.Array:
     return jnp.array(lengths)
 
 
+def _get_length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
+    R, R_dot = utils._get_R_and_dot(
+        phi=state.roll,
+        theta=state.pitch,
+        psi=state.yaw,
+        phi_dot=state.roll_dot,
+        theta_dot=state.pitch_dot,
+        psi_dot=state.yaw_dot,
+    )
+    t = state.xyz()
+    t_dot = state.xyz_dot()
+    return utils._leg_pos_vel(R, t, R_dot, t_dot)
+
+
 def _get_joint_angles(state: State) -> jax.Array:
     return jnp.concatenate(
         utils._angle_joint(
@@ -341,12 +363,14 @@ class Weights:
     acc: jax.Array = _init_field(jnp.ones(3))
     omega: jax.Array = _init_field(jnp.ones(3))
     leg: jax.Array = _init_field(jnp.ones(6))
+    leg_vel: jax.Array = _init_field(jnp.ones(6))
     joint_angle: jax.Array = _init_field(jnp.ones(12))
     yaw: jax.Array = _init_field(jnp.ones(1))
     control: jax.Array = _init_field(jnp.ones(6))
     alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
     alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
     alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
@@ -358,6 +382,8 @@ class Weights:
         assert self.omega.shape[0] == 3
         assert self.leg.ndim == 1
         assert self.leg.shape[0] == 6
+        assert self.leg_vel.ndim == 1
+        assert self.leg_vel.shape[0] == 6
         assert self.joint_angle.ndim == 1
         assert self.joint_angle.shape[0] == 12
         assert self.yaw.ndim == 1
@@ -368,6 +394,7 @@ class Weights:
         assert jnp.issubdtype(self.acc.dtype, jnp.floating)
         assert jnp.issubdtype(self.omega.dtype, jnp.floating)
         assert jnp.issubdtype(self.leg.dtype, jnp.floating)
+        assert jnp.issubdtype(self.leg_vel.dtype, jnp.floating)
         assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
         assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
         assert jnp.issubdtype(self.control.dtype, jnp.floating)
@@ -399,6 +426,13 @@ class Weights:
         time_scale = self._time_scale(n, self.alpha_leg)
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg.size))
         val_scale = jnp.tile(self.leg, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_leg_vel(self, n: int) -> jax.Array:
+        """Get scale weights for flat leg length array."""
+        time_scale = self._time_scale(n, self.alpha_leg_vel)
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg_vel.size))
+        val_scale = jnp.tile(self.leg_vel, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_joint_angle(self, n: int) -> jax.Array:
@@ -534,15 +568,25 @@ def _get_omega_cost(
 
 def _get_leg_boundary(
     weights: Weights,
-    cost: quartic_cost.QuarticCost,
+    length_cost: quartic_cost.QuarticCost,
+    vel_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control: Control,
 ) -> jax.Array:
+    """Include leg length and leg velocity costs.
+
+    By using automatic differentiation, we can compute the lengths and the
+    velocities cheaper than computing them separately, which is productive.
+    """
     state = control.get_state(state0)
-    lengths = jnp.ravel(jax.vmap(_get_squared_lengths)(state[1:]))
-    costs = jax.vmap(cost)(lengths)
-    w = weights.scale_leg(control.size)
-    return jnp.mean(costs * w)
+    lengths, vels = jax.vmap(_get_length_and_vel)(state[1:])
+    lengths = jnp.ravel(lengths)
+    vels = jnp.ravel(vels)
+    length_costs = jax.vmap(length_cost)(lengths)
+    vel_costs = jax.vmap(vel_cost)(vels)
+    w_len = weights.scale_leg(control.size)
+    w_vel = weights.scale_leg_vel(control.size)
+    return jnp.mean(length_costs * w_len) + jnp.mean(vel_costs * w_vel)
 
 
 def _get_joint_angle_boundary(
@@ -595,6 +639,7 @@ def _cost(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
     joint_angle_cost: quartic_cost.QuarticCost,
     yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
@@ -603,10 +648,12 @@ def _cost(
     cost = jnp.array(0.0)
     cost = cost + _head_xyz_acc_cost(weights, acc_ref, state0, control)
     cost = cost + _get_omega_cost(weights, omega_ref, state0, control)
-    cost = cost + _get_leg_boundary(weights, leg_cost, state0, control)
-    cost = cost + _get_joint_angle_boundary(
-        weights, joint_angle_cost, state0, control
+    cost = cost + _get_leg_boundary(
+        weights, leg_cost, leg_vel_cost, state0, control
     )
+    # cost = cost + _get_joint_angle_boundary(
+    #     weights, joint_angle_cost, state0, control
+    # )
     cost = cost + _get_yaw_boundary(weights, yaw_cost, state0, control)
     cost = cost + _control_cost(weights, control)
     return cost
@@ -627,6 +674,7 @@ def cost_flat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
     joint_angle_cost: quartic_cost.QuarticCost,
     yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
@@ -638,6 +686,7 @@ def cost_flat_jax(
         acc_ref,
         omega_ref,
         leg_cost,
+        leg_vel_cost,
         joint_angle_cost,
         yaw_cost,
         state0,
@@ -651,6 +700,7 @@ def cost_jac_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
     joint_angle_cost: quartic_cost.QuarticCost,
     yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
@@ -662,6 +712,7 @@ def cost_jac_jax(
         acc_ref,
         omega_ref,
         leg_cost,
+        leg_vel_cost,
         joint_angle_cost,
         yaw_cost,
         state0,
@@ -676,6 +727,7 @@ def cost_hessp_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
     joint_angle_cost: quartic_cost.QuarticCost,
     yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
@@ -688,6 +740,7 @@ def cost_hessp_jax(
         acc_ref,
         omega_ref,
         leg_cost,
+        leg_vel_cost,
         joint_angle_cost,
         yaw_cost,
         state0,
@@ -705,6 +758,7 @@ def cost_hess_mat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
     joint_angle_cost: quartic_cost.QuarticCost,
     yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
@@ -716,6 +770,7 @@ def cost_hess_mat_jax(
         acc_ref,
         omega_ref,
         leg_cost,
+        leg_vel_cost,
         joint_angle_cost,
         yaw_cost,
         state0,
@@ -728,6 +783,7 @@ def get_cost(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
     joint_angle_cost: quartic_cost.QuarticCost,
     yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
@@ -745,6 +801,8 @@ def get_cost(
         Should have shape (n, 3) with n the number of control points.
     leg_cost :
         Cost function for leg lengths.
+    leg_vel_cost :
+        Cost function for leg velocities.
     joint_angle_cost :
         Cost function for joint angles.
     yaw_cost :
@@ -767,6 +825,7 @@ def get_cost(
         acc_ref,
         omega_ref,
         leg_cost,
+        leg_vel_cost,
         joint_angle_cost,
         yaw_cost,
         state0,
@@ -840,8 +899,14 @@ if __name__ == "__main__":
     leg_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
         sizes=sizes,
-        low=const.leg_min**2,  # square
-        high=const.leg_max**2,  # square
+        low=const.leg_min,
+        high=const.leg_max,
+    )
+    leg_vel_cost = quartic_cost.QuarticCost.from_bounds(
+        margins=margins,
+        sizes=sizes,
+        low=-const.max_leg_vel,
+        high=const.max_leg_vel,
     )
     joint_angle_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
@@ -862,6 +927,7 @@ if __name__ == "__main__":
         acc_ref=acc_ref,
         omega_ref=omega_ref,
         leg_cost=leg_cost,
+        leg_vel_cost=leg_vel_cost,
         joint_angle_cost=joint_angle_cost,
         yaw_cost=yaw_cost,
         # state0=state0,

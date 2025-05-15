@@ -64,6 +64,18 @@ def _get_R_dot(
 
 
 @jax.jit
+def _get_R_and_dot(
+    phi: float,
+    theta: float,
+    psi: float,
+    phi_dot: float,
+    theta_dot: float,
+    psi_dot: float,
+) -> tuple[jax.Array, jax.Array]:
+    return jax.jvp(_get_R, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))
+
+
+@jax.jit
 def _get_R_dot2(
     phi: float,
     theta: float,
@@ -111,6 +123,13 @@ def _leg_vel(
     R: jax.Array, t: jax.Array, R_dot: jax.Array, t_dot: jax.Array
 ) -> jax.Array:
     return jax.jvp(_leg_pos, (R, t), (R_dot, t_dot))[1]
+
+
+@jax.jit
+def _leg_pos_vel(
+    R: jax.Array, t: jax.Array, R_dot: jax.Array, t_dot: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    return jax.jvp(_leg_pos, (R, t), (R_dot, t_dot))
 
 
 @jax.jit
