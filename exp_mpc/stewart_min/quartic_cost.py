@@ -236,7 +236,7 @@ class QuarticCost:
         assert low < high
 
         unity_knots = [1.0]
-        for m in margins:
+        for m in reversed(margins):
             unity_knots.append(unity_knots[-1] - m)
         unity_knots.append(0.0)
         unity_knots.reverse()

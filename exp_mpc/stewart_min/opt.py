@@ -33,7 +33,6 @@ import scipy.sparse.linalg as sci_sp_lin
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.quartic_cost as quartic_cost
-import exp_mpc.stewart_min.spec as spec
 
 # make sure to enable 64-bit precision for jax
 # testing has shown that this yields better performance in constant acceleration
@@ -555,9 +554,6 @@ def _get_omega_cost(
         )
         _diff = (_omega - _ref) * _w
         return _hyper(_diff @ _diff)
-        # return _hyper(_diff @ _diff)
-        # return _hyper(jnp.sqrt(_diff @ _diff))
-        # return _hyper(jnp.linalg.norm(_diff))
 
     # skip initial conditions in state
     w = weights.scale_omega(control.size)
@@ -722,6 +718,33 @@ def cost_jac_jax(
 
 
 @jax.jit
+def cost_and_grad_flat_jax(
+    weights: Weights,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    leg_cost: quartic_cost.QuarticCost,
+    leg_vel_cost: quartic_cost.QuarticCost,
+    joint_angle_cost: quartic_cost.QuarticCost,
+    yaw_cost: quartic_cost.QuarticCost,
+    state0: jax.Array,
+    control_flat: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    cost = functools.partial(
+        cost_flat_jax,
+        weights,
+        acc_ref,
+        omega_ref,
+        leg_cost,
+        leg_vel_cost,
+        joint_angle_cost,
+        yaw_cost,
+        state0,
+    )
+    cost_and_grad = jax.value_and_grad(cost)
+    return cost_and_grad(control_flat)
+
+
+@jax.jit
 def cost_hessp_jax(
     weights: Weights,
     acc_ref: jax.Array,
@@ -830,18 +853,41 @@ def get_cost(
         yaw_cost,
         state0,
     )
-    cost = functools.partial(cost_flat_jax, *params)
-    cost_jac = functools.partial(cost_jac_jax, *params)
+
+    # warning: deprecated
+    # cost = functools.partial(cost_flat_jax, *params)
+    # cost_jac = functools.partial(cost_jac_jax, *params)
+    # def cost_wrapper(control_flat: np.ndarray) -> float:
+    #     return float(cost(control_flat))
+    # def cost_jac_wrapper(control_flat: np.ndarray) -> np.ndarray:
+    #     return np.array(cost_jac(control_flat))
+
+    cost_and_grad = functools.partial(cost_and_grad_flat_jax, *params)
     cost_hessp = functools.partial(cost_hessp_jax, *params)
     cost_hess_mat = functools.partial(cost_hess_mat_jax, *params)
 
+    # history
+    input_mem: list[np.ndarray] = [np.array(np.nan)]
+    cost_mem: list[np.ndarray] = [np.array(np.nan)]
+    grad_mem: list[np.ndarray] = [np.array(np.nan)]
+
+    def update_mem(control_flat: np.ndarray) -> None:
+        val, grad = cost_and_grad(control_flat)
+        input_mem[0] = control_flat
+        cost_mem[0] = np.array(val)
+        grad_mem[0] = np.array(grad)
+
     def cost_wrapper(control_flat: np.ndarray) -> float:
-        control = jnp.array(control_flat)
-        return float(cost(control))
+        # warning: not safe for general use
+        # if not np.allclose(control_flat, input_mem[0]):
+        update_mem(control_flat)
+        return float(cost_mem[0])
 
     def cost_jac_wrapper(control_flat: np.ndarray) -> np.ndarray:
-        control = jnp.array(control_flat)
-        return np.array(cost_jac(control))
+        # warning: not safe for general use
+        # if not np.allclose(control_flat, input_mem[0]):
+        #     update_mem(control_flat)
+        return grad_mem[0]
 
     def cost_hessp_wrapper(
         control_flat: np.ndarray,
@@ -935,7 +981,9 @@ if __name__ == "__main__":
 
     def train_step(
         state0: jax.Array, last_control: jax.Array
-    ) -> tuple[jax.Array, jax.Array, spec.TableSol, sci_opt.OptimizeResult, float]:
+    ) -> tuple[
+        jax.Array, jax.Array, utils.TableSol, sci_opt.OptimizeResult, float
+    ]:
         """Return next state, computed control (flat), and table solution."""
         cost, cost_jac, _ = acados_get_cost(state0=state0)
         t0 = time.time()
@@ -952,14 +1000,14 @@ if __name__ == "__main__":
         t1 = time.time()
         control = Control.from_flat(jnp.array(res.x))
         state = control.get_state(state0)
-        table_sol = spec.TableSol(
-            x=np.array(jnp.column_stack(list(state))),
-            u=np.array(jnp.column_stack(list(control))),
-            stats=spec.TableStats(
-                time=res.nit,
-                status=res.status,
-                cost=res.fun,
-            )
+        table_sol = utils.TableSol(
+            x=jnp.column_stack(list(state)),
+            u=jnp.column_stack(list(control)),
+            stats=utils.TableStats(
+                time=jnp.array(res.nit),
+                status=jnp.array(res.status),
+                cost=jnp.array(res.fun),
+            ),
         )
         t_tot = t1 - t0
         return state[1].flatten(), control.flatten(), table_sol, res, t_tot

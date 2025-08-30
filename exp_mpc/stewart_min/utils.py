@@ -15,8 +15,134 @@ import functools
 import jax
 import jax.numpy as jnp
 import numpy as np
-import exp_mpc.stewart_min.spec as spec
 import exp_mpc.stewart_min.const as const
+import typing as tp
+import dataclasses
+
+
+################
+# book-keeping #
+################
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class Pose:
+    x: jax.Array
+    y: jax.Array
+    z: jax.Array
+    phi: jax.Array
+    theta: jax.Array
+    psi: jax.Array
+
+    def xyz(self) -> jax.Array:
+        return jnp.stack([self.x, self.y, self.z], axis=-1)
+
+    def rpy(self) -> jax.Array:
+        return jnp.stack([self.phi, self.theta, self.psi], axis=-1)
+
+    def __array__(self, copy: bool = False) -> np.ndarray:
+        assert type(copy) is bool
+        return np.stack(
+            [self.x, self.y, self.z, self.phi, self.theta, self.psi],
+            axis=-1,
+        )
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class PoseDot:
+    x_dot: jax.Array
+    y_dot: jax.Array
+    z_dot: jax.Array
+    phi_dot: jax.Array
+    theta_dot: jax.Array
+    psi_dot: jax.Array
+
+    def xyz(self) -> jax.Array:
+        return jnp.stack([self.x_dot, self.y_dot, self.z_dot], axis=-1)
+
+    def rpy(self) -> jax.Array:
+        return jnp.stack([self.phi_dot, self.theta_dot, self.psi_dot], axis=-1)
+
+    def __array__(self, copy: bool = False) -> np.ndarray:
+        assert type(copy) is bool
+        vals = [self.x_dot, self.y_dot, self.z_dot]
+        vals.extend([self.phi_dot, self.theta_dot, self.psi_dot])
+        return np.stack(vals, axis=-1)
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class PoseDot2:
+    x_dot2: jax.Array
+    y_dot2: jax.Array
+    z_dot2: jax.Array
+    phi_dot2: jax.Array
+    theta_dot2: jax.Array
+    psi_dot2: jax.Array
+
+    def xyz(self) -> jax.Array:
+        return jnp.stack([self.x_dot2, self.y_dot2, self.z_dot2], axis=-1)
+
+    def rpy(self) -> jax.Array:
+        return jnp.stack(
+            [self.phi_dot2, self.theta_dot2, self.psi_dot2], axis=-1
+        )
+
+    def __array__(self, copy: bool = False) -> np.ndarray:
+        assert type(copy) is bool
+        vals = [self.x_dot2, self.y_dot2, self.z_dot2]
+        vals.extend([self.phi_dot2, self.theta_dot2, self.psi_dot2])
+        return np.stack(vals, axis=-1)
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class TableStats:
+    """Statistics of the solution to the Stewart platform OCP."""
+
+    time: jax.Array
+    status: jax.Array
+    cost: jax.Array
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class TableSol:
+    """A solution to the Stewart platform OCP."""
+
+    x: jax.Array
+    u: jax.Array
+    stats: TableStats
+
+    def pose_at(self, i: int | jax.Array) -> Pose:
+        return Pose(*self.x[..., i, :6])
+
+    def pose_dot_at(self, i: int | jax.Array) -> PoseDot:
+        return PoseDot(*self.x[..., i, 6:12])
+
+    def pose_dot2_at(self, i: int | jax.Array) -> PoseDot2:
+        return PoseDot2(*self.u[..., i, :6])
+
+    def __iter__(self) -> tp.Iterator:
+        for field in dataclasses.fields(self):
+            yield getattr(self, field.name)
+
+    def __getitem__(
+        self, key: int | slice | tuple[int | slice, ...] | jax.Array
+    ) -> "TableSol":
+        if isinstance(key, slice):
+            x_key = slice(key.start, key.stop, key.step)
+            u_key = slice(key.start, key.stop - 1, key.step)
+        else:
+            x_key = key
+            u_key = key
+        return TableSol(
+            x=self.x[x_key],
+            u=self.u[u_key],
+            stats=self.stats,
+        )
 
 
 ################
@@ -274,7 +400,7 @@ def _angle_joint_bot(
 ############
 
 
-def get_R(sol: spec.TableSol) -> jax.Array:
+def get_R(sol: TableSol) -> jax.Array:
     """Get the rotation matrix.
 
     We return a jax array, because this is really a private function.
@@ -283,7 +409,7 @@ def get_R(sol: spec.TableSol) -> jax.Array:
     return _get_R(pose.phi, pose.theta, pose.psi)
 
 
-def get_R_dot(sol: spec.TableSol) -> jax.Array:
+def get_R_dot(sol: TableSol) -> jax.Array:
     """Get the rotation matrix derivative."""
     pose = sol.pose_at(1)
     pose_dot = sol.pose_dot_at(1)
@@ -297,7 +423,7 @@ def get_R_dot(sol: spec.TableSol) -> jax.Array:
     )
 
 
-def get_R_dot2(sol: spec.TableSol) -> jax.Array:
+def get_R_dot2(sol: TableSol) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
     pose = sol.pose_at(1)
     pose_dot = sol.pose_dot_at(1)
@@ -315,23 +441,23 @@ def get_R_dot2(sol: spec.TableSol) -> jax.Array:
     )
 
 
-def leg_pos(sol: spec.TableSol) -> np.ndarray:
+def leg_pos(sol: TableSol) -> jax.Array:
     """All leg lengths."""
     R = get_R(sol)
     t = sol.pose_at(1).xyz()
-    return np.array(_leg_pos(R, t))
+    return jnp.array(_leg_pos(R, t))
 
 
-def leg_vel(sol: spec.TableSol) -> np.ndarray:
+def leg_vel(sol: TableSol) -> jax.Array:
     """All leg velocities."""
     R = get_R(sol)
     R_dot = get_R_dot(sol)
     t = sol.pose_at(1).xyz()
     t_dot = sol.pose_dot_at(1).xyz()
-    return np.array(_leg_vel(R, t, R_dot, t_dot))
+    return jnp.array(_leg_vel(R, t, R_dot, t_dot))
 
 
-def leg_acc(sol: spec.TableSol) -> np.ndarray:
+def leg_acc(sol: TableSol) -> jax.Array:
     """All leg accelerations."""
     R = get_R(sol)
     R_dot = get_R_dot(sol)
@@ -339,102 +465,94 @@ def leg_acc(sol: spec.TableSol) -> np.ndarray:
     t = sol.pose_at(1).xyz()
     t_dot = sol.pose_dot_at(1).xyz()
     t_dot2 = sol.pose_dot2_at(0).xyz()
-    return np.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
+    return jnp.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
 
 
-def angle_pos(sol: spec.TableSol) -> np.ndarray:
+def angle_pos(sol: TableSol) -> jax.Array:
     """Angle position."""
     return sol.pose_at(1).rpy()
 
 
-def human_angle_vel(sol: spec.TableSol) -> np.ndarray:
+def human_angle_vel(sol: TableSol) -> jax.Array:
     """Human angular velocity."""
     pose = sol.pose_at(1)
     pose_dot = sol.pose_dot_at(1)
-    return np.array(_angle_vel(
-        *pose.rpy(), *pose_dot.rpy()
-    ))
+    return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy()))
 
 
-def table_angle_vel(sol: spec.TableSol) -> np.ndarray:
+def table_angle_vel(sol: TableSol) -> jax.Array:
     """Table angular velocity."""
     pose = sol.pose_at(1)
     pose_dot = sol.pose_dot_at(1)
-    return np.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
+    return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
 
 
-def human_angle_acc(sol: spec.TableSol) -> np.ndarray:
+def human_angle_acc(sol: TableSol) -> jax.Array:
     """Angular acceleration."""
     pose = sol.pose_at(1)
     pose_dot = sol.pose_dot_at(1)
     pose_dot2 = sol.pose_dot2_at(0)
-    return np.array(_angle_acc(
-        *pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy()
-    ))
+    return jnp.array(_angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy()))
 
 
-def table_angle_acc(sol: spec.TableSol) -> np.ndarray:
+def table_angle_acc(sol: TableSol) -> jax.Array:
     """Table angular acceleration."""
     pose = sol.pose_at(1)
     pose_dot = sol.pose_dot_at(1)
     pose_dot2 = sol.pose_dot2_at(0)
-    return np.array(
+    return jnp.array(
         _angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy(), world=True)
     )
 
 
-def table_angle(sol: spec.TableSol) -> np.ndarray:
+def table_angle(sol: TableSol) -> jax.Array:
     """Table angle."""
     pose = sol.pose_at(1)
-    return np.degrees(pose.rpy())
+    return jnp.degrees(pose.rpy())
 
 
-def table_pos(sol: spec.TableSol) -> np.ndarray:
+def table_pos(sol: TableSol) -> jax.Array:
     """Table position."""
     pose = sol.pose_at(1)
-    return np.array(pose.xyz())
+    return jnp.array(pose.xyz())
 
 
-def table_vel(sol: spec.TableSol) -> np.ndarray:
+def table_vel(sol: TableSol) -> jax.Array:
     """Table velocity."""
     pose_dot = sol.pose_dot_at(1)
-    return np.array(pose_dot.xyz())
+    return jnp.array(pose_dot.xyz())
 
 
-def table_acc(sol: spec.TableSol) -> np.ndarray:
+def table_acc(sol: TableSol) -> jax.Array:
     """Table acceleration."""
     pose_dot2 = sol.pose_dot2_at(0)
     return pose_dot2.xyz()
 
 
-def angle_joint_top(sol: spec.TableSol) -> np.ndarray:
+def angle_joint_top(sol: TableSol) -> jax.Array:
     """Top joint angles."""
     pose = sol.pose_at(1)
-    return np.array(_angle_joint_top(
-        *pose.xyz(), *pose.rpy()
-    ))
+    return jnp.array(_angle_joint_top(*pose.xyz(), *pose.rpy()))
 
 
-def angle_joint_bot(sol: spec.TableSol) -> np.ndarray:
+def angle_joint_bot(sol: TableSol) -> jax.Array:
     """Bottom joint angles."""
     pose = sol.pose_at(1)
-    return np.array(_angle_joint_bot(
-        *pose.xyz(), *pose.rpy()
-    ))
+    return jnp.array(_angle_joint_bot(*pose.xyz(), *pose.rpy()))
 
 
-def human_vel(sol: spec.TableSol) -> np.ndarray:
+def human_vel(sol: TableSol) -> jax.Array:
     """Human velocity."""
     vel = sol.pose_dot_at(1).xyz()
-    R = np.array(get_R(sol))
-    R_dot = np.array(get_R_dot(sol))
+    R = jnp.array(get_R(sol))
+    R_dot = jnp.array(get_R_dot(sol))
     return R.T @ (R_dot @ const.human_displacement + vel)
 
 
-def human_acc(sol: spec.TableSol) -> np.ndarray:
+def human_acc(sol: TableSol) -> jax.Array:
     """Human acceleration."""
     acc = sol.pose_dot2_at(0).xyz()
-    R = np.array(get_R(sol))
-    R_dot2 = np.array(get_R_dot2(sol))
+    R = jnp.array(get_R(sol))
+    R_dot2 = jnp.array(get_R_dot2(sol))
     return R.T @ (R_dot2 @ const.human_displacement + acc + const.gravity)
     # return R.T @ (acc + const.gravity)
