@@ -22,7 +22,7 @@ def waypoints_from_solutions(
 
 
 def animate_trajectory(
-    trajectory: list[list[float]] | list[np.ndarray] | list[utils.TableSol],
+    trajectory: list[utils.TableSol],
     sim_rate: float = 1.0,
     fps: float = 30.0,
 ) -> tuple[mpl_anim.FuncAnimation, mpl_fig.Figure]:
@@ -48,26 +48,57 @@ def animate_trajectory(
     assert len(trajectory) > 0
 
     # possible conversion needed
-    waypoints: list[np.ndarray] | list[list[float]]
+    waypoints: list[np.ndarray]
     if type(trajectory[0]) is utils.TableSol:
         assert all(type(sol) is utils.TableSol for sol in trajectory)
         waypoints = waypoints_from_solutions(trajectory)  # type: ignore
     else:
-        waypoints = trajectory  # type: ignore
+        # The rest of the function expects a trajectory of TableSol
+        # to display control inputs.
+        raise ValueError(
+            "`animate_trajectory` now requires a list of `TableSol`."
+        )
 
     # Setup figure
-    fig = plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(16, 9))
     gs = gridspec.GridSpec(
-        2,
-        2,
-        height_ratios=[1.0, 0.1],
-        width_ratios=[1.0, 0.7],
-        wspace=0.35,
-        hspace=0.35,
+        7,
+        3,
+        height_ratios=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.6],
+        width_ratios=[0.5, 1.0, 0.7],
+        wspace=0.4,
+        hspace=0.9,
     )
 
+    # Control plots on the left
+    control_axes = []
+    ax1 = None
+    for i in range(6):
+        if i == 0:
+            ax = fig.add_subplot(gs[i, 0])
+            ax1 = ax
+        else:
+            ax = fig.add_subplot(gs[i, 0], sharex=ax1, sharey=ax1)
+        control_axes.append(ax)
+    control_lines = [ax.plot([], [], "b-")[0] for ax in control_axes]
+    for i, ax in enumerate(control_axes):
+        ax.set_title(f"u[{i}]")
+        ax.grid(True)
+        if i < 5:
+            plt.setp(ax.get_xticklabels(), visible=False)
+
+    control_axes[-1].set_xlabel("Horizon")
+    control_abs = np.abs(
+        np.concatenate([np.ravel(traj.u) for traj in trajectory])
+    )
+    control_lim = np.mean(control_abs) + np.std(control_abs) * 4.0
+    # control_lim = np.max(control_abs)
+    control_axes[-1].set_ylim(-control_lim, control_lim)
+    control_axes[-1].set_xlim(0, trajectory[0].u.shape[0])
+    fig.text(0.04, 0.5, "Control", va="center", rotation="vertical")
+
     # 3D plot for platform visualization
-    ax_3d = fig.add_subplot(gs[:, 0], projection="3d")
+    ax_3d = fig.add_subplot(gs[:-1, 1], projection="3d")
     ax_3d.set_xlabel("X")
     ax_3d.set_ylabel("Y")
     ax_3d.set_zlabel("Z")  # type: ignore
@@ -94,7 +125,7 @@ def animate_trajectory(
     ax_3d.set_zlim(z_min, z_max)  # type: ignore
 
     # Plot the progression of time
-    ax_time = fig.add_subplot(gs[1, 1])
+    ax_time = fig.add_subplot(gs[-1, 1:])
     ax_time.set_xlabel("Progress")
     # ax_time.set_ylabel('Time')
     # ax_time.set_title('Trajectory Progress')
@@ -107,7 +138,7 @@ def animate_trajectory(
     time_text = ax_time.text(0.02, 0.02, "", transform=ax_time.transAxes)
 
     # Plot for leg lengths
-    ax_legs = fig.add_subplot(gs[0, 1])
+    ax_legs = fig.add_subplot(gs[:-1, 2])
     ax_legs.set_xlabel("Leg Number")
     ax_legs.set_ylabel("Length (m)")
     # ax_legs.set_title('Leg Lengths')
@@ -165,6 +196,16 @@ def animate_trajectory(
     def update(i):
         if i >= len(interp_trajectory):
             return
+
+        # Update control plots
+        sol_index = min(
+            int(i * num_points / len(interp_trajectory)), num_points - 1
+        )
+        current_sol: utils.TableSol = trajectory[sol_index]  # type: ignore
+        u_horizon = current_sol.u
+        horizon_t = np.arange(u_horizon.shape[0])
+        for j in range(6):
+            control_lines[j].set_data(horizon_t, u_horizon[:, j])
 
         x, y, z, roll, pitch, yaw = interp_trajectory[i]
         position = np.array([x, y, z])
@@ -225,6 +266,7 @@ def animate_trajectory(
             leg_text,
             progress_bar[0],
             time_text,
+            *control_lines,
         )
 
     frame_count = len(interp_trajectory)
@@ -236,8 +278,8 @@ def animate_trajectory(
         frames=frame_count,
         interval=interval,
         blit=True,
-        # repeat=False,
-        repeat=True,
+        repeat=False,
+        # repeat=True,
     )
 
     return anim, fig
@@ -880,24 +922,25 @@ def plot_actuator_trajectory(
     return fig
 
 
-def split_tablesol(table_sol: utils.TableSol) -> list[utils.TableSol]:
+def split_tablesol(
+    table_sol: utils.TableSol, keep_dim: bool = True
+) -> list[utils.TableSol]:
     """Split a TableSol into a list of of 2 point horizon TableSol."""
     assert table_sol.u.shape[0] > 1
     split_sols = []
-    for i in range(table_sol.u.shape[0] - 1):
-        split_sols.append(table_sol[i : i + 2])
+    for i in range(table_sol.u.shape[0]):
+        split_sol = table_sol[i]
+        split_sol.u = np.atleast_2d(split_sol.u)
+        split_sol.x = np.atleast_2d(split_sol.x)
+        split_sols.append(split_sol)
+
+    if keep_dim:
+        for i in range(len(split_sols)):
+            split_sols[i].u = np.tile(
+                split_sols[i].u, reps=(table_sol.u.shape[0], 1)
+            )
+            split_sols[i].x = np.tile(
+                split_sols[i].x, reps=(table_sol.x.shape[0], 1)
+            )
+
     return split_sols
-
-
-if __name__ == "__main__":
-    # Example trajectory: list of [x, y, z, roll, pitch, yaw]
-    trajectory = [
-        [0, 0, 0.5, 0, 0, 0],
-        [0, 0, 0.7, 0.1, 0, 0],
-        [0, 0, 0.5, 0, 0.1, 0],
-        [0, 0, 0.3, 0, 0, 0.1],
-        [0, 0, 0.0, 0, 0, 0],
-    ]
-
-    anim, fig = animate_trajectory(trajectory, sim_rate=5e-2, fps=30)
-    fig.show()

@@ -112,8 +112,8 @@ class TableStats:
 class TableSol:
     """A solution to the Stewart platform OCP."""
 
-    x: jax.Array
-    u: jax.Array
+    x: jax.Array | np.ndarray
+    u: jax.Array | np.ndarray
     stats: TableStats
 
     def pose_at(self, i: int | jax.Array) -> Pose:
