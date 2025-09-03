@@ -405,14 +405,14 @@ def get_R(sol: TableSol) -> jax.Array:
 
     We return a jax array, because this is really a private function.
     """
-    pose = sol.pose_at(1)
+    pose = sol.pose_at(0)  # 1?
     return _get_R(pose.phi, pose.theta, pose.psi)
 
 
 def get_R_dot(sol: TableSol) -> jax.Array:
     """Get the rotation matrix derivative."""
-    pose = sol.pose_at(1)
-    pose_dot = sol.pose_dot_at(1)
+    pose = sol.pose_at(0)  # 1?
+    pose_dot = sol.pose_dot_at(0)  # 1?
     return _get_R_dot(
         pose.phi,
         pose.theta,
@@ -425,8 +425,8 @@ def get_R_dot(sol: TableSol) -> jax.Array:
 
 def get_R_dot2(sol: TableSol) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
-    pose = sol.pose_at(1)
-    pose_dot = sol.pose_dot_at(1)
+    pose = sol.pose_at(0)  # 1?
+    pose_dot = sol.pose_dot_at(0)  # 1?
     pose_ddot = sol.pose_dot2_at(0)
     return _get_R_dot2(
         pose.phi,
@@ -444,7 +444,7 @@ def get_R_dot2(sol: TableSol) -> jax.Array:
 def leg_pos(sol: TableSol) -> jax.Array:
     """All leg lengths."""
     R = get_R(sol)
-    t = sol.pose_at(1).xyz()
+    t = sol.pose_at(0).xyz()  # 1?
     return jnp.array(_leg_pos(R, t))
 
 
@@ -452,8 +452,8 @@ def leg_vel(sol: TableSol) -> jax.Array:
     """All leg velocities."""
     R = get_R(sol)
     R_dot = get_R_dot(sol)
-    t = sol.pose_at(1).xyz()
-    t_dot = sol.pose_dot_at(1).xyz()
+    t = sol.pose_at(0).xyz()  # 1?
+    t_dot = sol.pose_dot_at(0).xyz()  # 1?
     return jnp.array(_leg_vel(R, t, R_dot, t_dot))
 
 
@@ -462,43 +462,43 @@ def leg_acc(sol: TableSol) -> jax.Array:
     R = get_R(sol)
     R_dot = get_R_dot(sol)
     R_dot2 = get_R_dot2(sol)
-    t = sol.pose_at(1).xyz()
-    t_dot = sol.pose_dot_at(1).xyz()
+    t = sol.pose_at(0).xyz()  # 1?
+    t_dot = sol.pose_dot_at(0).xyz()  # 1?
     t_dot2 = sol.pose_dot2_at(0).xyz()
     return jnp.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
 
 
 def angle_pos(sol: TableSol) -> jax.Array:
     """Angle position."""
-    return sol.pose_at(1).rpy()
+    return sol.pose_at(0).rpy()  # 1?
 
 
 def human_angle_vel(sol: TableSol) -> jax.Array:
     """Human angular velocity."""
-    pose = sol.pose_at(1)
-    pose_dot = sol.pose_dot_at(1)
+    pose = sol.pose_at(0)  # 1?
+    pose_dot = sol.pose_dot_at(0)  # 1?
     return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy()))
 
 
 def table_angle_vel(sol: TableSol) -> jax.Array:
     """Table angular velocity."""
-    pose = sol.pose_at(1)
-    pose_dot = sol.pose_dot_at(1)
+    pose = sol.pose_at(0)  # 1?
+    pose_dot = sol.pose_dot_at(0)  # 1?
     return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
 
 
 def human_angle_acc(sol: TableSol) -> jax.Array:
     """Angular acceleration."""
-    pose = sol.pose_at(1)
-    pose_dot = sol.pose_dot_at(1)
+    pose = sol.pose_at(0)  # 1?
+    pose_dot = sol.pose_dot_at(0)  # 1?
     pose_dot2 = sol.pose_dot2_at(0)
     return jnp.array(_angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy()))
 
 
 def table_angle_acc(sol: TableSol) -> jax.Array:
     """Table angular acceleration."""
-    pose = sol.pose_at(1)
-    pose_dot = sol.pose_dot_at(1)
+    pose = sol.pose_at(0)  # 1?
+    pose_dot = sol.pose_dot_at(0)  # 1?
     pose_dot2 = sol.pose_dot2_at(0)
     return jnp.array(
         _angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy(), world=True)
@@ -507,19 +507,19 @@ def table_angle_acc(sol: TableSol) -> jax.Array:
 
 def table_angle(sol: TableSol) -> jax.Array:
     """Table angle."""
-    pose = sol.pose_at(1)
+    pose = sol.pose_at(0)  # 1?
     return jnp.degrees(pose.rpy())
 
 
 def table_pos(sol: TableSol) -> jax.Array:
     """Table position."""
-    pose = sol.pose_at(1)
+    pose = sol.pose_at(0)  # 1?
     return jnp.array(pose.xyz())
 
 
 def table_vel(sol: TableSol) -> jax.Array:
     """Table velocity."""
-    pose_dot = sol.pose_dot_at(1)
+    pose_dot = sol.pose_dot_at(0)  # 1?
     return jnp.array(pose_dot.xyz())
 
 
@@ -531,19 +531,19 @@ def table_acc(sol: TableSol) -> jax.Array:
 
 def angle_joint_top(sol: TableSol) -> jax.Array:
     """Top joint angles."""
-    pose = sol.pose_at(1)
+    pose = sol.pose_at(0)  # 1?
     return jnp.array(_angle_joint_top(*pose.xyz(), *pose.rpy()))
 
 
 def angle_joint_bot(sol: TableSol) -> jax.Array:
     """Bottom joint angles."""
-    pose = sol.pose_at(1)
+    pose = sol.pose_at(0)  # 1?
     return jnp.array(_angle_joint_bot(*pose.xyz(), *pose.rpy()))
 
 
 def human_vel(sol: TableSol) -> jax.Array:
     """Human velocity."""
-    vel = sol.pose_dot_at(1).xyz()
+    vel = sol.pose_dot_at(0).xyz()  # 1?
     R = jnp.array(get_R(sol))
     R_dot = jnp.array(get_R_dot(sol))
     return R.T @ (R_dot @ const.human_displacement + vel)
@@ -556,3 +556,44 @@ def human_acc(sol: TableSol) -> jax.Array:
     R_dot2 = jnp.array(get_R_dot2(sol))
     return R.T @ (R_dot2 @ const.human_displacement + acc + const.gravity)
     # return R.T @ (acc + const.gravity)
+
+
+@functools.partial(jax.jit, static_argnames=["fun"])
+def sol_vmap(
+    fun: tp.Callable[[TableSol], jax.Array], sol: TableSol
+) -> jax.Array:
+    sol.x = sol.x[1:]  # skip initial condition
+    leaves, treedef = jax.tree_util.tree_flatten(sol)
+
+    def flat_fun(*args) -> jax.Array:
+        sol = jax.tree_util.tree_unflatten(treedef, args)
+        sol.x = jnp.atleast_2d(sol.x)
+        sol.u = jnp.atleast_2d(sol.u)
+        return fun(sol)
+
+    in_axes = [0, 0] + [None] * (len(leaves) - 2)  # probably 3 `None`s
+    return jax.vmap(flat_fun, in_axes)(*leaves)
+
+
+@jax.jit
+def human_vel_horizon(sol: TableSol) -> jax.Array:
+    """Human velocity over the MPC horizon."""
+    return sol_vmap(human_vel, sol)
+
+
+@jax.jit
+def human_angle_vel_horizon(sol: TableSol) -> jax.Array:
+    """Human angular velocity over the MPC horizon."""
+    return sol_vmap(human_angle_vel, sol)
+
+
+@jax.jit
+def human_acc_horizon(sol: TableSol) -> jax.Array:
+    """Human acceleration over the MPC horizon."""
+    return sol_vmap(human_acc, sol)
+
+
+@jax.jit
+def human_angle_acc_horizon(sol: TableSol) -> jax.Array:
+    """Human angular acceleration over the MPC horizon."""
+    return sol_vmap(human_angle_acc, sol)

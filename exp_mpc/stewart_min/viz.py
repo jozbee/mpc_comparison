@@ -285,6 +285,249 @@ def animate_trajectory(
     return anim, fig
 
 
+def animate_human_trajectory(
+    trajectory: list[utils.TableSol],
+    sim_rate: float = 1.0,
+    fps: float = 30.0,
+    references: dict[str, np.ndarray] = {},
+) -> tuple[mpl_anim.FuncAnimation, mpl_fig.Figure]:
+    """Animate the human trajectory from the solutions of a simulation run.
+
+    Each frame of the animation shows the MPC horizon for various human
+    trajectory variables.
+
+    Parameters
+    ----------
+    trajectory :
+        List of TableSol objects, where each contains the MPC solution at a time step.
+    sim_rate :
+        Simulation rate multiplier.
+    fps :
+        Frames per second for the animation.
+    references :
+        References that the head should follow.
+        Supports keys 'xyz-acceleration' and 'angular-velocity'.
+        The values should be arrays with shape (len(trajectory), 3).
+
+    Returns
+    -------
+    A tuple containing the animation object and its corresponding figure.
+    """
+    assert type(trajectory) is list and len(trajectory) > 0
+    assert all(isinstance(sol, utils.TableSol) for sol in trajectory)
+
+    # Setup figure and axes, similar to plot_human_trajectory
+    gridspec_kw = {
+        "wspace": 0.35,
+        "hspace": 0.7,
+    }
+    fig, axes = plt.subplots(
+        nrows=4, ncols=3, gridspec_kw=gridspec_kw, figsize=(16, 10)
+    )
+    fig.suptitle("Human Trajectory Animation", fontsize=16)
+
+    # Create line objects for each plot
+    lines = np.array([[ax.plot([], [])[0] for ax in row] for row in axes])
+    ref_lines = np.array(
+        [
+            [ax.plot([], [], linestyle="--", color="orange")[0] for ax in row]
+            for row in axes
+        ]
+    )
+
+    def setup_plot(ax, title, ylabel, min_limit=None, max_limit=None):
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("Horizon")
+        ax.grid(True)
+        if min_limit is not None:
+            ax.axhline(y=min_limit, linestyle="-", alpha=0.5, color="red")
+        if max_limit is not None:
+            ax.axhline(y=max_limit, linestyle="-", alpha=0.5, color="red")
+
+    # Setup for each plot
+    plot_setups = [
+        # Row 0: xyz velocity
+        (
+            axes[0, 0],
+            "X Velocity",
+            "[m/s]",
+            -const.max_cart_vel,
+            const.max_cart_vel,
+        ),
+        (
+            axes[0, 1],
+            "Y Velocity",
+            "[m/s]",
+            -const.max_cart_vel,
+            const.max_cart_vel,
+        ),
+        (
+            axes[0, 2],
+            "Z Velocity",
+            "[m/s]",
+            -const.max_cart_vel,
+            const.max_cart_vel,
+        ),
+        # Row 1: angular velocity
+        (
+            axes[1, 0],
+            "X Angular Velocity",
+            "[rad/s]",
+            -const.max_angle_vel,
+            const.max_angle_vel,
+        ),
+        (
+            axes[1, 1],
+            "Y Angular Velocity",
+            "[rad/s]",
+            -const.max_angle_vel,
+            const.max_angle_vel,
+        ),
+        (
+            axes[1, 2],
+            "Z Angular Velocity",
+            "[rad/s]",
+            -const.max_angle_vel,
+            const.max_angle_vel,
+        ),
+        # Row 2: xyz acceleration
+        (
+            axes[2, 0],
+            "X Acceleration",
+            "[m/s^2]",
+            -const.max_cart_acc,
+            const.max_cart_acc,
+        ),
+        (
+            axes[2, 1],
+            "Y Acceleration",
+            "[m/s^2]",
+            -const.max_cart_acc,
+            const.max_cart_acc,
+        ),
+        (
+            axes[2, 2],
+            "Z Acceleration",
+            "[m/s^2]",
+            -const.max_cart_acc,
+            const.max_cart_acc,
+        ),
+        # Row 3: angular acceleration
+        (
+            axes[3, 0],
+            "X Angular Acceleration",
+            "[rad/s^2]",
+            -const.max_angle_acc,
+            const.max_angle_acc,
+        ),
+        (
+            axes[3, 1],
+            "Y Angular Acceleration",
+            "[rad/s^2]",
+            -const.max_angle_acc,
+            const.max_angle_acc,
+        ),
+        (
+            axes[3, 2],
+            "Z Angular Acceleration",
+            "[rad/s^2]",
+            -const.max_angle_acc,
+            const.max_angle_acc,
+        ),
+    ]
+
+    for ax, title, ylabel, min_lim, max_lim in plot_setups:
+        setup_plot(ax, title, ylabel, min_lim, max_lim)
+
+    # Set initial axis limits
+    horizon_len = trajectory[0].x.shape[0]
+    for row in axes:
+        for ax in row:
+            ax.set_xlim(0, horizon_len - 1)
+
+    # Determine global y-limits for each row to keep them constant during animation
+    all_vels, all_ang_vels, all_accs, all_ang_accs = [], [], [], []
+    for sol in trajectory:
+        all_vels.append(utils.human_vel_horizon(sol))
+        all_ang_vels.append(utils.human_angle_vel_horizon(sol))
+        all_accs.append(utils.human_acc_horizon(sol))
+        all_ang_accs.append(utils.human_angle_acc_horizon(sol))
+
+    ylim_data = [
+        np.array(all_vels),
+        np.array(all_ang_vels),
+        np.array(all_accs),
+        np.array(all_ang_accs),
+    ]
+    for i, row_axes in enumerate(axes):
+        for j, ax in enumerate(row_axes):
+            min_val = np.min(ylim_data[i][:, :, j])
+            max_val = np.max(ylim_data[i][:, :, j])
+            ax.set_ylim(*_get_limits(np.array([min_val, max_val])))
+
+    num_frames = int(len(trajectory) * const.dt * fps / sim_rate)
+
+    def update(frame_num):
+        # Map frame number to trajectory index
+        traj_index = int(frame_num * (len(trajectory) / num_frames))
+        traj_index = min(traj_index, len(trajectory) - 1)
+
+        current_sol = trajectory[traj_index]
+        horizon_len = current_sol.u.shape[0]
+        horizon_t = np.arange(horizon_len)
+
+        # Extract horizon data
+        vel_h = utils.human_vel_horizon(current_sol)
+        ang_vel_h = utils.human_angle_vel_horizon(current_sol)
+        acc_h = utils.human_acc_horizon(current_sol)
+        ang_acc_h = utils.human_angle_acc_horizon(current_sol)
+
+        data_horizons = [vel_h, ang_vel_h, acc_h, ang_acc_h]
+
+        # Update plot lines
+        for i in range(4):  # rows
+            for j in range(3):  # cols
+                lines[i, j].set_data(horizon_t, data_horizons[i][:, j])
+
+        # Update reference lines
+        ref_map = {
+            "angular-velocity": 1,  # row index
+            "xyz-acceleration": 2,  # row index
+        }
+        for ref_key, row_idx in ref_map.items():
+            if ref_key in references:
+                ref_data = references[ref_key]
+                for j in range(3):  # col index
+                    if ref_data.ndim == 1:
+                        ref_val = ref_data[traj_index]
+                    elif ref_data.ndim == 2 and ref_data.shape[1] == 3:
+                        ref_val = ref_data[traj_index, j]
+                    else:
+                        raise RuntimeError(
+                            f"ref_data.shape is bad {ref_data.shape}"
+                        )
+
+                    ref_lines[row_idx, j].set_data(
+                        horizon_t, np.full(horizon_len, ref_val)
+                    )
+
+        return [line for row in lines for line in row] + [
+            line for row in ref_lines for line in row
+        ]
+
+    anim = mpl_anim.FuncAnimation(
+        fig,
+        update,
+        frames=num_frames,
+        interval=1000 / fps,
+        blit=True,
+        repeat=False,
+    )
+
+    return anim, fig
+
+
 def _get_limits(data: np.ndarray) -> tuple[float, float]:
     """Get reasonable plotting limits for some data."""
     eps = 2**-4  # magic
