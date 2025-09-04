@@ -647,9 +647,9 @@ def _cost(
     cost = cost + _get_leg_boundary(
         weights, leg_cost, leg_vel_cost, state0, control
     )
-    # cost = cost + _get_joint_angle_boundary(
-    #     weights, joint_angle_cost, state0, control
-    # )
+    cost = cost + _get_joint_angle_boundary(
+        weights, joint_angle_cost, state0, control
+    )
     cost = cost + _get_yaw_boundary(weights, yaw_cost, state0, control)
     cost = cost + _control_cost(weights, control)
     return cost

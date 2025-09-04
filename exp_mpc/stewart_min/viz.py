@@ -25,6 +25,7 @@ def animate_trajectory(
     trajectory: list[utils.TableSol],
     sim_rate: float = 1.0,
     fps: float = 30.0,
+    frame_range: tp.Optional[tuple[int, int]] = None,
 ) -> tuple[mpl_anim.FuncAnimation, mpl_fig.Figure]:
     """Visualize the Stewart platform following a trajectory.
 
@@ -38,6 +39,8 @@ def animate_trajectory(
         Simulation rate multiplier (1.0 = real-time, 2.0 = twice as fast).
     fps :
         Frames per second for the animation.
+    frame_range :
+        Only process the given frames, if given.
 
     Returns
     -------
@@ -272,10 +275,14 @@ def animate_trajectory(
     frame_count = len(interp_trajectory)
     interval = 1e3 / fps  # convert to milliseconds
 
+    anim_frames = frame_count
+    if frame_range is not None:
+        anim_frames = range(frame_range[0], frame_range[1])
+
     anim = mpl_anim.FuncAnimation(
         fig,
         update,  # type: ignore
-        frames=frame_count,
+        frames=anim_frames,
         interval=interval,
         blit=True,
         repeat=False,
@@ -290,6 +297,7 @@ def animate_human_trajectory(
     sim_rate: float = 1.0,
     fps: float = 30.0,
     references: dict[str, np.ndarray] = {},
+    frame_range: tp.Optional[tuple[int, int]] = None,
 ) -> tuple[mpl_anim.FuncAnimation, mpl_fig.Figure]:
     """Animate the human trajectory from the solutions of a simulation run.
 
@@ -308,6 +316,8 @@ def animate_human_trajectory(
         References that the head should follow.
         Supports keys 'xyz-acceleration' and 'angular-velocity'.
         The values should be arrays with shape (len(trajectory), 3).
+    frame_range :
+        Only process the given frames, if given.
 
     Returns
     -------
@@ -516,10 +526,13 @@ def animate_human_trajectory(
             line for row in ref_lines for line in row
         ]
 
+    anim_num_frames = num_frames
+    if frame_range is not None:
+        anim_num_frames = range(frame_range[0], frame_range[1])
     anim = mpl_anim.FuncAnimation(
         fig,
         update,
-        frames=num_frames,
+        frames=anim_num_frames,
         interval=1000 / fps,
         blit=True,
         repeat=False,
