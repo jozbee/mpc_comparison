@@ -112,8 +112,8 @@ class TableStats:
 class TableSol:
     """A solution to the Stewart platform OCP."""
 
-    x: jax.Array | np.ndarray
-    u: jax.Array | np.ndarray
+    x: jax.Array
+    u: jax.Array
     stats: TableStats
 
     def pose_at(self, i: int | jax.Array) -> Pose:
@@ -342,6 +342,7 @@ def _angle_acc(
     )[1]
 
 
+@jax.jit
 def _angle_joint(
     x: jax.Array,
     y: jax.Array,
@@ -400,6 +401,7 @@ def _angle_joint_bot(
 ############
 
 
+@jax.jit
 def get_R(sol: TableSol) -> jax.Array:
     """Get the rotation matrix.
 
@@ -409,6 +411,7 @@ def get_R(sol: TableSol) -> jax.Array:
     return _get_R(pose.phi, pose.theta, pose.psi)
 
 
+@jax.jit
 def get_R_dot(sol: TableSol) -> jax.Array:
     """Get the rotation matrix derivative."""
     pose = sol.pose_at(0)  # 1?
@@ -423,6 +426,7 @@ def get_R_dot(sol: TableSol) -> jax.Array:
     )
 
 
+@jax.jit
 def get_R_dot2(sol: TableSol) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
     pose = sol.pose_at(0)  # 1?
@@ -441,6 +445,7 @@ def get_R_dot2(sol: TableSol) -> jax.Array:
     )
 
 
+@jax.jit
 def leg_pos(sol: TableSol) -> jax.Array:
     """All leg lengths."""
     R = get_R(sol)
@@ -448,6 +453,7 @@ def leg_pos(sol: TableSol) -> jax.Array:
     return jnp.array(_leg_pos(R, t))
 
 
+@jax.jit
 def leg_vel(sol: TableSol) -> jax.Array:
     """All leg velocities."""
     R = get_R(sol)
@@ -457,6 +463,7 @@ def leg_vel(sol: TableSol) -> jax.Array:
     return jnp.array(_leg_vel(R, t, R_dot, t_dot))
 
 
+@jax.jit
 def leg_acc(sol: TableSol) -> jax.Array:
     """All leg accelerations."""
     R = get_R(sol)
@@ -468,11 +475,13 @@ def leg_acc(sol: TableSol) -> jax.Array:
     return jnp.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
 
 
+@jax.jit
 def angle_pos(sol: TableSol) -> jax.Array:
     """Angle position."""
     return sol.pose_at(0).rpy()  # 1?
 
 
+@jax.jit
 def human_angle_vel(sol: TableSol) -> jax.Array:
     """Human angular velocity."""
     pose = sol.pose_at(0)  # 1?
@@ -480,6 +489,7 @@ def human_angle_vel(sol: TableSol) -> jax.Array:
     return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy()))
 
 
+@jax.jit
 def table_angle_vel(sol: TableSol) -> jax.Array:
     """Table angular velocity."""
     pose = sol.pose_at(0)  # 1?
@@ -487,6 +497,7 @@ def table_angle_vel(sol: TableSol) -> jax.Array:
     return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
 
 
+@jax.jit
 def human_angle_acc(sol: TableSol) -> jax.Array:
     """Angular acceleration."""
     pose = sol.pose_at(0)  # 1?
@@ -495,6 +506,7 @@ def human_angle_acc(sol: TableSol) -> jax.Array:
     return jnp.array(_angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy()))
 
 
+@jax.jit
 def table_angle_acc(sol: TableSol) -> jax.Array:
     """Table angular acceleration."""
     pose = sol.pose_at(0)  # 1?
@@ -505,42 +517,49 @@ def table_angle_acc(sol: TableSol) -> jax.Array:
     )
 
 
+@jax.jit
 def table_angle(sol: TableSol) -> jax.Array:
     """Table angle."""
     pose = sol.pose_at(0)  # 1?
     return jnp.degrees(pose.rpy())
 
 
+@jax.jit
 def table_pos(sol: TableSol) -> jax.Array:
     """Table position."""
     pose = sol.pose_at(0)  # 1?
     return jnp.array(pose.xyz())
 
 
+@jax.jit
 def table_vel(sol: TableSol) -> jax.Array:
     """Table velocity."""
     pose_dot = sol.pose_dot_at(0)  # 1?
     return jnp.array(pose_dot.xyz())
 
 
+@jax.jit
 def table_acc(sol: TableSol) -> jax.Array:
     """Table acceleration."""
     pose_dot2 = sol.pose_dot2_at(0)
     return pose_dot2.xyz()
 
 
+@jax.jit
 def angle_joint_top(sol: TableSol) -> jax.Array:
     """Top joint angles."""
     pose = sol.pose_at(0)  # 1?
     return jnp.array(_angle_joint_top(*pose.xyz(), *pose.rpy()))
 
 
+@jax.jit
 def angle_joint_bot(sol: TableSol) -> jax.Array:
     """Bottom joint angles."""
     pose = sol.pose_at(0)  # 1?
     return jnp.array(_angle_joint_bot(*pose.xyz(), *pose.rpy()))
 
 
+@jax.jit
 def human_vel(sol: TableSol) -> jax.Array:
     """Human velocity."""
     vel = sol.pose_dot_at(0).xyz()  # 1?
@@ -549,6 +568,7 @@ def human_vel(sol: TableSol) -> jax.Array:
     return R.T @ (R_dot @ const.human_displacement + vel)
 
 
+@jax.jit
 def human_acc(sol: TableSol) -> jax.Array:
     """Human acceleration."""
     acc = sol.pose_dot2_at(0).xyz()

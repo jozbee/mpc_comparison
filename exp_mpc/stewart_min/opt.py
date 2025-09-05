@@ -342,9 +342,9 @@ def _get_joint_angles(state: State) -> jax.Array:
     )
 
 
-################
-# weight class #
-################
+#####################
+# weighting classes #
+#####################
 
 
 def _init_field(arr: jax.Array) -> jax.Array:
@@ -358,7 +358,6 @@ def _init_field(arr: jax.Array) -> jax.Array:
 @dataclasses.dataclass
 class Weights:
     """Cost function weights."""
-
     acc: jax.Array = _init_field(jnp.ones(3))
     omega: jax.Array = _init_field(jnp.ones(3))
     leg: jax.Array = _init_field(jnp.ones(6))
@@ -366,13 +365,6 @@ class Weights:
     joint_angle: jax.Array = _init_field(jnp.ones(12))
     yaw: jax.Array = _init_field(jnp.ones(1))
     control: jax.Array = _init_field(jnp.ones(6))
-    alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
-    alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
-    alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
 
     def __post_init__(self) -> None:
         assert self.acc.ndim == 1
@@ -398,45 +390,42 @@ class Weights:
         assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
         assert jnp.issubdtype(self.control.dtype, jnp.floating)
 
-    def _time_scale(self, n: int, alpha: jax.Array) -> jax.Array:
+    def _time_scale(self, n: int, name: str) -> jax.Array:
         """Get time scale weights for flat array."""
         # identity
-        # return jnp.ones(n, dtype=float)
-
-        # exponential decrease
-        return jnp.exp(-jnp.arange(n, dtype=float) / n * alpha)
+        return jnp.ones(n, dtype=float)
 
     def scale_acc(self, n: int) -> jax.Array:
         """Get scale weights for flat acceleration array."""
-        time_scale = self._time_scale(n, self.alpha_acc)
+        time_scale = self._time_scale(n, "acc")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.acc.size))
         val_scale = jnp.tile(self.acc, (n, 1))
         return time_scale * val_scale
 
     def scale_omega(self, n: int) -> jax.Array:
         """Get scale weights for flat angular velocity array."""
-        time_scale = self._time_scale(n, self.alpha_omega)
+        time_scale = self._time_scale(n, "omega")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.omega.size))
         val_scale = jnp.tile(self.omega, (n, 1))
         return time_scale * val_scale
 
     def scale_leg(self, n: int) -> jax.Array:
         """Get scale weights for flat leg length array."""
-        time_scale = self._time_scale(n, self.alpha_leg)
+        time_scale = self._time_scale(n, "leg")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg.size))
         val_scale = jnp.tile(self.leg, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_leg_vel(self, n: int) -> jax.Array:
         """Get scale weights for flat leg length array."""
-        time_scale = self._time_scale(n, self.alpha_leg_vel)
+        time_scale = self._time_scale(n, "leg_vel")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg_vel.size))
         val_scale = jnp.tile(self.leg_vel, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_joint_angle(self, n: int) -> jax.Array:
         """Get scale weights for flat joint angle array."""
-        time_scale = self._time_scale(n, self.alpha_joint_angle)
+        time_scale = self._time_scale(n, "joint_angle")
         time_scale = jnp.tile(
             time_scale.reshape(-1, 1), (1, self.joint_angle.size)
         )
@@ -445,17 +434,52 @@ class Weights:
 
     def scale_yaw(self, n: int) -> jax.Array:
         """Get scale weights for flat yaw angle array."""
-        time_scale = self._time_scale(n, self.alpha_yaw)
+        time_scale = self._time_scale(n, "yaw")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw.size))
         val_scale = jnp.tile(self.yaw, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_control(self, n: int) -> jax.Array:
         """Get scale weights for flat control array."""
-        time_scale = self._time_scale(n, self.alpha_control)
+        time_scale = self._time_scale(n, "control")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.control.size))
         val_scale = jnp.tile(self.control, (n, 1))
         return jnp.ravel(time_scale * val_scale)
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class ExpWeights(Weights):
+    alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
+    alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
+    alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
+
+    def _time_scale(self, n: int, name: str) -> jax.Array:
+        """Get time scale weights for flat array."""
+        # exponential decrease
+        alpha_map = {
+            "acc": self.alpha_acc,
+            "omega": self.alpha_omega,
+            "leg": self.alpha_leg,
+            "leg_vel": self.alpha_leg_vel,
+            "joint_angle": self.alpha_joint_angle,
+            "yaw": self.alpha_yaw,
+            "control": self.alpha_control,
+        }
+        return jnp.exp(-jnp.arange(n, dtype=float) / n * alpha_map[name])
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class CostTerms:
+    leg_cost: quartic_cost.QuarticCost
+    leg_vel_cost: quartic_cost.QuarticCost
+    joint_angle_cost: quartic_cost.QuarticCost
+    yaw_cost: quartic_cost.QuarticCost
 
 
 ###################
@@ -497,18 +521,16 @@ def _hyper(x: jax.Array) -> jax.Array:
 ########
 
 
-def _head_xyz_acc_cost(
+def head_xyz_acc_cost_arr(
     weights: Weights,
     acc_ref: jax.Array,
-    state0: jax.Array,
+    state: State,
     control: Control,
 ) -> jax.Array:
-    """Head acceleration cost."""
+    """Head acceleration cost terms."""
     assert acc_ref.ndim == 2
     assert acc_ref.shape[1] == 3
     assert acc_ref.shape[0] == control.x.size
-
-    state = control.get_state(state0)
 
     def _single(
         _ref: jax.Array, _state: State, _control: Control, _w: jax.Array
@@ -527,22 +549,31 @@ def _head_xyz_acc_cost(
     # skip initial conditions in state
     w = weights.scale_acc(control.size)
     assert w.shape == acc_ref.shape
-    costs = jnp.ravel(jax.vmap(_single)(acc_ref, state[1:], control, w))
-    return jnp.mean(costs)
+    cost_arr = jnp.ravel(jax.vmap(_single)(acc_ref, state[1:], control, w))
+    return cost_arr
 
 
-def _get_omega_cost(
+def _head_xyz_acc_cost(
+    weights: Weights,
+    acc_ref: jax.Array,
+    state: State,
+    control: Control,
+) -> jax.Array:
+    """Head acceleration cost."""
+    cost_arr = head_xyz_acc_cost_arr(weights, acc_ref, state, control)
+    return jnp.sum(jnp.mean(cost_arr, axis=0))
+
+
+def omega_cost_arr(
     weights: Weights,
     omega_ref: jax.Array,
-    state0: jax.Array,
+    state: State,
     control: Control,
 ) -> jax.Array:
     """Angular velocity cost."""
     assert omega_ref.ndim == 2
     assert omega_ref.shape[1] == 3
     assert omega_ref.shape[0] == control.x.size
-
-    state = control.get_state(state0)
 
     def _single(_ref: jax.Array, _state: State, _w: jax.Array) -> jax.Array:
         """Cost for a single input pairing."""
@@ -558,23 +589,33 @@ def _get_omega_cost(
     # skip initial conditions in state
     w = weights.scale_omega(control.size)
     assert w.shape == omega_ref.shape
-    costs = jnp.ravel(jax.vmap(_single)(omega_ref, state[1:], w))
-    return jnp.mean(costs)
+    cost_arr = jnp.ravel(jax.vmap(_single)(omega_ref, state[1:], w))
+    return cost_arr
 
 
-def _get_leg_boundary(
+def _omega_cost(
+    weights: Weights,
+    omega_ref: jax.Array,
+    state: State,
+    control: Control,
+) -> jax.Array:
+    """Angular velocity cost."""
+    cost_arr = omega_cost_arr(weights, omega_ref, state, control)
+    return jnp.sum(jnp.mean(cost_arr, axis=0))
+
+
+def leg_boundary_cost_arr(
     weights: Weights,
     length_cost: quartic_cost.QuarticCost,
     vel_cost: quartic_cost.QuarticCost,
-    state0: jax.Array,
+    state: State,
     control: Control,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     """Include leg length and leg velocity costs.
 
     By using automatic differentiation, we can compute the lengths and the
     velocities cheaper than computing them separately, which is productive.
     """
-    state = control.get_state(state0)
     lengths, vels = jax.vmap(_get_length_and_vel)(state[1:])
     lengths = jnp.ravel(lengths)
     vels = jnp.ravel(vels)
@@ -582,13 +623,35 @@ def _get_leg_boundary(
     vel_costs = jax.vmap(vel_cost)(vels)
     w_len = weights.scale_leg(control.size)
     w_vel = weights.scale_leg_vel(control.size)
-    return jnp.mean(length_costs * w_len) + jnp.mean(vel_costs * w_vel)
+    length_cost_arr = jnp.reshape(length_costs * w_len, shape=(-1, 6))
+    vel_cost_arr = jnp.reshape(vel_costs * w_vel, shape=(-1, 6))
+    return length_cost_arr, vel_cost_arr
 
 
-def _get_joint_angle_boundary(
+def _leg_boundary_cost(
+    weights: Weights,
+    length_cost: quartic_cost.QuarticCost,
+    vel_cost: quartic_cost.QuarticCost,
+    state: State,
+    control: Control,
+) -> jax.Array:
+    """Include leg length and leg velocity costs.
+
+    By using automatic differentiation, we can compute the lengths and the
+    velocities cheaper than computing them separately, which is productive.
+    """
+    length_cost_arr, vel_cost_arr = leg_boundary_cost_arr(
+        weights, length_cost, vel_cost, state, control
+    )
+    length_cost_val = jnp.sum(jnp.mean(length_cost_arr, axis=0))
+    vel_cost_val = jnp.sum(jnp.mean(vel_cost_arr, axis=0))
+    return length_cost_val + vel_cost_val
+
+
+def joint_angle_boundary_cost_arr(
     weights: Weights,
     cost: quartic_cost.QuarticCost,
-    state0: jax.Array,
+    state: State,
     control: Control,
 ) -> jax.Array:
     """Joint angle cost.
@@ -596,61 +659,87 @@ def _get_joint_angle_boundary(
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    state = control.get_state(state0)
     angles = jnp.ravel(jax.vmap(_get_joint_angles)(state[1:]))
     costs = jax.vmap(cost)(angles)
     w = weights.scale_joint_angle(control.size)
-    return jnp.mean(costs * w)
+    return (costs * w).reshape(-1, 12)
 
 
-def _get_yaw_boundary(
+def _joint_angle_boundary_cost(
     weights: Weights,
     cost: quartic_cost.QuarticCost,
-    state0: jax.Array,
+    state: State,
     control: Control,
 ) -> jax.Array:
-    state = control.get_state(state0)
+    """Joint angle cost.
+
+    This is about 3 times more expensive to compute than the other
+    cost functions (including boundary cost functions).
+    """
+    cost_arr = joint_angle_boundary_cost_arr(weights, cost, state, control)
+    return jnp.sum(jnp.mean(cost_arr, axis=0))
+
+
+def yaw_boundary_cost_arr(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: State,
+    control: Control,
+) -> jax.Array:
     yaw = state.yaw[1:]
     costs = jax.vmap(cost)(yaw)
     w = weights.scale_yaw(control.size)
-    return jnp.mean(costs * w)
+    return costs * w
+
+
+def _yaw_boundary_cost(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: State,
+    control: Control,
+) -> jax.Array:
+    cost_arr = yaw_boundary_cost_arr(weights, cost, state, control)
+    return jnp.sum(jnp.mean(cost_arr, axis=0))
+
+
+def control_cost_arr(
+    weights: Weights,
+    control: Control,
+) -> jax.Array:
+    costs = jnp.square(control.flatten())
+    w = weights.scale_control(control.size)
+    return (costs * w).reshape(-1, 6)
 
 
 def _control_cost(
     weights: Weights,
     control: Control,
 ) -> jax.Array:
-    # control_arr = control.flatten().reshape(-1, 6)
-    # control_diff = jnp.ravel(jnp.diff(control_arr, axis=0))
-    # costs = jnp.square(
-    #     jnp.concatenate([control_arr.at[0, :].get(), control_diff])
-    # )
-    costs = jnp.square(control.flatten())
-    w = weights.scale_control(control.size)
-    return jnp.mean(costs * w)
+    cost_arr = control_cost_arr(weights, control)
+    return jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
 def _cost(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control: Control,
 ) -> jax.Array:
+    state = control.get_state(state0=state0)
     cost = jnp.array(0.0)
-    cost = cost + _head_xyz_acc_cost(weights, acc_ref, state0, control)
-    cost = cost + _get_omega_cost(weights, omega_ref, state0, control)
-    cost = cost + _get_leg_boundary(
-        weights, leg_cost, leg_vel_cost, state0, control
+    cost = cost + _head_xyz_acc_cost(weights, acc_ref, state, control)
+    cost = cost + _omega_cost(weights, omega_ref, state, control)
+    cost = cost + _leg_boundary_cost(
+        weights, cost_terms.leg_cost, cost_terms.leg_vel_cost, state, control
     )
-    cost = cost + _get_joint_angle_boundary(
-        weights, joint_angle_cost, state0, control
+    cost = cost + _joint_angle_boundary_cost(
+        weights, cost_terms.joint_angle_cost, state, control
     )
-    cost = cost + _get_yaw_boundary(weights, yaw_cost, state0, control)
+    cost = cost + _yaw_boundary_cost(
+        weights, cost_terms.yaw_cost, state, control
+    )
     cost = cost + _control_cost(weights, control)
     return cost
 
@@ -667,24 +756,18 @@ def _cost(
 @jax.jit
 def cost_flat_jax(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control_flat: jax.Array,
 ) -> jax.Array:
     control = Control.from_flat(control_flat)
     return _cost(
         weights,
+        cost_terms,
         acc_ref,
         omega_ref,
-        leg_cost,
-        leg_vel_cost,
-        joint_angle_cost,
-        yaw_cost,
         state0,
         control,
     )
@@ -693,24 +776,18 @@ def cost_flat_jax(
 @jax.jit
 def cost_jac_jax(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control_flat: jax.Array,
 ) -> jax.Array:
     cost = functools.partial(
         cost_flat_jax,
         weights,
+        cost_terms,
         acc_ref,
         omega_ref,
-        leg_cost,
-        leg_vel_cost,
-        joint_angle_cost,
-        yaw_cost,
         state0,
     )
     res = jax.grad(cost)(control_flat)
@@ -720,24 +797,18 @@ def cost_jac_jax(
 @jax.jit
 def cost_and_grad_flat_jax(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control_flat: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     cost = functools.partial(
         cost_flat_jax,
         weights,
+        cost_terms,
         acc_ref,
         omega_ref,
-        leg_cost,
-        leg_vel_cost,
-        joint_angle_cost,
-        yaw_cost,
         state0,
     )
     cost_and_grad = jax.value_and_grad(cost)
@@ -747,12 +818,9 @@ def cost_and_grad_flat_jax(
 @jax.jit
 def cost_hessp_jax(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control_flat: jax.Array,
     v: jax.Array,
@@ -760,12 +828,9 @@ def cost_hessp_jax(
     cost = functools.partial(
         cost_flat_jax,
         weights,
+        cost_terms,
         acc_ref,
         omega_ref,
-        leg_cost,
-        leg_vel_cost,
-        joint_angle_cost,
-        yaw_cost,
         state0,
     )
     # primals and tangents should be _tuples_ of arrays
@@ -778,24 +843,18 @@ def cost_hessp_jax(
 @jax.jit
 def cost_hess_mat_jax(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     control_flat: jax.Array,
 ) -> jax.Array:
     cost = functools.partial(
         cost_flat_jax,
         weights,
+        cost_terms,
         acc_ref,
         omega_ref,
-        leg_cost,
-        leg_vel_cost,
-        joint_angle_cost,
-        yaw_cost,
         state0,
     )
     return jax.hessian(cost)(control_flat)
@@ -803,12 +862,9 @@ def cost_hess_mat_jax(
 
 def get_cost(
     weights: Weights,
+    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    leg_cost: quartic_cost.QuarticCost,
-    leg_vel_cost: quartic_cost.QuarticCost,
-    joint_angle_cost: quartic_cost.QuarticCost,
-    yaw_cost: quartic_cost.QuarticCost,
     state0: jax.Array,
     hess_type: str = "hessp",  # hessp, hess_lin_op, hess_mat
 ) -> tuple[tp.Callable, tp.Callable, tp.Callable]:
@@ -819,17 +875,11 @@ def get_cost(
     acc_ref :
         Reference head acceleration.
         Should have shape (n, 3) with n the number of control points.
+    cost_terms :
+        Quartic costs to scale for (inequality) boundary conditions.
     omega_ref :
         Reference head angular velocity.
         Should have shape (n, 3) with n the number of control points.
-    leg_cost :
-        Cost function for leg lengths.
-    leg_vel_cost :
-        Cost function for leg velocities.
-    joint_angle_cost :
-        Cost function for joint angles.
-    yaw_cost :
-        Cost function for yaw angles.
     state0 :
         Initial state, as a vector of size 12.
     hess_type :
@@ -845,12 +895,9 @@ def get_cost(
     """
     params = (
         weights,
+        cost_terms,
         acc_ref,
         omega_ref,
-        leg_cost,
-        leg_vel_cost,
-        joint_angle_cost,
-        yaw_cost,
         state0,
     )
 
@@ -966,16 +1013,19 @@ if __name__ == "__main__":
         low=-const.max_yaw,
         high=const.max_yaw,
     )
-
-    acados_get_cost = functools.partial(
-        get_cost,
-        weights=weights,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
+    cost_terms = CostTerms(
         leg_cost=leg_cost,
         leg_vel_cost=leg_vel_cost,
         joint_angle_cost=joint_angle_cost,
         yaw_cost=yaw_cost,
+    )
+
+    acados_get_cost = functools.partial(
+        get_cost,
+        weights=weights,
+        cost_terms=cost_terms,
+        acc_ref=acc_ref,
+        omega_ref=omega_ref,
         # state0=state0,
     )
 

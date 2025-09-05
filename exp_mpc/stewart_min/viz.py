@@ -1,5 +1,7 @@
 import typing as tp
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import matplotlib as mpl
 import matplotlib.figure as mpl_fig
@@ -9,6 +11,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.utils as utils
+import exp_mpc.stewart_min.opt as opt
 
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -1186,17 +1189,394 @@ def split_tablesol(
     split_sols = []
     for i in range(table_sol.u.shape[0]):
         split_sol = table_sol[i]
-        split_sol.u = np.atleast_2d(split_sol.u)
-        split_sol.x = np.atleast_2d(split_sol.x)
+        split_sol.u = jnp.atleast_2d(split_sol.u)
+        split_sol.x = jnp.atleast_2d(split_sol.x)
         split_sols.append(split_sol)
 
     if keep_dim:
         for i in range(len(split_sols)):
-            split_sols[i].u = np.tile(
+            split_sols[i].u = jnp.tile(
                 split_sols[i].u, reps=(table_sol.u.shape[0], 1)
             )
-            split_sols[i].x = np.tile(
+            split_sols[i].x = jnp.tile(
                 split_sols[i].x, reps=(table_sol.x.shape[0], 1)
             )
 
     return split_sols
+
+
+def plot_cost_trajectory(
+    acc_refs: jax.Array,
+    omega_refs: jax.Array,
+    weights: opt.Weights,
+    cost_terms: opt.CostTerms,
+    trajectory: list[utils.TableSol],
+    fig_title: str = "Cost Trajectory",
+    fig_kwds: dict = {},
+) -> mpl_fig.Figure:
+    """Plot the components of the MPC cost function.
+
+    Specifically, we plot the costs corresponding to
+    * head acceleration
+    * head angular velocity
+    * leg position boundary
+    * leg velocity boundary
+    * joint angle boundary
+    * yaw boundary
+    * control
+
+    Parameters
+    ----------
+    trajectory :
+        List of initial conditions to plot.
+    fig_title :
+        Suptitle of the figure.
+    fig_kwds :
+        Other figure keywords.
+
+    Returns
+    -------
+    Figure with cost terms.
+    """
+    #########
+    # setup #
+    #########
+
+    fig, axes = plt.subplots(
+        nrows=4,
+        ncols=2,
+        figsize=(16, 12),
+        gridspec_kw={"wspace": 0.35, "hspace": 0.5},
+        **fig_kwds,
+    )
+    fig.suptitle(fig_title, fontsize=16)
+    times = np.arange(0, len(trajectory), dtype=float) * const.dt
+    legend_kwargs = dict(
+        bbox_to_anchor=(1, 1), loc="upper left", borderaxespad=0.0
+    )
+
+    def colors(num: int) -> list[tuple[float, float, float, float]]:
+        return [mpl.colormaps["viridis"](c) for c in np.linspace(0, 1, num)]
+
+    id_weights = opt.Weights()
+    scaled_weights = opt.Weights(
+        acc=weights.acc,
+        omega=weights.omega,
+        leg=weights.leg,
+        leg_vel=weights.leg_vel,
+        joint_angle=weights.joint_angle,
+        yaw=weights.yaw,
+        control=weights.control,
+    )
+    full_weights = weights
+    assert len(acc_refs.shape) == 3
+    assert acc_refs.shape[-1] == 3
+    assert len(omega_refs.shape) == 3
+    assert omega_refs.shape[-1] == 3
+
+    ############
+    # head acc #
+    ############
+
+    @jax.jit
+    def head_fun(
+        weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
+    ) -> jax.Array:
+        control = opt.Control.from_flat(sol.u)
+        state = control.get_state(state0=sol.x[0])
+        return jnp.mean(
+            opt.head_xyz_acc_cost_arr(
+                weights=weights,
+                acc_ref=acc_ref,
+                state=state,
+                control=control,
+            )
+        )
+
+    def weight2head_acc(weights: opt.Weights) -> jax.Array:
+        vals = [
+            head_fun(weights, sol, ref)
+            for sol, ref in zip(trajectory, acc_refs)
+        ]
+        return jnp.array(vals)
+
+    id_head_acc = weight2head_acc(id_weights)
+    scaled_head_acc = weight2head_acc(scaled_weights)
+    full_head_acc = weight2head_acc(full_weights)
+    all_head_acc = [id_head_acc, scaled_head_acc, full_head_acc]
+
+    ax_head: mpl_ax.Axes = axes[0, 0]
+    ax_head.set_title("Head Accelerations")
+    ax_head.set_xlabel("[s]")
+    ax_head.set_ylabel("[cost]")
+    ax_head.set_xlim(times[0], times[-1])
+    all_head_vals = np.concatenate(all_head_acc)
+    ax_head.set_ylim(*_get_limits(all_head_vals))
+    ax_head.grid()
+
+    labels = ["id", "scaled", "full"]
+    for data, label, color in zip(all_head_acc, labels, colors(3)):
+        ax_head.plot(times, data, color=color, label=label)
+    ax_head.legend(**legend_kwargs)
+
+    ##############
+    # head omega #
+    ##############
+
+    @jax.jit
+    def omega_fun(
+        weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
+    ) -> jax.Array:
+        control = opt.Control.from_flat(sol.u)
+        state = control.get_state(state0=sol.x[0])
+        return jnp.mean(
+            opt.omega_cost_arr(
+                weights=weights,
+                omega_ref=omega_ref,
+                state=state,
+                control=control,
+            )
+        )
+
+    def weight2omega(weights: opt.Weights) -> jax.Array:
+        vals = [
+            omega_fun(weights, sol, ref)
+            for sol, ref in zip(trajectory, omega_refs)
+        ]
+        return jnp.array(vals)
+
+    id_omega = weight2omega(id_weights)
+    scaled_omega = weight2omega(scaled_weights)
+    full_omega = weight2omega(full_weights)
+    all_omega = [id_omega, scaled_omega, full_omega]
+
+    ax_omega: mpl_ax.Axes = axes[0, 1]
+    ax_omega.set_title("Head Angular Velocity")
+    ax_omega.set_xlabel("[s]")
+    ax_omega.set_ylabel("[cost]")
+    ax_omega.set_xlim(times[0], times[-1])
+    all_omega_vals = np.concatenate(all_omega)
+    ax_omega.set_ylim(*_get_limits(all_omega_vals))
+    ax_omega.grid()
+
+    labels = ["id", "scaled", "full"]
+    for data, label, color in zip(all_omega, labels, colors(3)):
+        ax_omega.plot(times, data, color=color, label=label)
+    ax_omega.legend(**legend_kwargs)
+
+    ##############
+    # leg common #
+    ##############
+
+    @jax.jit
+    def leg_vel_fun(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
+        control = opt.Control.from_flat(sol.u)
+        state = control.get_state(state0=sol.x[0])
+        length_cost_arr, vel_cost_arr = opt.leg_boundary_cost_arr(
+            weights=weights,
+            length_cost=cost_terms.leg_cost,
+            vel_cost=cost_terms.leg_vel_cost,
+            state=state,
+            control=control,
+        )
+        length_cost_val = jnp.mean(length_cost_arr, axis=0)
+        vel_cost_val = jnp.mean(vel_cost_arr, axis=0)
+        return length_cost_val, vel_cost_val
+
+    leg_pos = []
+    leg_vel = []
+    for sol in trajectory:
+        res = leg_vel_fun(sol)
+        leg_pos.append(res[0])
+        leg_vel.append(res[1])
+    leg_pos = jnp.stack(leg_pos)
+    leg_vel = jnp.stack(leg_vel)
+
+    ###########
+    # leg pos #
+    ###########
+
+    ax_leg_pos: mpl_ax.Axes = axes[1, 0]
+    ax_leg_pos.set_title("Leg position boundary")
+    ax_leg_pos.set_xlabel("[s]")
+    ax_leg_pos.set_ylabel("[cost]")
+    ax_leg_pos.set_xlim(times[0], times[-1])
+    ax_leg_pos.set_ylim(*_get_limits(np.ravel(leg_pos)))
+    ax_leg_pos.grid()
+
+    for i, color in enumerate(colors(6)):
+        ax_leg_pos.plot(times, leg_pos[:, i], color=color, label=f"leg {i}")
+    ax_leg_pos.legend(**legend_kwargs)
+
+    ###########
+    # leg vel #
+    ###########
+
+    ax_leg_vel: mpl_ax.Axes = axes[1, 1]
+    ax_leg_vel.set_title("Leg velocity boundary")
+    ax_leg_vel.set_xlabel("[s]")
+    ax_leg_vel.set_ylabel("[cost]")
+    ax_leg_vel.set_xlim(times[0], times[-1])
+    ax_leg_vel.set_ylim(*_get_limits(np.ravel(leg_vel)))
+    ax_leg_vel.grid()
+
+    for i, color in enumerate(colors(6)):
+        ax_leg_vel.plot(times, leg_vel[:, i], color=color, label=f"leg {i}")
+    ax_leg_vel.legend(**legend_kwargs)
+
+    #############
+    # leg angle #
+    #############
+
+    @jax.jit
+    def joint_angle_fun(sol: utils.TableSol) -> jax.Array:
+        control = opt.Control.from_flat(sol.u)
+        state = control.get_state(state0=sol.x[0])
+        angle_cost_arr = opt.joint_angle_boundary_cost_arr(
+            weights=weights,
+            cost=cost_terms.joint_angle_cost,
+            state=state,
+            control=control,
+        )
+        angle_cost_val = jnp.mean(angle_cost_arr, axis=0)
+        return angle_cost_val
+
+    joint_angle = jnp.array([joint_angle_fun(sol) for sol in trajectory])
+
+    ax_leg_angle: mpl_ax.Axes = axes[2, 0]
+    ax_leg_angle.set_title("Joint angle boundary")
+    ax_leg_angle.set_xlabel("[s]")
+    ax_leg_angle.set_ylabel("[cost]")
+    ax_leg_angle.set_xlim(times[0], times[-1])
+    ax_leg_angle.set_ylim(*_get_limits(np.ravel(joint_angle)))
+    ax_leg_angle.grid()
+
+    for i, color in enumerate(colors(12)):
+        ax_leg_angle.plot(
+            times, joint_angle[:, i], color=color, label=f"joint {i}"
+        )
+    ax_leg_angle.legend(**legend_kwargs)
+
+    #######
+    # yaw #
+    #######
+
+    @jax.jit
+    def yaw_fun(sol: utils.TableSol) -> jax.Array:
+        control = opt.Control.from_flat(sol.u)
+        state = control.get_state(state0=sol.x[0])
+        yaw_cost_arr = opt.yaw_boundary_cost_arr(
+            weights=weights,
+            cost=cost_terms.yaw_cost,
+            state=state,
+            control=control,
+        )
+        yaw_cost_val = jnp.mean(yaw_cost_arr, axis=0)
+        return yaw_cost_val
+
+    yaw = jnp.array([yaw_fun(sol) for sol in trajectory])
+
+    ax_yaw: mpl_ax.Axes = axes[2, 1]
+    ax_yaw.set_title("Yaw boundary")
+    ax_yaw.set_xlabel("[s]")
+    ax_yaw.set_ylabel("[cost]")
+    ax_yaw.set_xlim(times[0], times[-1])
+    ax_yaw.set_ylim(*_get_limits(np.ravel(yaw)))
+    ax_yaw.grid()
+
+    ax_yaw.plot(times, yaw, color=colors(1)[0], label="yaw")
+    ax_yaw.legend(**legend_kwargs)
+
+    ###########
+    # control #
+    ###########
+
+    @jax.jit
+    def control_fun(sol: utils.TableSol) -> jax.Array:
+        control = opt.Control.from_flat(sol.u)
+        control_cost_arr = opt.control_cost_arr(
+            weights=weights,
+            control=control,
+        )
+        control_cost_val = jnp.mean(control_cost_arr, axis=0)
+        return control_cost_val
+
+    control = jnp.array([control_fun(sol) for sol in trajectory])
+
+    ax_control: mpl_ax.Axes = axes[3, 0]
+    ax_control.set_title("Control")
+    ax_control.set_xlabel("[s]")
+    ax_control.set_ylabel("[cost]")
+    ax_control.set_xlim(times[0], times[-1])
+    ax_control.set_ylim(*_get_limits(np.ravel(control)))
+    ax_control.grid()
+
+    for i, color in enumerate(colors(6)):
+        ax_control.plot(times, control[:, i], color=color, label=f"control {i}")
+    ax_control.legend(**legend_kwargs)
+
+    ###################
+    # % contributions #
+    ###################
+
+    head_acc_terms = full_head_acc
+    omega_terms = full_omega
+    leg_pos_terms = jnp.sum(leg_pos, axis=1)
+    leg_vel_terms = jnp.sum(leg_vel, axis=1)
+    joint_angle_terms = jnp.sum(joint_angle, axis=1)
+    yaw_terms = yaw
+    control_terms = jnp.sum(control, axis=1)
+    all_terms = [
+        head_acc_terms,
+        omega_terms,
+        leg_pos_terms,
+        leg_vel_terms,
+        joint_angle_terms,
+        yaw_terms,
+        control_terms,
+    ]
+
+    costs = jnp.sum(jnp.stack(all_terms), axis=0)
+    head_acc_perc = head_acc_terms / costs * 100.0
+    omega_perc = omega_terms / costs * 100.0
+    leg_pos_perc = leg_pos_terms / costs * 100.0
+    leg_vel_perc = leg_vel_terms / costs * 100.0
+    joint_angle_perc = joint_angle_terms / costs * 100.0
+    yaw_perc = yaw_terms / costs * 100.0
+    control_perc = control_terms / costs * 100.0
+    all_perc = [
+        head_acc_perc,
+        omega_perc,
+        leg_pos_perc,
+        leg_vel_perc,
+        joint_angle_perc,
+        yaw_perc,
+        control_perc,
+    ]
+
+    ax_perc: mpl_ax.Axes = axes[3, 1]
+    ax_perc.set_title("Cost term percentage contributions")
+    ax_perc.set_xlabel("[s]")
+    ax_perc.set_ylabel("[%]")
+    ax_perc.set_xlim(times[0], times[-1])
+    ax_perc.set_ylim(0.0, 100.0)
+    ax_perc.grid()
+
+    labels = [
+        "head acc %",
+        "head omega %",
+        "leg pos %",
+        "leg vel %",
+        "joint angle %",
+        "yaw %",
+        "control %",
+    ]
+    for data, label, color in zip(all_perc, labels, colors(len(labels))):
+        ax_perc.plot(times, data, color=color, label=label)
+    ax_perc.legend(**legend_kwargs)
+
+    ##########
+    # return #
+    ##########
+
+    return fig
