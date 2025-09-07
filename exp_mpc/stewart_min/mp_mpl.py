@@ -10,14 +10,18 @@ import matplotlib.pyplot as plt
 import multiprocessing as mp
 import argparse
 import numpy as np
+import jax
+import jax.numpy as jnp
 import tempfile
 import itertools
 import pickle
 import subprocess
+import dataclasses
 
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.viz as viz
 import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.opt as opt
 
 
 ###########
@@ -27,10 +31,13 @@ import exp_mpc.stewart_min.const as const
 
 cpus: int = os.cpu_count()  # type: ignore
 assert isinstance(cpus, int)
-cpus -= 4  # remove efficiency cpus, for laptop apple m-series processors
+# cpus -= 4  # remove efficiency cpus, for laptop apple m-series processors
+cpus //= 2  # jax threading, ram, and efficiency cpu considerations
 
 
-def get_frame_range_iter(fps: int = 30, sim_rate: float = 1.0):
+def get_frame_range_iter(
+    trajectory: list[utils.TableSol], fps: int = 30, sim_rate: float = 1.0
+):
     num_frames = int(len(trajectory) * const.dt * fps / sim_rate)
     frame_endpoints = [i * (num_frames // cpus) for i in range(cpus + 1)]
     frame_range_iter = zip(
@@ -83,26 +90,52 @@ def single_animate_human_trajectory(
     return f"{const_str}_temp.mp4"
 
 
-def mp_animate_human_trajectory(
-    file_name: str,
-    trajectory: list[utils.TableSol],
-    references: dict[str, np.ndarray],
-):
+@dataclasses.dataclass
+class AnimateHumanTrajectoryArgs:
+    file_name: str
+    trajectory: list[utils.TableSol]
+    references: dict[str, np.ndarray]
+
+
+def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
     # setup
     temp_dir = tempfile.TemporaryDirectory()
     pool_inputs = zip(
         itertools.repeat(temp_dir.name),
         range(cpus),  # count_iter
-        itertools.repeat(trajectory),
-        itertools.repeat(references),
-        get_frame_range_iter(),
+        itertools.repeat(args.trajectory),
+        itertools.repeat(args.references),
+        get_frame_range_iter(args.trajectory),
     )
 
     # main
     with mp.Pool(cpus) as pool:
         names = pool.starmap(single_animate_human_trajectory, pool_inputs)
     names = sorted(names)  # multiprocessing can mix things up
-    concat_mp4(temp_dir=temp_dir.name, file_name=file_name, mp4_names=names)
+    concat_mp4(
+        temp_dir=temp_dir.name, file_name=args.file_name, mp4_names=names
+    )
+
+
+def call_mp_animate_human_trajectory(
+    file_name: str,
+    trajectory: list[utils.TableSol],
+    references: dict[str, np.ndarray],
+):
+    args = AnimateHumanTrajectoryArgs(
+        file_name=file_name,
+        trajectory=trajectory,
+        references=references,
+    )
+    temp_dir = tempfile.TemporaryDirectory()
+    temp_pickle = f"{temp_dir.name}/mp_animate_human_trajectory_args.pickle"
+    with open(temp_pickle, "wb") as f:
+        pickle.dump(args, f)
+    cmd = f"python3 {__file__} --animate-human-trajectory-args {temp_pickle}"
+    process = subprocess.Popen(
+        cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    process.wait()  # need to wait; otherwise the temp dir kills itself
 
 
 ######################
@@ -131,24 +164,144 @@ def single_animate_trajectory(
     return f"{const_str}_temp.mp4"
 
 
-def mp_animate_trajectory(
-    file_name: str,
-    trajectory: list[utils.TableSol],
-):
+@dataclasses.dataclass
+class AnimateTrajectoryArgs:
+    file_name: str
+    trajectory: list[utils.TableSol]
+
+
+def mp_animate_trajectory(args: AnimateTrajectoryArgs):
     # setup
     temp_dir = tempfile.TemporaryDirectory()
     pool_inputs = zip(
         itertools.repeat(temp_dir.name),
         range(cpus),  # count_iter
-        itertools.repeat(trajectory),
-        get_frame_range_iter(),
+        itertools.repeat(args.trajectory),
+        get_frame_range_iter(args.trajectory),
     )
 
     # main
     with mp.Pool(cpus) as pool:
         names = pool.starmap(single_animate_trajectory, pool_inputs)
     names = sorted(names)  # multiprocessing can mix things up
-    concat_mp4(temp_dir=temp_dir.name, file_name=file_name, mp4_names=names)
+    concat_mp4(
+        temp_dir=temp_dir.name, file_name=args.file_name, mp4_names=names
+    )
+
+
+def call_mp_animate_trajectory(
+    file_name: str,
+    trajectory: list[utils.TableSol],
+):
+    args = AnimateTrajectoryArgs(
+        file_name=file_name,
+        trajectory=trajectory,
+    )
+    temp_dir = tempfile.TemporaryDirectory()
+    temp_pickle = f"{temp_dir.name}/mp_animate_trajectory_args.pickle"
+    with open(temp_pickle, "wb") as f:
+        pickle.dump(args, f)
+    cmd = f"python3 {__file__} --animate-trajectory-args {temp_pickle}"
+    process = subprocess.Popen(
+        cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    process.wait()  # need to wait; otherwise the temp dir kills itself
+
+
+###########################
+# animate cost trajectory #
+###########################
+
+
+def single_animate_cost_trajectory(
+    temp_dir: str,
+    count: int,
+    trajectory: list[utils.TableSol],
+    acc_refs,
+    omega_refs,
+    weights,
+    cost_terms,
+    frame_range: tuple[int, int],
+) -> str:
+    """Return file name for matplotlib animation."""
+    anim, fig = viz.animate_cost_trajectory(
+        trajectory=trajectory,
+        acc_refs=acc_refs,
+        omega_refs=omega_refs,
+        weights=weights,
+        cost_terms=cost_terms,
+        sim_rate=1.0,
+        fps=30,
+        frame_range=frame_range,
+    )
+    const_str = str(count)
+    if len(const_str) == 1:
+        const_str = f"0{const_str}"  # prepend an extra zero, for later sorting
+    anim.save(f"{temp_dir}/{const_str}_temp.mp4", writer="ffmpeg", dpi=250)
+    plt.close(fig)
+    return f"{const_str}_temp.mp4"
+
+
+@dataclasses.dataclass
+class AnimateCostTrajectoryArgs:
+    file_name: str
+    trajectory: list[utils.TableSol]
+    acc_refs: jax.Array
+    omega_refs: jax.Array
+    weights: opt.Weights
+    cost_terms: opt.CostTerms
+
+
+def mp_animate_cost_trajectory(args: AnimateCostTrajectoryArgs):
+    # setup
+    temp_dir = tempfile.TemporaryDirectory()
+    pool_inputs = zip(
+        itertools.repeat(temp_dir.name),
+        range(cpus),  # count_iter
+        itertools.repeat(args.trajectory),
+        itertools.repeat(args.acc_refs),
+        itertools.repeat(args.omega_refs),
+        itertools.repeat(args.weights),
+        itertools.repeat(args.cost_terms),
+        get_frame_range_iter(args.trajectory),
+    )
+
+    # main
+    with mp.Pool(cpus) as pool:
+        names = pool.starmap(single_animate_cost_trajectory, pool_inputs)
+    names = sorted(names)  # multiprocessing can mix things up
+    concat_mp4(
+        temp_dir=temp_dir.name, file_name=args.file_name, mp4_names=names
+    )
+
+
+def call_mp_animate_cost_trajectory(
+    file_name: str,
+    trajectory: list[utils.TableSol],
+    acc_refs: jax.Array,
+    omega_refs: jax.Array,
+    weights: opt.Weights,
+    cost_terms: opt.CostTerms,
+):
+    args = AnimateCostTrajectoryArgs(
+        file_name=file_name,
+        trajectory=trajectory,
+        acc_refs=acc_refs,
+        omega_refs=omega_refs,
+        weights=weights,
+        cost_terms=cost_terms,
+    )
+    temp_dir = tempfile.TemporaryDirectory()
+    temp_pickle = f"{temp_dir.name}/mp_animate_cost_trajectory_args.pickle"
+    with open(temp_pickle, "wb") as f:
+        pickle.dump(args, f)
+    cmd = f"python3 {__file__} --animate-cost-trajectory-args {temp_pickle}"
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        # cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    process.wait()  # need to wait; otherwise the temp dir kills itself
 
 
 if __name__ == "__main__":
@@ -158,49 +311,34 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--file-name",
+        "--animate-human-trajectory-args",
         type=str,
-        help="File name for result.",
-    )
-    parser.add_argument(
-        "--trajectory",
-        type=str,
-        help="File path for pickled trajecotry data.",
-    )
-    parser.add_argument(
-        "--references",
-        type=str,
-        help="File path for pickled references data.",
-    )
-    parser.add_argument(
-        "--animate-human-trajectory",
-        action="store_true",
         help="Compute `viz.animate_human_trajectory` with multiprocessing.",
     )
     parser.add_argument(
-        "--animate-trajectory",
-        action="store_true",
+        "--animate-trajectory-args",
+        type=str,
         help="Compute `viz.animate_trajectory` with multiprocessing.",
+    )
+    parser.add_argument(
+        "--animate-cost-trajectory-args",
+        type=str,
+        help="Compute `viz.animate_cost_trajectory` with multiprocessing.",
     )
 
     args = parser.parse_args()
 
-    if args.animate_human_trajectory:
-        with open(args.trajectory, "rb") as f:
-            trajectory = pickle.load(f)
-        with open(args.references, "rb") as f:
-            references = pickle.load(f)
-        mp_animate_human_trajectory(
-            file_name=args.file_name,
-            trajectory=trajectory,
-            references=references,
-        )
-    elif args.animate_trajectory:
-        with open(args.trajectory, "rb") as f:
-            trajectory = pickle.load(f)
-        mp_animate_trajectory(
-            file_name=args.file_name,
-            trajectory=trajectory,
-        )
+    if args.animate_human_trajectory_args:
+        with open(args.animate_human_trajectory_args, "rb") as f:
+            fun_args = pickle.load(f)
+        mp_animate_human_trajectory(fun_args)
+    elif args.animate_trajectory_args:
+        with open(args.animate_trajectory_args, "rb") as f:
+            fun_args = pickle.load(f)
+        mp_animate_trajectory(fun_args)
+    elif args.animate_cost_trajectory_args:
+        with open(args.animate_cost_trajectory_args, "rb") as f:
+            fun_args = pickle.load(f)
+        mp_animate_cost_trajectory(fun_args)
     else:
         raise RuntimeError("Need to specify script action.")
