@@ -11,7 +11,6 @@ import multiprocessing as mp
 import argparse
 import numpy as np
 import jax
-import jax.numpy as jnp
 import tempfile
 import itertools
 import pickle
@@ -94,7 +93,7 @@ def single_animate_human_trajectory(
 class AnimateHumanTrajectoryArgs:
     file_name: str
     trajectory: list[utils.TableSol]
-    references: dict[str, np.ndarray]
+    references: dict[str, jax.Array]
 
 
 def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
@@ -120,7 +119,7 @@ def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
 def call_mp_animate_human_trajectory(
     file_name: str,
     trajectory: list[utils.TableSol],
-    references: dict[str, np.ndarray],
+    references: dict[str, jax.Array],
 ):
     args = AnimateHumanTrajectoryArgs(
         file_name=file_name,

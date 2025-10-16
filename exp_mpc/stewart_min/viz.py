@@ -478,7 +478,7 @@ def animate_human_trajectory(
         for j, ax in enumerate(row_axes):
             min_val = np.min(ylim_data[i][:, :, j])
             max_val = np.max(ylim_data[i][:, :, j])
-            ax.set_ylim(*_get_limits(np.array([min_val, max_val])))
+            ax.set_ylim(*_get_limits(jnp.array([min_val, max_val])))
 
     num_frames = int(len(trajectory) * const.dt * fps / sim_rate)
 
@@ -545,12 +545,12 @@ def animate_human_trajectory(
     return anim, fig
 
 
-def _get_limits(data: np.ndarray) -> tuple[float, float]:
+def _get_limits(data: jax.Array) -> tuple[float, float]:
     """Get reasonable plotting limits for some data."""
     eps = 2**-4  # magic
 
-    minimum = np.min(data)
-    maximum = np.max(data)
+    minimum = jnp.min(data)
+    maximum = jnp.max(data)
     diff = maximum - minimum
 
     # edge case
@@ -559,21 +559,21 @@ def _get_limits(data: np.ndarray) -> tuple[float, float]:
 
     limit_diff = diff * eps
     limits = (
-        minimum - limit_diff,
-        maximum + limit_diff,
+        float(minimum - limit_diff),
+        float(maximum + limit_diff),
     )
     return limits
 
 
 def simple_plot(
     axis: mpl_ax.Axes,
-    time: np.ndarray,
-    data: np.ndarray,
+    time: jax.Array,
+    data: jax.Array,
     title: str,
     data_label: str,
     min_limit: tp.Optional[float] = None,
     max_limit: tp.Optional[float] = None,
-    reference: tp.Optional[np.ndarray] = None,
+    reference: tp.Optional[jax.Array] = None,
 ):
     axis.set_title(title)
     axis.set_ylabel(data_label)
@@ -581,19 +581,19 @@ def simple_plot(
     axis.plot(time, data, color="blue")
     if reference is not None:
         axis.plot(time, reference, color="orange", linestyle="--")
-        data = np.concatenate([data, reference])
+        data = jnp.concatenate([data, reference])
     if min_limit is not None:
         axis.axhline(y=min_limit, linestyle="-", alpha=0.5, color="red")
     if max_limit is not None:
         axis.axhline(y=max_limit, linestyle="-", alpha=0.5, color="red")
     axis.set_ylim(*_get_limits(data))
-    axis.set_xlim(time[0], time[-1])
+    axis.set_xlim(float(time[0]), float(time[-1]))
     axis.grid()
 
 
 def _reference_helper(
-    reference: tp.Optional[np.ndarray], index: int
-) -> np.ndarray | None:
+    reference: tp.Optional[jax.Array], index: int
+) -> jax.Array | None:
     """Helper function to get the reference data for a specific axis."""
     if reference is None:
         return None
@@ -616,14 +616,14 @@ def _plot_cartesian_trajectory(
     assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
     assert len(trajectory) > 0
 
-    times = np.arange(0, len(trajectory), dtype=float) * const.dt
+    times = jnp.arange(0, len(trajectory), dtype=float) * const.dt
 
     ################
     # xyz position #
     ################
 
     # compute
-    xyzs = np.array([xyz_fun(sol) for sol in trajectory])
+    xyzs = jnp.array([xyz_fun(sol) for sol in trajectory])
 
     # setup
     ax_x = axes[0, 0]
@@ -658,7 +658,7 @@ def _plot_cartesian_trajectory(
     ####################
 
     # compute
-    angles = np.array([angle_fun(sol) for sol in trajectory])
+    angles = jnp.array([angle_fun(sol) for sol in trajectory])
 
     # setup
     ax_roll = axes[1, 0]
@@ -702,19 +702,19 @@ def _plot_cartesian_trajectory_p(
     angle_vel_fun: tp.Callable,
     xyz_acc_fun: tp.Callable,
     angle_acc_fun: tp.Callable,
-    references: dict[str, np.ndarray] = {},
+    references: dict[str, jax.Array] = {},
 ):
     """Common cartesian trajectory routines, for derivatives."""
     assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
 
-    times = np.arange(0, len(trajectory), dtype=float) * const.dt
+    times = jnp.arange(0, len(trajectory), dtype=float) * const.dt
 
     ################
     # xyz velocity #
     ################
 
     # compute
-    xyz_vels = np.array([xyz_vel_fun(sol) for sol in trajectory])
+    xyz_vels = jnp.array([xyz_vel_fun(sol) for sol in trajectory])
 
     # setup
     ax_x_vel = axes[0, 0]
@@ -755,7 +755,7 @@ def _plot_cartesian_trajectory_p(
     ####################
 
     # compute
-    angle_vels = np.array([angle_vel_fun(sol) for sol in trajectory])
+    angle_vels = jnp.array([angle_vel_fun(sol) for sol in trajectory])
 
     # setup
     ax_omega_x_vel = axes[1, 0]
@@ -804,7 +804,7 @@ def _plot_cartesian_trajectory_p(
     ####################
 
     # compute
-    xyz_accs = np.array([xyz_acc_fun(sol) for sol in trajectory])
+    xyz_accs = jnp.array([xyz_acc_fun(sol) for sol in trajectory])
 
     # setup
     ax_x_acc = axes[2, 0]
@@ -853,7 +853,7 @@ def _plot_cartesian_trajectory_p(
     ########################
 
     # compute
-    angle_accs = np.array([angle_acc_fun(sol) for sol in trajectory])
+    angle_accs = jnp.array([angle_acc_fun(sol) for sol in trajectory])
 
     # setup
     ax_omega_x_acc = axes[3, 0]
@@ -892,7 +892,7 @@ def _plot_cartesian_trajectory_p(
 
 def plot_human_trajectory(
     trajectory: list[utils.TableSol],
-    references: dict[str, np.ndarray] = {},
+    references: dict[str, jax.Array] = {},
     fig_title: str = "Head Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
@@ -1032,7 +1032,7 @@ def plot_actuator_trajectory(
     ###############
 
     leg_pos = [utils.leg_pos(sol) for sol in trajectory]
-    leg_pos = np.array(leg_pos)
+    leg_pos = jnp.array(leg_pos)
 
     ax_pos = axes[0, 0]
     ax_pos.set_title("Leg Lengths")
@@ -1070,7 +1070,7 @@ def plot_actuator_trajectory(
     ##################
 
     leg_vel = [utils.leg_vel(sol) for sol in trajectory]
-    leg_vel = np.array(leg_vel)
+    leg_vel = jnp.array(leg_vel)
 
     ax_vel = axes[0, 1]
     ax_vel.set_title("Leg Velocities")
@@ -1108,7 +1108,7 @@ def plot_actuator_trajectory(
     #####################
 
     leg_acc = [utils.leg_acc(sol) for sol in trajectory]
-    leg_acc = np.array(leg_acc)
+    leg_acc = jnp.array(leg_acc)
 
     ax_acc = axes[1, 0]
     ax_acc.set_title("Leg Accelerations")
@@ -1144,7 +1144,7 @@ def plot_actuator_trajectory(
     ax_angles.set_xlabel("[s]")
     ax_angles.set_ylabel("[deg]")
     ax_angles.set_xlim(times[0], times[-1])
-    y_lim_data = np.concatenate(
+    y_lim_data = jnp.concatenate(
         [top_joint_angles.flatten(), bot_joint_angles.flatten()]
     )
     ax_angles.set_ylim(*_get_limits(y_lim_data))
@@ -1285,7 +1285,7 @@ def plot_cost_trajectory(
     ) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
         state = control.get_state(state0=sol.x[0])
-        return jnp.mean(
+        return 0.5 * jnp.mean(
             opt.head_xyz_acc_cost_arr(
                 weights=weights,
                 acc_ref=acc_ref,
@@ -1311,7 +1311,7 @@ def plot_cost_trajectory(
     ax_head.set_xlabel("[s]")
     ax_head.set_ylabel("[cost]")
     ax_head.set_xlim(times[0], times[-1])
-    all_head_vals = np.concatenate(all_head_acc)
+    all_head_vals = jnp.concatenate(all_head_acc)
     ax_head.set_ylim(*_get_limits(all_head_vals))
     ax_head.grid()
 
@@ -1330,7 +1330,7 @@ def plot_cost_trajectory(
     ) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
         state = control.get_state(state0=sol.x[0])
-        return jnp.mean(
+        return 0.5 * jnp.mean(
             opt.omega_cost_arr(
                 weights=weights,
                 omega_ref=omega_ref,
@@ -1356,7 +1356,7 @@ def plot_cost_trajectory(
     ax_omega.set_xlabel("[s]")
     ax_omega.set_ylabel("[cost]")
     ax_omega.set_xlim(times[0], times[-1])
-    all_omega_vals = np.concatenate(all_omega)
+    all_omega_vals = jnp.concatenate(all_omega)
     ax_omega.set_ylim(*_get_limits(all_omega_vals))
     ax_omega.grid()
 
@@ -1402,7 +1402,7 @@ def plot_cost_trajectory(
     ax_leg_pos.set_xlabel("[s]")
     ax_leg_pos.set_ylabel("[cost]")
     ax_leg_pos.set_xlim(times[0], times[-1])
-    ax_leg_pos.set_ylim(*_get_limits(np.ravel(leg_pos)))
+    ax_leg_pos.set_ylim(*_get_limits(jnp.ravel(leg_pos)))
     ax_leg_pos.grid()
 
     for i, color in enumerate(colors(6)):
@@ -1418,7 +1418,7 @@ def plot_cost_trajectory(
     ax_leg_vel.set_xlabel("[s]")
     ax_leg_vel.set_ylabel("[cost]")
     ax_leg_vel.set_xlim(times[0], times[-1])
-    ax_leg_vel.set_ylim(*_get_limits(np.ravel(leg_vel)))
+    ax_leg_vel.set_ylim(*_get_limits(jnp.ravel(leg_vel)))
     ax_leg_vel.grid()
 
     for i, color in enumerate(colors(6)):
@@ -1449,7 +1449,7 @@ def plot_cost_trajectory(
     ax_leg_angle.set_xlabel("[s]")
     ax_leg_angle.set_ylabel("[cost]")
     ax_leg_angle.set_xlim(times[0], times[-1])
-    ax_leg_angle.set_ylim(*_get_limits(np.ravel(joint_angle)))
+    ax_leg_angle.set_ylim(*_get_limits(jnp.ravel(joint_angle)))
     ax_leg_angle.grid()
 
     for i, color in enumerate(colors(12)):
@@ -1482,7 +1482,7 @@ def plot_cost_trajectory(
     ax_yaw.set_xlabel("[s]")
     ax_yaw.set_ylabel("[cost]")
     ax_yaw.set_xlim(times[0], times[-1])
-    ax_yaw.set_ylim(*_get_limits(np.ravel(yaw)))
+    ax_yaw.set_ylim(*_get_limits(jnp.ravel(yaw)))
     ax_yaw.grid()
 
     ax_yaw.plot(times, yaw, color=colors(1)[0], label="yaw")
@@ -1499,7 +1499,7 @@ def plot_cost_trajectory(
             weights=weights,
             control=control,
         )
-        control_cost_val = jnp.mean(control_cost_arr, axis=0)
+        control_cost_val = 0.5 * jnp.mean(control_cost_arr, axis=0)
         return control_cost_val
 
     control = jnp.array([control_fun(sol) for sol in trajectory])
@@ -1509,7 +1509,7 @@ def plot_cost_trajectory(
     ax_control.set_xlabel("[s]")
     ax_control.set_ylabel("[cost]")
     ax_control.set_xlim(times[0], times[-1])
-    ax_control.set_ylim(*_get_limits(np.ravel(control)))
+    ax_control.set_ylim(*_get_limits(jnp.ravel(control)))
     ax_control.grid()
 
     for i, color in enumerate(colors(6)):
@@ -1691,7 +1691,7 @@ def animate_cost_trajectory(
     ax_head.set_xlabel("[s]")
     ax_head.set_ylabel("[cost]")
     ax_head.set_xlim(0, n_horizon)
-    all_head_vals = np.ravel(np.stack(all_head_acc))
+    all_head_vals = jnp.ravel(np.stack(all_head_acc))
     ax_head.set_ylim(*_get_limits(all_head_vals))
     ax_head.grid()
 
@@ -1736,7 +1736,7 @@ def animate_cost_trajectory(
     ax_omega.set_xlabel("[s]")
     ax_omega.set_ylabel("[cost]")
     ax_omega.set_xlim(0, n_horizon)
-    all_omega_vals = np.ravel(np.stack(all_omega))
+    all_omega_vals = jnp.ravel(np.stack(all_omega))
     ax_omega.set_ylim(*_get_limits(all_omega_vals))
     ax_omega.grid()
 
@@ -1784,7 +1784,7 @@ def animate_cost_trajectory(
     ax_leg_pos.set_xlabel("[s]")
     ax_leg_pos.set_ylabel("[cost]")
     ax_leg_pos.set_xlim(0, n_horizon)
-    ax_leg_pos.set_ylim(*_get_limits(np.ravel(leg_pos)))
+    ax_leg_pos.set_ylim(*_get_limits(jnp.ravel(leg_pos)))
     ax_leg_pos.grid()
 
     lines_leg_pos: list[mpl_lines.Line2D] = []
@@ -1804,7 +1804,7 @@ def animate_cost_trajectory(
     ax_leg_vel.set_xlabel("[s]")
     ax_leg_vel.set_ylabel("[cost]")
     ax_leg_vel.set_xlim(0, n_horizon)
-    ax_leg_vel.set_ylim(*_get_limits(np.ravel(leg_vel)))
+    ax_leg_vel.set_ylim(*_get_limits(jnp.ravel(leg_vel)))
     ax_leg_vel.grid()
 
     lines_leg_vel: list[mpl_lines.Line2D] = []
@@ -1837,7 +1837,7 @@ def animate_cost_trajectory(
     ax_leg_angle.set_xlabel("[s]")
     ax_leg_angle.set_ylabel("[cost]")
     ax_leg_angle.set_xlim(0, n_horizon)
-    ax_leg_angle.set_ylim(*_get_limits(np.ravel(joint_angle)))
+    ax_leg_angle.set_ylim(*_get_limits(jnp.ravel(joint_angle)))
     ax_leg_angle.grid()
 
     lines_joint_angle: list[mpl_lines.Line2D] = []
@@ -1870,7 +1870,7 @@ def animate_cost_trajectory(
     ax_yaw.set_xlabel("[s]")
     ax_yaw.set_ylabel("[cost]")
     ax_yaw.set_xlim(0, n_horizon)
-    ax_yaw.set_ylim(*_get_limits(np.ravel(yaw)))
+    ax_yaw.set_ylim(*_get_limits(jnp.ravel(yaw)))
     ax_yaw.grid()
 
     line_yaw: mpl_lines.Line2D
@@ -1896,7 +1896,7 @@ def animate_cost_trajectory(
     ax_control.set_xlabel("[s]")
     ax_control.set_ylabel("[cost]")
     ax_control.set_xlim(0, n_horizon)
-    ax_control.set_ylim(*_get_limits(np.ravel(control)))
+    ax_control.set_ylim(*_get_limits(jnp.ravel(control)))
     ax_control.grid()
 
     lines_control: list[mpl_lines.Line2D] = []

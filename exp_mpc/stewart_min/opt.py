@@ -224,12 +224,12 @@ class Control:
         assert flat.size % 6 == 0
         flat = jnp.reshape(flat, (-1, 6))
         return cls(
-            x=flat[:, 0],
-            y=flat[:, 1],
-            z=flat[:, 2],
-            roll=flat[:, 3],
-            pitch=flat[:, 4],
-            yaw=flat[:, 5],
+            x=jnp.squeeze(flat[:, 0]),
+            y=jnp.squeeze(flat[:, 1]),
+            z=jnp.squeeze(flat[:, 2]),
+            roll=jnp.squeeze(flat[:, 3]),
+            pitch=jnp.squeeze(flat[:, 4]),
+            yaw=jnp.squeeze(flat[:, 5]),
         )
 
     def flatten(self) -> jax.Array:
@@ -511,9 +511,9 @@ def _hyper(x: jax.Array) -> jax.Array:
     """
     # we can scale the input to make the quadratic region of attraction larger
     # for us, unity works quite well
-    # a = 2**-6
-    a = 2**0
-    return jnp.sqrt(1.0 + x / a) - 1.0
+    # a = 2**0
+    # return jnp.sqrt(1.0 + x / a) - 1.0
+    return x
 
 
 ########
@@ -561,7 +561,7 @@ def _head_xyz_acc_cost(
 ) -> jax.Array:
     """Head acceleration cost."""
     cost_arr = head_xyz_acc_cost_arr(weights, acc_ref, state, control)
-    return jnp.sum(jnp.mean(cost_arr, axis=0))
+    return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
 def omega_cost_arr(
@@ -601,7 +601,7 @@ def _omega_cost(
 ) -> jax.Array:
     """Angular velocity cost."""
     cost_arr = omega_cost_arr(weights, omega_ref, state, control)
-    return jnp.sum(jnp.mean(cost_arr, axis=0))
+    return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
 def leg_boundary_cost_arr(
@@ -716,6 +716,58 @@ def _control_cost(
     control: Control,
 ) -> jax.Array:
     cost_arr = control_cost_arr(weights, control)
+    return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
+
+
+def regularizing_xyz_acc_cost_arr(
+    weights: Weights,
+    acc_ref: jax.Array,
+    state: State,
+    control: Control,
+) -> jax.Array:
+    """Head acceleration cost terms."""
+    assert acc_ref.ndim == 2
+    assert acc_ref.shape[1] == 3
+    assert acc_ref.shape[0] == control.x.size
+
+    def _diff_single(_ref: jax.Array, _control: Control) -> jax.Array:
+        """Cost for a single input pairing."""
+        _R_T = _get_R_T(state[0])
+        _R_dot2 = _get_R_dot2(state[0], _control)
+        _acc = _control.xyz()
+        _world = _R_dot2 @ const.human_displacement + _acc + const.gravity
+        _head = _R_T @ _world
+        _diff = _head - _ref
+        return _diff
+
+    def _single(_ref: jax.Array, _control: Control, _w: jax.Array) -> jax.Array:
+        def _diff_single_flat(_control_flat: jax.Array) -> jax.Array:
+            _control = Control(*_control_flat)
+            return _diff_single(_ref, _control)
+
+        _zero_control = Control.from_flat(jnp.zeros_like(_control.flatten()))
+        _diff_grad = jax.jvp(
+            fun=_diff_single_flat,
+            primals=(_zero_control.flatten(),),
+            tangents=(_control.flatten(),),
+        )
+        return jnp.sum(_diff_grad[0] * _diff_grad[1] * _w)
+
+    # skip initial conditions in state
+    w = weights.scale_acc(control.size)
+    assert w.shape == acc_ref.shape
+    cost_arr = jnp.ravel(jax.vmap(_single)(acc_ref, control, w))
+    return cost_arr
+
+
+def _regularizing_xyz_acc_cost(
+    weights: Weights,
+    acc_ref: jax.Array,
+    state: State,
+    control: Control,
+) -> jax.Array:
+    """Head acceleration cost."""
+    cost_arr = regularizing_xyz_acc_cost_arr(weights, acc_ref, state, control)
     return jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
@@ -730,6 +782,7 @@ def _cost(
     state = control.get_state(state0=state0)
     cost = jnp.array(0.0)
     cost = cost + _head_xyz_acc_cost(weights, acc_ref, state, control)
+    # cost = cost + _regularizing_xyz_acc_cost(weights, acc_ref, state, control)
     cost = cost + _omega_cost(weights, omega_ref, state, control)
     cost = cost + _leg_boundary_cost(
         weights, cost_terms.leg_cost, cost_terms.leg_vel_cost, state, control
