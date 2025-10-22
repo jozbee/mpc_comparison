@@ -237,8 +237,9 @@ def _get_R_dot2(
 @jax.jit
 def _leg_pos(R: jax.Array, t: jax.Array) -> jax.Array:
     lengths = []
+    delta = const.human_displacement
     for i in range(6):
-        top_i = R @ const.tops[i] + t
+        top_i = R @ (const.tops[i] + delta) - delta + t
         diff = top_i - const.bots[i]
         lengths.append(jnp.linalg.norm(diff))
     return jnp.array(lengths)
@@ -356,8 +357,9 @@ def _angle_joint(
     t = jnp.array([x, y, z])
     top_angles = []
     bot_angles = []
+    delta = const.human_displacement
     for i in range(6):
-        top_i = R @ const.tops[i] + t
+        top_i = R @ (const.tops[i] - delta) + delta + t
         diff = top_i - const.bots[i]
         leg_dir = diff / jnp.linalg.norm(diff)
 

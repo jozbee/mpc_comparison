@@ -307,8 +307,9 @@ def _get_squared_lengths(state: State) -> jax.Array:
     t = state.xyz()
 
     lengths = []
+    delta = const.human_displacement
     for i in range(6):
-        top_i = R @ const.tops[i] + t
+        top_i = R @ (const.tops[i] + delta) - delta + t
         diff = top_i - const.bots[i]
         lengths.append(diff @ diff)
 
@@ -526,9 +527,8 @@ def head_xyz_acc_cost_single(
 ) -> jax.Array:
     """Cost for a single input pairing."""
     R_T = _get_R_T(state)
-    R_dot2 = _get_R_dot2(state, control)
     acc = control.xyz()
-    world = R_dot2 @ const.human_displacement + acc + const.gravity
+    world = acc + const.gravity
     head = R_T @ world
     diff = (head - ref) * w
     delta_z = diff.at[2].get()
@@ -721,58 +721,6 @@ def _control_cost(
     return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
-def regularizing_xyz_acc_cost_arr(
-    weights: Weights,
-    acc_ref: jax.Array,
-    state: State,
-    control: Control,
-) -> jax.Array:
-    """Head acceleration cost terms."""
-    assert acc_ref.ndim == 2
-    assert acc_ref.shape[1] == 3
-    assert acc_ref.shape[0] == control.x.size
-
-    def _diff_single(_ref: jax.Array, _control: Control) -> jax.Array:
-        """Cost for a single input pairing."""
-        _R_T = _get_R_T(state[0])
-        _R_dot2 = _get_R_dot2(state[0], _control)
-        _acc = _control.xyz()
-        _world = _R_dot2 @ const.human_displacement + _acc + const.gravity
-        _head = _R_T @ _world
-        _diff = _head - _ref
-        return _diff
-
-    def _single(_ref: jax.Array, _control: Control, _w: jax.Array) -> jax.Array:
-        def _diff_single_flat(_control_flat: jax.Array) -> jax.Array:
-            _control = Control(*_control_flat)
-            return _diff_single(_ref, _control)
-
-        _zero_control = Control.from_flat(jnp.zeros_like(_control.flatten()))
-        _diff_grad = jax.jvp(
-            fun=_diff_single_flat,
-            primals=(_zero_control.flatten(),),
-            tangents=(_control.flatten(),),
-        )
-        return jnp.sum(_diff_grad[0] * _diff_grad[1] * _w)
-
-    # skip initial conditions in state
-    w = weights.scale_acc(control.size)
-    assert w.shape == acc_ref.shape
-    cost_arr = jnp.ravel(jax.vmap(_single)(acc_ref, control, w))
-    return cost_arr
-
-
-def _regularizing_xyz_acc_cost(
-    weights: Weights,
-    acc_ref: jax.Array,
-    state: State,
-    control: Control,
-) -> jax.Array:
-    """Head acceleration cost."""
-    cost_arr = regularizing_xyz_acc_cost_arr(weights, acc_ref, state, control)
-    return jnp.sum(jnp.mean(cost_arr, axis=0))
-
-
 def _cost(
     weights: Weights,
     cost_terms: CostTerms,
@@ -784,7 +732,6 @@ def _cost(
     state = control.get_state(state0=state0)
     cost = jnp.array(0.0)
     cost = cost + _head_xyz_acc_cost(weights, acc_ref, state, control)
-    # cost = cost + _regularizing_xyz_acc_cost(weights, acc_ref, state, control)
     cost = cost + _omega_cost(weights, omega_ref, state, control)
     cost = cost + _leg_boundary_cost(
         weights, cost_terms.leg_cost, cost_terms.leg_vel_cost, state, control
