@@ -315,7 +315,7 @@ def _get_squared_lengths(state: State) -> jax.Array:
     return jnp.array(lengths)
 
 
-def _get_length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
+def get_length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
     R, R_dot = utils._get_R_and_dot(
         phi=state.roll,
         theta=state.pitch,
@@ -329,7 +329,7 @@ def _get_length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
     return utils._leg_pos_vel(R, t, R_dot, t_dot)
 
 
-def _get_joint_angles(state: State) -> jax.Array:
+def get_joint_angles(state: State) -> jax.Array:
     return jnp.concatenate(
         utils._angle_joint(
             x=state.x,
@@ -521,6 +521,21 @@ def _hyper(x: jax.Array) -> jax.Array:
 ########
 
 
+def head_xyz_acc_cost_single(
+    ref: jax.Array, state: State, control: Control, w: jax.Array
+) -> jax.Array:
+    """Cost for a single input pairing."""
+    R_T = _get_R_T(state)
+    R_dot2 = _get_R_dot2(state, control)
+    acc = control.xyz()
+    world = R_dot2 @ const.human_displacement + acc + const.gravity
+    head = R_T @ world
+    diff = (head - ref) * w
+    delta_z = diff.at[2].get()
+    delta_xy = diff.at[:2].get()
+    return _hyper(delta_xy @ delta_xy) + _hyper(delta_z * delta_z)
+
+
 def head_xyz_acc_cost_arr(
     weights: Weights,
     acc_ref: jax.Array,
@@ -532,24 +547,11 @@ def head_xyz_acc_cost_arr(
     assert acc_ref.shape[1] == 3
     assert acc_ref.shape[0] == control.x.size
 
-    def _single(
-        _ref: jax.Array, _state: State, _control: Control, _w: jax.Array
-    ) -> jax.Array:
-        """Cost for a single input pairing."""
-        _R_T = _get_R_T(_state)
-        _R_dot2 = _get_R_dot2(_state, _control)
-        _acc = _control.xyz()
-        _world = _R_dot2 @ const.human_displacement + _acc + const.gravity
-        _head = _R_T @ _world
-        _diff = (_head - _ref) * _w
-        _delta_z = _diff.at[2].get()
-        _delta_xy = _diff.at[:2].get()
-        return _hyper(_delta_xy @ _delta_xy) + _hyper(_delta_z * _delta_z)
-
     # skip initial conditions in state
     w = weights.scale_acc(control.size)
     assert w.shape == acc_ref.shape
-    cost_arr = jnp.ravel(jax.vmap(_single)(acc_ref, state[1:], control, w))
+    single = jax.vmap(head_xyz_acc_cost_single)
+    cost_arr = jnp.ravel(single(acc_ref, state[1:], control, w))
     return cost_arr
 
 
@@ -564,6 +566,16 @@ def _head_xyz_acc_cost(
     return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
+def omega_cost_single(ref: jax.Array, state: State, w: jax.Array) -> jax.Array:
+    """Cost for a single input pairing."""
+    R_T = _get_R_T(state)
+    R_dot = _get_R_dot(state)
+    omega_mat = R_T @ R_dot
+    omega = jnp.array([omega_mat[2, 1], omega_mat[0, 2], omega_mat[1, 0]])
+    diff = (omega - ref) * w
+    return _hyper(diff @ diff)
+
+
 def omega_cost_arr(
     weights: Weights,
     omega_ref: jax.Array,
@@ -575,21 +587,11 @@ def omega_cost_arr(
     assert omega_ref.shape[1] == 3
     assert omega_ref.shape[0] == control.x.size
 
-    def _single(_ref: jax.Array, _state: State, _w: jax.Array) -> jax.Array:
-        """Cost for a single input pairing."""
-        _R_T = _get_R_T(_state)
-        _R_dot = _get_R_dot(_state)
-        _omega_mat = _R_T @ _R_dot
-        _omega = jnp.array(
-            [_omega_mat[2, 1], _omega_mat[0, 2], _omega_mat[1, 0]]
-        )
-        _diff = (_omega - _ref) * _w
-        return _hyper(_diff @ _diff)
-
     # skip initial conditions in state
     w = weights.scale_omega(control.size)
     assert w.shape == omega_ref.shape
-    cost_arr = jnp.ravel(jax.vmap(_single)(omega_ref, state[1:], w))
+    single = jax.vmap(omega_cost_single)
+    cost_arr = jnp.ravel(single(omega_ref, state[1:], w))
     return cost_arr
 
 
@@ -616,7 +618,7 @@ def leg_boundary_cost_arr(
     By using automatic differentiation, we can compute the lengths and the
     velocities cheaper than computing them separately, which is productive.
     """
-    lengths, vels = jax.vmap(_get_length_and_vel)(state[1:])
+    lengths, vels = jax.vmap(get_length_and_vel)(state[1:])
     lengths = jnp.ravel(lengths)
     vels = jnp.ravel(vels)
     length_costs = jax.vmap(length_cost)(lengths)
@@ -659,7 +661,7 @@ def joint_angle_boundary_cost_arr(
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    angles = jnp.ravel(jax.vmap(_get_joint_angles)(state[1:]))
+    angles = jnp.ravel(jax.vmap(get_joint_angles)(state[1:]))
     costs = jax.vmap(cost)(angles)
     w = weights.scale_joint_angle(control.size)
     return (costs * w).reshape(-1, 12)
