@@ -29,6 +29,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import scipy.sparse.linalg as sci_sp_lin
+import scipy.optimize as sci_opt
 
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.utils as utils
@@ -351,7 +352,7 @@ def get_joint_angles(state: State) -> jax.Array:
 def _init_field(arr: jax.Array) -> jax.Array:
     """Initialize a field with the same shape as the input array."""
     return dataclasses.field(
-        default_factory=lambda: jnp.ones(arr.shape),
+        default_factory=lambda: arr,
     )
 
 
@@ -721,12 +722,21 @@ def _control_cost(
     return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
+def _terminal_cost(vel_ref: jax.Array, state: State) -> jax.Array:
+    assert vel_ref.shape == (3,)
+    terminal_state = state[-1]
+    v = terminal_state.xyz_dot()
+    T = (state.x.size - 1) * const.dt
+    return 1.0 / T * jnp.sum(jnp.tanh(v * vel_ref))
+
+
 def _cost(
     weights: Weights,
     cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
+    vel_ref: tp.Optional[jax.Array],
     control: Control,
     state: tp.Optional[State] = None,
 ) -> jax.Array:
@@ -745,7 +755,82 @@ def _cost(
         weights, cost_terms.yaw_cost, state, control
     )
     cost = cost + _control_cost(weights, control)
+    if vel_ref is not None:
+        cost = cost + _terminal_cost(vel_ref, state)
     return cost
+
+
+######################
+# fixed point helper #
+######################
+
+
+@jax.jit
+def ell_x(
+    x: jax.Array,
+    u: jax.Array,
+    acc_ref: jax.Array,
+    weights: Weights,
+    costs: CostTerms,
+) -> jax.Array:
+    assert acc_ref.shape == (3,)
+
+    state = State(*x)
+    control = Control(*u)
+    omega_ref = jnp.zeros(3)  # assumed, for fixed point
+    cost = jnp.array(0.0)
+    cost += 0.5 * head_xyz_acc_cost_single(acc_ref, state, control, weights.acc)
+    cost += 0.5 * omega_cost_single(omega_ref, state, weights.omega)
+
+    # legs
+    length, vel = get_length_and_vel(state)
+    cost += jnp.sum(weights.leg * jax.vmap(costs.leg_cost)(length.flatten()))
+    cost += jnp.sum(
+        weights.leg_vel * jax.vmap(costs.leg_vel_cost)(vel.flatten())
+    )
+
+    # joint angle
+    angle = jnp.ravel(get_joint_angles(state))
+    cost += jnp.sum(
+        weights.joint_angle * jax.vmap(costs.joint_angle_cost)(angle)
+    )
+
+    # yaw
+    cost += jnp.squeeze(weights.yaw * costs.yaw_cost(state.yaw))
+
+    return cost
+
+
+dx_ell_x = jax.jit(jax.grad(ell_x, argnums=0))
+
+
+def compute_vel_ref(
+    acc_ref: jax.Array,
+    weights: Weights,
+    costs: CostTerms,
+) -> jax.Array:
+    fun = functools.partial(
+        ell_x, u=jnp.zeros(6), acc_ref=acc_ref, weights=weights, costs=costs
+    )
+    jac = functools.partial(
+        dx_ell_x, u=jnp.zeros(6), acc_ref=acc_ref, weights=weights, costs=costs
+    )
+    res = sci_opt.minimize(
+        fun=fun,
+        x0=jnp.zeros(12),
+        method="L-BFGS-B",
+        jac=jac,
+        options={
+            "maxiter": 2**8,
+            "maxls": 2**8,
+        },
+        tol=1e-16,
+    )
+
+    # don't scale by T, because of conventions
+    W_a = jnp.diag(jnp.square(weights.acc))
+    R = utils._get_R(*res.x[3:6])
+    return R @ W_a @ (acc_ref - R.T @ const.gravity)
 
 
 #######################
@@ -764,6 +849,7 @@ def cost_flat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
+    vel_ref: tp.Optional[jax.Array],
     control_flat: jax.Array,
 ) -> jax.Array:
     control = Control.from_flat(control_flat)
@@ -773,29 +859,9 @@ def cost_flat_jax(
         acc_ref,
         omega_ref,
         state0,
+        vel_ref,
         control,
     )
-
-
-@jax.jit
-def cost_jac_jax(
-    weights: Weights,
-    cost_terms: CostTerms,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    state0: jax.Array,
-    control_flat: jax.Array,
-) -> jax.Array:
-    cost = functools.partial(
-        cost_flat_jax,
-        weights,
-        cost_terms,
-        acc_ref,
-        omega_ref,
-        state0,
-    )
-    res = jax.grad(cost)(control_flat)
-    return res
 
 
 @jax.jit
@@ -805,6 +871,7 @@ def cost_and_grad_flat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
+    vel_ref: tp.Optional[jax.Array],
     control_flat: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     cost = functools.partial(
@@ -814,6 +881,7 @@ def cost_and_grad_flat_jax(
         acc_ref,
         omega_ref,
         state0,
+        vel_ref,
     )
     cost_and_grad = jax.value_and_grad(cost)
     return cost_and_grad(control_flat)
@@ -826,6 +894,7 @@ def cost_hessp_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
+    vel_ref: tp.Optional[jax.Array],
     control_flat: jax.Array,
     v: jax.Array,
 ) -> jax.Array:
@@ -836,6 +905,7 @@ def cost_hessp_jax(
         acc_ref,
         omega_ref,
         state0,
+        vel_ref,
     )
     # primals and tangents should be _tuples_ of arrays
     primals = (jnp.array(control_flat),)
@@ -851,6 +921,7 @@ def cost_hess_mat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
+    vel_ref: tp.Optional[jax.Array],
     control_flat: jax.Array,
 ) -> jax.Array:
     cost = functools.partial(
@@ -860,6 +931,7 @@ def cost_hess_mat_jax(
         acc_ref,
         omega_ref,
         state0,
+        vel_ref,
     )
     return jax.hessian(cost)(control_flat)
 
@@ -870,6 +942,7 @@ def get_cost(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
+    vel_ref: tp.Optional[jax.Array] = None,
     hess_type: str = "hessp",  # hessp, hess_lin_op, hess_mat
 ) -> tuple[tp.Callable, tp.Callable, tp.Callable]:
     """Get scipy cost functions.
@@ -886,6 +959,9 @@ def get_cost(
         Should have shape (n, 3) with n the number of control points.
     state0 :
         Initial state, as a vector of size 12.
+    vel_ref :
+        Reference velocity to use in terminal cost.
+        If `None`, no terminal cost is present.
     hess_type :
         Type of hessian to use.
         Options inlude:
@@ -903,15 +979,8 @@ def get_cost(
         acc_ref,
         omega_ref,
         state0,
+        vel_ref,
     )
-
-    # warning: deprecated
-    # cost = functools.partial(cost_flat_jax, *params)
-    # cost_jac = functools.partial(cost_jac_jax, *params)
-    # def cost_wrapper(control_flat: np.ndarray) -> float:
-    #     return float(cost(control_flat))
-    # def cost_jac_wrapper(control_flat: np.ndarray) -> np.ndarray:
-    #     return np.array(cost_jac(control_flat))
 
     cost_and_grad = functools.partial(cost_and_grad_flat_jax, *params)
     cost_hessp = functools.partial(cost_hessp_jax, *params)
@@ -975,7 +1044,6 @@ def get_cost(
 if __name__ == "__main__":
     # example usage
     import time
-    import scipy.optimize as sci_opt
     import tqdm  # type: ignore
 
     T = 4.0  # s

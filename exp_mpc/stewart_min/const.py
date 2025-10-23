@@ -5,6 +5,7 @@ leg_min = 1160.410000 * 1e-3
 leg_max = 1770.010000 * 1e-3
 leg_mid = (leg_min + leg_max) / 2.0  # 1.46521
 dt = 0.005
+# dt = 0.0004  # stability?
 
 joint_max_angle = 42.0 * np.pi / 180.0
 # top_max_angle = 42.0 * np.pi / 180.0
