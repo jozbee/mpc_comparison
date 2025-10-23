@@ -708,9 +708,9 @@ def control_cost_arr(
     weights: Weights,
     control: Control,
 ) -> jax.Array:
-    costs = jnp.square(control.flatten())
     w = weights.scale_control(control.size)
-    return (costs * w).reshape(-1, 6)
+    costs = jnp.square(control.flatten() * w)
+    return costs.reshape(-1, 6)
 
 
 def _control_cost(
@@ -728,8 +728,10 @@ def _cost(
     omega_ref: jax.Array,
     state0: jax.Array,
     control: Control,
+    state: tp.Optional[State] = None,
 ) -> jax.Array:
-    state = control.get_state(state0=state0)
+    if state is None:
+        state = control.get_state(state0=state0)
     cost = jnp.array(0.0)
     cost = cost + _head_xyz_acc_cost(weights, acc_ref, state, control)
     cost = cost + _omega_cost(weights, omega_ref, state, control)
