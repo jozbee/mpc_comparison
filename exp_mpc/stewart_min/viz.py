@@ -219,7 +219,8 @@ def animate_trajectory(
         R = utils._get_R(roll, pitch, yaw)
 
         # Update platform position
-        tops_world = [R @ p + position for p in const.tops]
+        delta = const.human_displacement
+        tops_world = [R @ (p + delta) - delta + position for p in const.tops]
         platform_x = [p[0] for p in tops_world] + [tops_world[0][0]]
         platform_y = [p[1] for p in tops_world] + [tops_world[0][1]]
         platform_z = [p[2] for p in tops_world] + [tops_world[0][2]]
