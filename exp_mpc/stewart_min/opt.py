@@ -28,17 +28,15 @@ import typing as tp
 import numpy as np
 import jax
 import jax.numpy as jnp
-import scipy.sparse.linalg as sci_sp_lin
-import scipy.optimize as sci_opt
 
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.quartic_cost as quartic_cost
 
 # make sure to enable 64-bit precision for jax
-# testing has shown that this yields better performance in constant acceleration
-#  test runs
-# jax.config.update("jax_enable_x64", True)
+# this is necessary for good performance
+# use the following line when importing this library
+# `jax.config.update("jax_enable_x64", True)`
 
 
 ###############
@@ -47,13 +45,12 @@ import exp_mpc.stewart_min.quartic_cost as quartic_cost
 
 
 @jax.jit
-def _discrete_1d_nonuniform_euler(
+def _discrete_1d_euler(
     x0: jax.Array,
     v0: jax.Array,
     a: jax.Array,
-    gaps: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    r"""Discrete 1D non-uniform Euler integration, with scalar initial data.
+    r"""Discrete 1D Euler integration, with scalar initial data.
 
     Parameters
     ----------
@@ -63,37 +60,14 @@ def _discrete_1d_nonuniform_euler(
         Initial velocity.
     a :
         Constant accelerations.
-    gaps :
-        Discrete gaps between the control points.
-        A gap of 1 means that the control point is at the next time step.
 
     Returns
     -------
     Integrated position and velocity.
-
-    Notes
-    -----
-    We perform several Euler steps exactly, with constant acceleration.
-    The idea is that the model reduces to consider the perturbed continuous
-    double integrator model:
-
-    .. math::
-
-      \begin{bmatrix} \dot{x} \\ \dot{v} \end{bmatrix} =
-      \begin{bmatrix} 0 & 1 \\ 0 & 0 \end{bmatrix}
-      \begin{bmatrix} x \\ v \end{bmatrix} +
-      \begin{bmatrix} \Delta t / 2 \\ 1 \end{bmatrix} a.
     """
-    # cf. https://stackoverflow.com/questions/37726830/how-to-determine-if-a-number-is-any-type-of-int-core-or-numpy-signed-or-not
-    assert jnp.issubdtype(gaps.dtype, jnp.integer)
-    assert jnp.issubdtype(a.dtype, jnp.floating)
-    a = jnp.ravel(a)
-    gaps = jnp.ravel(gaps)
-    assert a.shape == gaps.shape
-    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * gaps * a]))
-    x_vel = const.dt * gaps * v.at[1:].get()
-    x_acc = 0.5 * (gaps - gaps**2) * (const.dt**2) * a
-    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), x_vel + x_acc]))
+    a = jnp.ravel(a)  # really, an assertion...
+    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * a]))
+    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), const.dt * v[1:]]))
     return x, v
 
 
@@ -105,110 +79,139 @@ def _discrete_1d_nonuniform_euler(
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class State:
-    """Parallel arrays for state vector.
+    """Helper for indexing a state array.
 
-    Should be computed from teh Control dataclass.
+    The `state` attribute should be 2D, with rows representing time and columns
+    representing state values.
+    See the various `property` decorators for specific indexing conventions.
+
+    Note that the initial state is usually stored, so we have a special method
+    to ignore it, cf. `pop0`.
     """
 
-    x: jax.Array
-    y: jax.Array
-    z: jax.Array
-    roll: jax.Array
-    pitch: jax.Array
-    yaw: jax.Array
-    x_dot: jax.Array
-    y_dot: jax.Array
-    z_dot: jax.Array
-    roll_dot: jax.Array
-    pitch_dot: jax.Array
-    yaw_dot: jax.Array
+    state: jax.Array
 
-    def __iter__(self) -> tp.Iterator[jax.Array]:
-        for field in dataclasses.fields(self):
-            yield getattr(self, field.name)
+    def __post_init__(self):
+        if len(self.state.shape) == 2:
+            assert self.state.shape[1] == 12
+        elif len(self.state.shape) == 1:
+            assert self.state.size == 12
+        else:
+            raise RuntimeError(f"bad state shape: {self.state.shape}")
 
-    def __getitem__(self, key: int | slice) -> "State":
-        return State(*[arr.at[key].get() for arr in self])
+    @property
+    def x(self) -> jax.Array:
+        return self.state[..., 0]
+
+    @property
+    def y(self) -> jax.Array:
+        return self.state[..., 1]
+
+    @property
+    def z(self) -> jax.Array:
+        return self.state[..., 2]
+
+    @property
+    def roll(self) -> jax.Array:
+        return self.state[..., 3]
+
+    @property
+    def pitch(self) -> jax.Array:
+        return self.state[..., 4]
+
+    @property
+    def yaw(self) -> jax.Array:
+        return self.state[..., 5]
+
+    @property
+    def x_dot(self) -> jax.Array:
+        return self.state[..., 6]
+
+    @property
+    def y_dot(self) -> jax.Array:
+        return self.state[..., 7]
+
+    @property
+    def z_dot(self) -> jax.Array:
+        return self.state[..., 8]
+
+    @property
+    def roll_dot(self) -> jax.Array:
+        return self.state[..., 9]
+
+    @property
+    def pitch_dot(self) -> jax.Array:
+        return self.state[..., 10]
+
+    @property
+    def yaw_dot(self) -> jax.Array:
+        return self.state[..., 11]
+
+    def pop0(self) -> "State":
+        """Create a new State without the first time step.
+
+        This is useful when the initial state should be ignored in a
+        computation.
+        """
+        assert len(self.state.shape) == 2
+        assert self.state.shape[0] >= 2
+        return State(self.state[1:])
 
     def flatten(self) -> jax.Array:
-        """Flatten the state into a single array."""
-        return jnp.concatenate([arr.reshape(-1) for arr in self])
-
-    def xyz(self) -> jax.Array:
-        """Get the x, y, z coordinates of the state points."""
-        # enforce 1d
-        x = self.x.reshape(-1)
-        y = self.y.reshape(-1)
-        z = self.z.reshape(-1)
-        return jnp.concatenate([x, y, z])
-
-    def xyz_dot(self) -> jax.Array:
-        """Get the x, y, z velocities of the state points."""
-        # enforce 1d
-        x_dot = self.x_dot.reshape(-1)
-        y_dot = self.y_dot.reshape(-1)
-        z_dot = self.z_dot.reshape(-1)
-        return jnp.concatenate([x_dot, y_dot, z_dot])
+        return jnp.ravel(self.state)
 
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class Control:
-    """Parallel array of control vector."""
+    """Helper for indexing a control array.
 
-    x: jax.Array
-    y: jax.Array
-    z: jax.Array
-    roll: jax.Array
-    pitch: jax.Array
-    yaw: jax.Array
+    The `control` attribute should be 2D, with rows representing time and columns
+    representing state values.
+    See the various `property` decorators for specific indexing conventions.
+    """
+
+    control: jax.Array
+
+    def __post_init__(self):
+        if len(self.control.shape) == 2:
+            assert self.control.shape[1] == 6
+        elif len(self.control.shape) == 1:
+            assert self.control.size == 6
+        else:
+            raise RuntimeError(f"bad control shape: {self.control.shape}")
+
+    @property
+    def x(self) -> jax.Array:
+        return self.control[..., 0]
+
+    @property
+    def y(self) -> jax.Array:
+        return self.control[..., 1]
+
+    @property
+    def z(self) -> jax.Array:
+        return self.control[..., 2]
+
+    @property
+    def roll(self) -> jax.Array:
+        return self.control[..., 3]
+
+    @property
+    def pitch(self) -> jax.Array:
+        return self.control[..., 4]
+
+    @property
+    def yaw(self) -> jax.Array:
+        return self.control[..., 5]
 
     @property
     def size(self) -> int:
-        """Get the size of the control vector."""
-        return self.x.size
-
-    def __iter__(self) -> tp.Iterator[jax.Array]:
-        for field in dataclasses.fields(self):
-            yield getattr(self, field.name)
-
-    def __getitem__(self, key: int | slice) -> "Control":
-        return Control(*[arr.at[key].get() for arr in self])
-
-    def get_state(
-        self,
-        state0: jax.Array,
-        gaps: tp.Optional[jax.Array] = None,
-    ) -> State:
-        """Convert a control dataclass to a state dataclass."""
-        state0 = jnp.ravel(state0)
-        assert state0.size == 12
-        x0, y0, z0, roll0, pitch0, yaw0 = state0[:6]
-        x_dot0, y_dot0, z_dot0, roll_dot0, pitch_dot0, yaw_dot0 = state0[6:]
-        if gaps is None:
-            gaps = jnp.ones(self.x.size, dtype=int)
-        assert gaps.size == self.x.size
-        _euler = _discrete_1d_nonuniform_euler
-        x, x_dot = _euler(x0, x_dot0, self.x, gaps)
-        y, y_dot = _euler(y0, y_dot0, self.y, gaps)
-        z, z_dot = _euler(z0, z_dot0, self.z, gaps)
-        roll, roll_dot = _euler(roll0, roll_dot0, self.roll, gaps)
-        pitch, pitch_dot = _euler(pitch0, pitch_dot0, self.pitch, gaps)
-        yaw, yaw_dot = _euler(yaw0, yaw_dot0, self.yaw, gaps)
-        return State(
-            x=x,
-            y=y,
-            z=z,
-            roll=roll,
-            pitch=pitch,
-            yaw=yaw,
-            x_dot=x_dot,
-            y_dot=y_dot,
-            z_dot=z_dot,
-            roll_dot=roll_dot,
-            pitch_dot=pitch_dot,
-            yaw_dot=yaw_dot,
-        )
+        """Get number of time steps that control represents."""
+        if len(self.control.shape) == 2:
+            return self.control.shape[0]
+        else:
+            return 1  # 1 time step
 
     @classmethod
     def from_flat(cls, flat: jax.Array) -> "Control":
@@ -223,38 +226,34 @@ class Control:
         angles of the first control point, and so on for all control points.
         """
         assert flat.size % 6 == 0
-        flat = jnp.reshape(flat, (-1, 6))
-        return cls(
-            x=jnp.squeeze(flat[:, 0]),
-            y=jnp.squeeze(flat[:, 1]),
-            z=jnp.squeeze(flat[:, 2]),
-            roll=jnp.squeeze(flat[:, 3]),
-            pitch=jnp.squeeze(flat[:, 4]),
-            yaw=jnp.squeeze(flat[:, 5]),
-        )
+        control = jnp.reshape(flat, (-1, 6))
+        return cls(control)
 
     def flatten(self) -> jax.Array:
-        """Convert a control dataclass to a flat array."""
-        return jnp.ravel(
-            jnp.column_stack(
-                [
-                    self.x,
-                    self.y,
-                    self.z,
-                    self.roll,
-                    self.pitch,
-                    self.yaw,
-                ]
-            )
-        )
+        return jnp.ravel(self.control)
 
-    def xyz(self) -> jax.Array:
-        """Get the x, y, z coordinates of the control points."""
-        # enforce 1d
-        x = self.x.reshape(-1)
-        y = self.y.reshape(-1)
-        z = self.z.reshape(-1)
-        return jnp.concatenate([x, y, z])
+
+def get_state(
+    control: Control,
+    state0: jax.Array,
+) -> State:
+    """Convert a control dataclass to a state dataclass."""
+    state0 = jnp.ravel(state0)
+    assert state0.size == 12
+    x0, y0, z0, roll0, pitch0, yaw0 = state0[:6]
+    x_dot0, y_dot0, z_dot0, roll_dot0, pitch_dot0, yaw_dot0 = state0[6:]
+
+    x, x_dot = _discrete_1d_euler(x0, x_dot0, control.x)
+    y, y_dot = _discrete_1d_euler(y0, y_dot0, control.y)
+    z, z_dot = _discrete_1d_euler(z0, z_dot0, control.z)
+    roll, roll_dot = _discrete_1d_euler(roll0, roll_dot0, control.roll)
+    pitch, pitch_dot = _discrete_1d_euler(pitch0, pitch_dot0, control.pitch)
+    yaw, yaw_dot = _discrete_1d_euler(yaw0, yaw_dot0, control.yaw)
+
+    non_dots = [x, y, z, roll, pitch, yaw]
+    dots = [x_dot, y_dot, z_dot, roll_dot, pitch_dot, yaw_dot]
+    state = jnp.transpose(jnp.vstack(non_dots + dots))
+    return State(state)
 
 
 ###################
@@ -262,7 +261,7 @@ class Control:
 ###################
 
 
-def _get_R(state: State) -> jax.Array:
+def _R(state: State) -> jax.Array:
     """Get the rotation matrix from the state."""
     return utils._get_R(
         phi=state.roll,
@@ -271,12 +270,12 @@ def _get_R(state: State) -> jax.Array:
     )
 
 
-def _get_R_T(state: State) -> jax.Array:
+def _R_T(state: State) -> jax.Array:
     """Get the rotation matrix from the state."""
-    return jnp.transpose(_get_R(state))
+    return jnp.transpose(_R(state))
 
 
-def _get_R_dot(state: State) -> jax.Array:
+def _R_dot(state: State) -> jax.Array:
     """Rotation matrix derivative from the state."""
     return utils._get_R_dot(
         phi=state.roll,
@@ -288,36 +287,7 @@ def _get_R_dot(state: State) -> jax.Array:
     )
 
 
-def _get_R_dot2(state: State, control: Control) -> jax.Array:
-    """Get the rotation matrix 2nd derivative from the state."""
-    return utils._get_R_dot2(
-        phi=state.roll,
-        theta=state.pitch,
-        psi=state.yaw,
-        phi_dot=state.roll_dot,
-        theta_dot=state.pitch_dot,
-        psi_dot=state.yaw_dot,
-        phi_dot2=control.roll,
-        theta_dot2=control.pitch,
-        psi_dot2=control.yaw,
-    )
-
-
-def _get_squared_lengths(state: State) -> jax.Array:
-    R = _get_R(state)
-    t = state.xyz()
-
-    lengths = []
-    delta = const.human_displacement
-    for i in range(6):
-        top_i = R @ (const.tops[i] + delta) - delta + t
-        diff = top_i - const.bots[i]
-        lengths.append(diff @ diff)
-
-    return jnp.array(lengths)
-
-
-def get_length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
+def length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
     R, R_dot = utils._get_R_and_dot(
         phi=state.roll,
         theta=state.pitch,
@@ -326,12 +296,12 @@ def get_length_and_vel(state: State) -> tuple[jax.Array, jax.Array]:
         theta_dot=state.pitch_dot,
         psi_dot=state.yaw_dot,
     )
-    t = state.xyz()
-    t_dot = state.xyz_dot()
+    t = jnp.array([state.x, state.y, state.z])
+    t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
     return utils._leg_pos_vel(R, t, R_dot, t_dot)
 
 
-def get_joint_angles(state: State) -> jax.Array:
+def joint_angles(state: State) -> jax.Array:
     return jnp.concatenate(
         utils._angle_joint(
             x=state.x,
@@ -360,6 +330,7 @@ def _init_field(arr: jax.Array) -> jax.Array:
 @dataclasses.dataclass
 class Weights:
     """Cost function weights."""
+
     acc: jax.Array = _init_field(jnp.ones(3))
     omega: jax.Array = _init_field(jnp.ones(3))
     leg: jax.Array = _init_field(jnp.ones(6))
@@ -393,7 +364,10 @@ class Weights:
         assert jnp.issubdtype(self.control.dtype, jnp.floating)
 
     def _time_scale(self, n: int, name: str) -> jax.Array:
-        """Get time scale weights for flat array."""
+        """Get time scale weights for flat array.
+
+        See the `ExpWeights` class for a nontrivial implementation
+        """
         # identity
         return jnp.ones(n, dtype=float)
 
@@ -490,14 +464,16 @@ class CostTerms:
 
 
 def _hyper(x: jax.Array) -> jax.Array:
-    """Hyperbolic cost function.
+    """Hyperbolic cost function?
 
-    When composed with the vector L^2 norm, this function is quadratic, but
-    has the same linear asymptotics as the L^1 norm.
+    WARNING: look at the implementation to see if this is just the identity
+    function.
+    Otherwise, when composed with the vector L^2 norm, this function is
+    quadratic, but has the same linear asymptotics as the L^1 norm.
 
     Note
     ----
-    We modified the hyperbolic tangent function to work better with auto-diff.
+    The hyperbolic tangent function is modified to work better with auto-diff.
     The original function is
 
     .. math:: \\sqrt{1 + \frac{x^2}{a^2}} - 1.
@@ -515,6 +491,8 @@ def _hyper(x: jax.Array) -> jax.Array:
     # for us, unity works quite well
     # a = 2**0
     # return jnp.sqrt(1.0 + x / a) - 1.0
+
+    # identity...
     return x
 
 
@@ -527,13 +505,13 @@ def head_xyz_acc_cost_single(
     ref: jax.Array, state: State, control: Control, w: jax.Array
 ) -> jax.Array:
     """Cost for a single input pairing."""
-    R_T = _get_R_T(state)
-    acc = control.xyz()
+    R_T = _R_T(state)
+    acc = jnp.array([control.x, control.y, control.z])
     world = acc + const.gravity
     head = R_T @ world
     diff = (head - ref) * w
-    delta_z = diff.at[2].get()
     delta_xy = diff.at[:2].get()
+    delta_z = diff.at[2].get()
     return _hyper(delta_xy @ delta_xy) + _hyper(delta_z * delta_z)
 
 
@@ -552,7 +530,7 @@ def head_xyz_acc_cost_arr(
     w = weights.scale_acc(control.size)
     assert w.shape == acc_ref.shape
     single = jax.vmap(head_xyz_acc_cost_single)
-    cost_arr = jnp.ravel(single(acc_ref, state[1:], control, w))
+    cost_arr = jnp.ravel(single(acc_ref, state.pop0(), control, w))
     return cost_arr
 
 
@@ -569,8 +547,8 @@ def _head_xyz_acc_cost(
 
 def omega_cost_single(ref: jax.Array, state: State, w: jax.Array) -> jax.Array:
     """Cost for a single input pairing."""
-    R_T = _get_R_T(state)
-    R_dot = _get_R_dot(state)
+    R_T = _R_T(state)
+    R_dot = _R_dot(state)
     omega_mat = R_T @ R_dot
     omega = jnp.array([omega_mat[2, 1], omega_mat[0, 2], omega_mat[1, 0]])
     diff = (omega - ref) * w
@@ -592,7 +570,7 @@ def omega_cost_arr(
     w = weights.scale_omega(control.size)
     assert w.shape == omega_ref.shape
     single = jax.vmap(omega_cost_single)
-    cost_arr = jnp.ravel(single(omega_ref, state[1:], w))
+    cost_arr = jnp.ravel(single(omega_ref, state.pop0(), w))
     return cost_arr
 
 
@@ -619,7 +597,7 @@ def leg_boundary_cost_arr(
     By using automatic differentiation, we can compute the lengths and the
     velocities cheaper than computing them separately, which is productive.
     """
-    lengths, vels = jax.vmap(get_length_and_vel)(state[1:])
+    lengths, vels = jax.vmap(length_and_vel)(state.pop0())
     lengths = jnp.ravel(lengths)
     vels = jnp.ravel(vels)
     length_costs = jax.vmap(length_cost)(lengths)
@@ -662,7 +640,7 @@ def joint_angle_boundary_cost_arr(
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    angles = jnp.ravel(jax.vmap(get_joint_angles)(state[1:]))
+    angles = jnp.ravel(jax.vmap(joint_angles)(state.pop0()))
     costs = jax.vmap(cost)(angles)
     w = weights.scale_joint_angle(control.size)
     return (costs * w).reshape(-1, 12)
@@ -722,124 +700,34 @@ def _control_cost(
     return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
-def _terminal_cost(vel_ref: jax.Array, state: State) -> jax.Array:
-    assert vel_ref.shape == (3,)
-    terminal_state = state[-1]
-    v = terminal_state.xyz_dot()
-    T = (state.x.size - 1) * const.dt
-    return 1.0 / T * jnp.sum(jnp.tanh(v * vel_ref))
-
-
 def _cost(
     weights: Weights,
     cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
-    vel_ref: tp.Optional[jax.Array],
     control: Control,
     state: tp.Optional[State] = None,
 ) -> jax.Array:
     if state is None:
-        state = control.get_state(state0=state0)
+        state = get_state(control, state0)
     cost = jnp.array(0.0)
-    cost = cost + _head_xyz_acc_cost(weights, acc_ref, state, control)
-    cost = cost + _omega_cost(weights, omega_ref, state, control)
-    cost = cost + _leg_boundary_cost(
+    cost += _head_xyz_acc_cost(weights, acc_ref, state, control)
+    cost += _omega_cost(weights, omega_ref, state, control)
+    cost += _leg_boundary_cost(
         weights, cost_terms.leg_cost, cost_terms.leg_vel_cost, state, control
     )
-    cost = cost + _joint_angle_boundary_cost(
+    cost += _joint_angle_boundary_cost(
         weights, cost_terms.joint_angle_cost, state, control
     )
-    cost = cost + _yaw_boundary_cost(
-        weights, cost_terms.yaw_cost, state, control
-    )
-    cost = cost + _control_cost(weights, control)
-    if vel_ref is not None:
-        cost = cost + _terminal_cost(vel_ref, state)
+    cost += _yaw_boundary_cost(weights, cost_terms.yaw_cost, state, control)
+    cost += _control_cost(weights, control)
     return cost
-
-
-######################
-# fixed point helper #
-######################
-
-
-@jax.jit
-def ell_x(
-    x: jax.Array,
-    u: jax.Array,
-    acc_ref: jax.Array,
-    weights: Weights,
-    costs: CostTerms,
-) -> jax.Array:
-    assert acc_ref.shape == (3,)
-
-    state = State(*x)
-    control = Control(*u)
-    omega_ref = jnp.zeros(3)  # assumed, for fixed point
-    cost = jnp.array(0.0)
-    cost += 0.5 * head_xyz_acc_cost_single(acc_ref, state, control, weights.acc)
-    cost += 0.5 * omega_cost_single(omega_ref, state, weights.omega)
-
-    # legs
-    length, vel = get_length_and_vel(state)
-    cost += jnp.sum(weights.leg * jax.vmap(costs.leg_cost)(length.flatten()))
-    cost += jnp.sum(
-        weights.leg_vel * jax.vmap(costs.leg_vel_cost)(vel.flatten())
-    )
-
-    # joint angle
-    angle = jnp.ravel(get_joint_angles(state))
-    cost += jnp.sum(
-        weights.joint_angle * jax.vmap(costs.joint_angle_cost)(angle)
-    )
-
-    # yaw
-    cost += jnp.squeeze(weights.yaw * costs.yaw_cost(state.yaw))
-
-    return cost
-
-
-dx_ell_x = jax.jit(jax.grad(ell_x, argnums=0))
-
-
-def compute_vel_ref(
-    acc_ref: jax.Array,
-    weights: Weights,
-    costs: CostTerms,
-) -> jax.Array:
-    fun = functools.partial(
-        ell_x, u=jnp.zeros(6), acc_ref=acc_ref, weights=weights, costs=costs
-    )
-    jac = functools.partial(
-        dx_ell_x, u=jnp.zeros(6), acc_ref=acc_ref, weights=weights, costs=costs
-    )
-    res = sci_opt.minimize(
-        fun=fun,
-        x0=jnp.zeros(12),
-        method="L-BFGS-B",
-        jac=jac,
-        options={
-            "maxiter": 2**8,
-            "maxls": 2**8,
-        },
-        tol=1e-16,
-    )
-
-    # don't scale by T, because of conventions
-    W_a = jnp.diag(jnp.square(weights.acc))
-    R = utils._get_R(*res.x[3:6])
-    return R @ W_a @ (acc_ref - R.T @ const.gravity)
 
 
 #######################
 # scipy cost wrappers #
 #######################
-
-# remark: do not use function closures in jax.jit, because this will trigger
-#  recompilation, which takes about 1 second (much longer than the desired
-#  5ms run time)
 
 
 @jax.jit
@@ -849,7 +737,6 @@ def cost_flat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
-    vel_ref: tp.Optional[jax.Array],
     control_flat: jax.Array,
 ) -> jax.Array:
     control = Control.from_flat(control_flat)
@@ -859,7 +746,6 @@ def cost_flat_jax(
         acc_ref,
         omega_ref,
         state0,
-        vel_ref,
         control,
     )
 
@@ -871,7 +757,6 @@ def cost_and_grad_flat_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
-    vel_ref: tp.Optional[jax.Array],
     control_flat: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     cost = functools.partial(
@@ -881,71 +766,25 @@ def cost_and_grad_flat_jax(
         acc_ref,
         omega_ref,
         state0,
-        vel_ref,
     )
     cost_and_grad = jax.value_and_grad(cost)
     return cost_and_grad(control_flat)
 
 
-@jax.jit
-def cost_hessp_jax(
+def get_scipy_cost(
     weights: Weights,
     cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     state0: jax.Array,
-    vel_ref: tp.Optional[jax.Array],
-    control_flat: jax.Array,
-    v: jax.Array,
-) -> jax.Array:
-    cost = functools.partial(
-        cost_flat_jax,
-        weights,
-        cost_terms,
-        acc_ref,
-        omega_ref,
-        state0,
-        vel_ref,
-    )
-    # primals and tangents should be _tuples_ of arrays
-    primals = (jnp.array(control_flat),)
-    tangents = (jnp.array(v),)
-    res = jax.jvp(jax.grad(cost), primals, tangents)
-    return res[1]
+) -> tuple[tp.Callable, tp.Callable]:
+    """Get scipy cost functions for L-BFGS-B.
 
-
-@jax.jit
-def cost_hess_mat_jax(
-    weights: Weights,
-    cost_terms: CostTerms,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    state0: jax.Array,
-    vel_ref: tp.Optional[jax.Array],
-    control_flat: jax.Array,
-) -> jax.Array:
-    cost = functools.partial(
-        cost_flat_jax,
-        weights,
-        cost_terms,
-        acc_ref,
-        omega_ref,
-        state0,
-        vel_ref,
-    )
-    return jax.hessian(cost)(control_flat)
-
-
-def get_cost(
-    weights: Weights,
-    cost_terms: CostTerms,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    state0: jax.Array,
-    vel_ref: tp.Optional[jax.Array] = None,
-    hess_type: str = "hessp",  # hessp, hess_lin_op, hess_mat
-) -> tuple[tp.Callable, tp.Callable, tp.Callable]:
-    """Get scipy cost functions.
+    WARNING: we cheat with the gradient computations.
+    We always assume that the cost is querried before the cost gradient is
+    querried, cf. `cost_jac_wrapper` in the implementation.
+    This is reasonable and efficient for teh L-BFGS-B solver in scipy, but it
+    is a dangerous hack, in general.
 
     Parameters
     ----------
@@ -959,19 +798,10 @@ def get_cost(
         Should have shape (n, 3) with n the number of control points.
     state0 :
         Initial state, as a vector of size 12.
-    vel_ref :
-        Reference velocity to use in terminal cost.
-        If `None`, no terminal cost is present.
-    hess_type :
-        Type of hessian to use.
-        Options inlude:
-        hessp: hessian-vector product.
-        hess_lin_op: linear operator for the hessian.
-        hess_mat: full hessian matrix.
 
     Returns
     -------
-    Cost function, gradient function, and hessian function.
+    Cost function, gradient function
     """
     params = (
         weights,
@@ -979,12 +809,9 @@ def get_cost(
         acc_ref,
         omega_ref,
         state0,
-        vel_ref,
     )
 
     cost_and_grad = functools.partial(cost_and_grad_flat_jax, *params)
-    cost_hessp = functools.partial(cost_hessp_jax, *params)
-    cost_hess_mat = functools.partial(cost_hess_mat_jax, *params)
 
     # history
     input_mem: list[np.ndarray] = [np.array(np.nan)]
@@ -999,149 +826,11 @@ def get_cost(
 
     def cost_wrapper(control_flat: np.ndarray) -> float:
         # warning: not safe for general use
-        # if not np.allclose(control_flat, input_mem[0]):
         update_mem(control_flat)
         return float(cost_mem[0])
 
     def cost_jac_wrapper(control_flat: np.ndarray) -> np.ndarray:
         # warning: not safe for general use
-        # if not np.allclose(control_flat, input_mem[0]):
-        #     update_mem(control_flat)
         return grad_mem[0]
 
-    def cost_hessp_wrapper(
-        control_flat: np.ndarray,
-        v: np.ndarray,
-    ) -> np.ndarray:
-        return np.array(cost_hessp(jnp.array(control_flat), jnp.array(v)))
-
-    def cost_hess_lin_op_wrapper(
-        control_flat: np.ndarray,
-    ) -> sci_sp_lin.LinearOperator:
-        matvec = functools.partial(cost_hessp_wrapper, control_flat)
-        return sci_sp_lin.LinearOperator(
-            shape=(control_flat.size, control_flat.size),
-            matvec=matvec,  # type: ignore
-            dtype=np.float64,
-        )
-
-    def cost_hess_mat_wrapper(control_flat: np.ndarray) -> np.ndarray:
-        control = jnp.array(control_flat)
-        return np.array(cost_hess_mat(control))
-
-    if hess_type == "hessp":
-        cost_hess_wrapper = cost_hessp_wrapper
-    elif hess_type == "hess_lin_op":
-        cost_hess_wrapper = cost_hess_lin_op_wrapper
-    elif hess_type == "hess_mat":
-        cost_hess_wrapper = cost_hess_mat_wrapper
-    else:
-        raise ValueError(f"Unknown hess_type: {hess_type}")
-
-    return cost_wrapper, cost_jac_wrapper, cost_hess_wrapper
-
-
-if __name__ == "__main__":
-    # example usage
-    import time
-    import tqdm  # type: ignore
-
-    T = 4.0  # s
-    num_steps = int(T / const.dt)
-    n = 40
-
-    state0 = jnp.zeros(12, dtype=float)
-
-    weights = Weights()
-
-    acc_ref = jnp.array([1.0, 0.0, 0.0]) + const.gravity  # m/s^2
-    acc_ref = jnp.tile(A=acc_ref, reps=(n, 1))
-    omega_ref = jnp.array([0.0, 0.0, 0.0])  # rad/s
-    omega_ref = jnp.tile(A=omega_ref, reps=(n, 1))
-
-    margins = [0.2, 0.1]
-    sizes = [1.0, 2**3, 2**8]
-    leg_cost = quartic_cost.QuarticCost.from_bounds(
-        margins=margins,
-        sizes=sizes,
-        low=const.leg_min,
-        high=const.leg_max,
-    )
-    leg_vel_cost = quartic_cost.QuarticCost.from_bounds(
-        margins=margins,
-        sizes=sizes,
-        low=-const.max_leg_vel,
-        high=const.max_leg_vel,
-    )
-    joint_angle_cost = quartic_cost.QuarticCost.from_bounds(
-        margins=margins,
-        sizes=sizes,
-        low=-const.joint_max_angle,
-        high=const.joint_max_angle,
-    )
-    yaw_cost = quartic_cost.QuarticCost.from_bounds(
-        margins=margins,
-        sizes=sizes,
-        low=-const.max_yaw,
-        high=const.max_yaw,
-    )
-    cost_terms = CostTerms(
-        leg_cost=leg_cost,
-        leg_vel_cost=leg_vel_cost,
-        joint_angle_cost=joint_angle_cost,
-        yaw_cost=yaw_cost,
-    )
-
-    acados_get_cost = functools.partial(
-        get_cost,
-        weights=weights,
-        cost_terms=cost_terms,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
-        # state0=state0,
-    )
-
-    def train_step(
-        state0: jax.Array, last_control: jax.Array
-    ) -> tuple[
-        jax.Array, jax.Array, utils.TableSol, sci_opt.OptimizeResult, float
-    ]:
-        """Return next state, computed control (flat), and table solution."""
-        cost, cost_jac, _ = acados_get_cost(state0=state0)
-        t0 = time.time()
-        res = sci_opt.minimize(
-            fun=cost,
-            x0=np.array(last_control),
-            method="L-BFGS-B",
-            jac=cost_jac,
-            options={
-                "maxiter": 16,
-                "maxls": 8,
-            },
-        )
-        t1 = time.time()
-        control = Control.from_flat(jnp.array(res.x))
-        state = control.get_state(state0)
-        table_sol = utils.TableSol(
-            x=jnp.column_stack(list(state)),
-            u=jnp.column_stack(list(control)),
-            stats=utils.TableStats(
-                time=jnp.array(res.nit),
-                status=jnp.array(res.status),
-                cost=jnp.array(res.fun),
-            ),
-        )
-        t_tot = t1 - t0
-        return state[1].flatten(), control.flatten(), table_sol, res, t_tot
-
-    state0 = jnp.zeros(12, dtype=float)
-    last_control = jnp.zeros(6 * n, dtype=float)
-    times = []
-    sol_list = []
-    res_list = []
-
-    for _ in tqdm.tqdm(range(num_steps)):
-        state0, last_control, table_sol, res, t_tot = train_step(state0, last_control)
-        sol_list.append(table_sol)
-        res_list.append(res)
-        times.append(t_tot)
+    return cost_wrapper, cost_jac_wrapper

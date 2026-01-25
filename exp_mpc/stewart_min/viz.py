@@ -1285,7 +1285,7 @@ def plot_cost_trajectory(
         weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
     ) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         return 0.5 * jnp.mean(
             opt.head_xyz_acc_cost_arr(
                 weights=weights,
@@ -1330,7 +1330,7 @@ def plot_cost_trajectory(
         weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
     ) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         return 0.5 * jnp.mean(
             opt.omega_cost_arr(
                 weights=weights,
@@ -1373,7 +1373,7 @@ def plot_cost_trajectory(
     @jax.jit
     def leg_vel_fun(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         length_cost_arr, vel_cost_arr = opt.leg_boundary_cost_arr(
             weights=weights,
             length_cost=cost_terms.leg_cost,
@@ -1433,7 +1433,7 @@ def plot_cost_trajectory(
     @jax.jit
     def joint_angle_fun(sol: utils.TableSol) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         angle_cost_arr = opt.joint_angle_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.joint_angle_cost,
@@ -1466,7 +1466,7 @@ def plot_cost_trajectory(
     @jax.jit
     def yaw_fun(sol: utils.TableSol) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         yaw_cost_arr = opt.yaw_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.yaw_cost,
@@ -1667,7 +1667,7 @@ def animate_cost_trajectory(
         weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
     ) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         return opt.head_xyz_acc_cost_arr(
             weights=weights,
             acc_ref=acc_ref,
@@ -1712,7 +1712,7 @@ def animate_cost_trajectory(
         weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
     ) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         return opt.omega_cost_arr(
             weights=weights,
             omega_ref=omega_ref,
@@ -1755,7 +1755,7 @@ def animate_cost_trajectory(
     @jax.jit
     def leg_vel_fun(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         length_cost_arr, vel_cost_arr = opt.leg_boundary_cost_arr(
             weights=weights,
             length_cost=cost_terms.leg_cost,
@@ -1823,7 +1823,7 @@ def animate_cost_trajectory(
     @jax.jit
     def joint_angle_fun(sol: utils.TableSol) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         return opt.joint_angle_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.joint_angle_cost,
@@ -1856,7 +1856,7 @@ def animate_cost_trajectory(
     @jax.jit
     def yaw_fun(sol: utils.TableSol) -> jax.Array:
         control = opt.Control.from_flat(sol.u)
-        state = control.get_state(state0=sol.x[0])
+        state = opt.get_state(control, sol.x[0])
         return opt.yaw_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.yaw_cost,
