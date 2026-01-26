@@ -11,13 +11,14 @@ In general, we implement a (private) jax implementation and a (public) numpy
 implementation.
 """
 import functools
+import dataclasses
+import typing as tp
 
 import jax
 import jax.numpy as jnp
-import numpy as np
+
 import exp_mpc.stewart_min.const as const
-import typing as tp
-import dataclasses
+import exp_mpc.stewart_min.comp as comp
 
 
 ################
@@ -27,74 +28,181 @@ import dataclasses
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
-class Pose:
-    x: jax.Array
-    y: jax.Array
-    z: jax.Array
-    phi: jax.Array
-    theta: jax.Array
-    psi: jax.Array
+class State:
+    """Helper for indexing a state array.
 
-    def xyz(self) -> jax.Array:
-        return jnp.stack([self.x, self.y, self.z], axis=-1)
+    The `state` attribute should be 2D, with rows representing time and columns
+    representing state values.
+    See the various `property` decorators for specific indexing conventions.
 
-    def rpy(self) -> jax.Array:
-        return jnp.stack([self.phi, self.theta, self.psi], axis=-1)
+    Note that the initial state is usually stored, so we have a special method
+    to ignore it, cf. `pop0`.
+    """
 
-    def __array__(self, copy: bool = False) -> np.ndarray:
-        assert type(copy) is bool
-        return np.stack(
-            [self.x, self.y, self.z, self.phi, self.theta, self.psi],
-            axis=-1,
-        )
+    state: jax.Array
+
+    def __post_init__(self):
+        if len(self.state.shape) == 2:
+            assert self.state.shape[1] == 12
+        elif len(self.state.shape) == 1:
+            assert self.state.size == 12
+        else:
+            raise RuntimeError(f"bad state shape: {self.state.shape}")
+
+    @property
+    def x(self) -> jax.Array:
+        return self.state[..., 0]
+
+    @property
+    def y(self) -> jax.Array:
+        return self.state[..., 1]
+
+    @property
+    def z(self) -> jax.Array:
+        return self.state[..., 2]
+
+    @property
+    def roll(self) -> jax.Array:
+        return self.state[..., 3]
+
+    @property
+    def pitch(self) -> jax.Array:
+        return self.state[..., 4]
+
+    @property
+    def yaw(self) -> jax.Array:
+        return self.state[..., 5]
+
+    @property
+    def x_dot(self) -> jax.Array:
+        return self.state[..., 6]
+
+    @property
+    def y_dot(self) -> jax.Array:
+        return self.state[..., 7]
+
+    @property
+    def z_dot(self) -> jax.Array:
+        return self.state[..., 8]
+
+    @property
+    def roll_dot(self) -> jax.Array:
+        return self.state[..., 9]
+
+    @property
+    def pitch_dot(self) -> jax.Array:
+        return self.state[..., 10]
+
+    @property
+    def yaw_dot(self) -> jax.Array:
+        return self.state[..., 11]
+
+    @property
+    def size(self) -> int:
+        """Get number of time steps that control represents."""
+        if len(self.state.shape) == 2:
+            return self.state.shape[0]
+        else:
+            return 1  # 1 time step
+
+    def flatten(self) -> jax.Array:
+        return jnp.ravel(self.state)
+
+    def pop0(self) -> "State":
+        """Create a new State without the first time step.
+
+        This is useful when the initial state should be ignored in a
+        computation.
+        """
+        assert len(self.state.shape) == 2
+        assert self.state.shape[0] >= 2
+        return State(self.state[1:])
+
+    def get0(self) -> "State":
+        """Usually create a new State with *only* the initial state."""
+        if len(self.state.shape) == 2:
+            return State(self.state[0])
+        else:
+            return self
 
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
-class PoseDot:
-    x_dot: jax.Array
-    y_dot: jax.Array
-    z_dot: jax.Array
-    phi_dot: jax.Array
-    theta_dot: jax.Array
-    psi_dot: jax.Array
+class Control:
+    """Helper for indexing a control array.
 
-    def xyz(self) -> jax.Array:
-        return jnp.stack([self.x_dot, self.y_dot, self.z_dot], axis=-1)
+    The `control` attribute should be 2D, with rows representing time and columns
+    representing state values.
+    See the various `property` decorators for specific indexing conventions.
+    """
 
-    def rpy(self) -> jax.Array:
-        return jnp.stack([self.phi_dot, self.theta_dot, self.psi_dot], axis=-1)
+    control: jax.Array
 
-    def __array__(self, copy: bool = False) -> np.ndarray:
-        assert type(copy) is bool
-        vals = [self.x_dot, self.y_dot, self.z_dot]
-        vals.extend([self.phi_dot, self.theta_dot, self.psi_dot])
-        return np.stack(vals, axis=-1)
+    def __post_init__(self):
+        if len(self.control.shape) == 2:
+            assert self.control.shape[1] == 6
+        elif len(self.control.shape) == 1:
+            assert self.control.size == 6
+        else:
+            raise RuntimeError(f"bad control shape: {self.control.shape}")
 
+    @property
+    def x(self) -> jax.Array:
+        return self.control[..., 0]
 
-@jax.tree_util.register_dataclass
-@dataclasses.dataclass
-class PoseDot2:
-    x_dot2: jax.Array
-    y_dot2: jax.Array
-    z_dot2: jax.Array
-    phi_dot2: jax.Array
-    theta_dot2: jax.Array
-    psi_dot2: jax.Array
+    @property
+    def y(self) -> jax.Array:
+        return self.control[..., 1]
 
-    def xyz(self) -> jax.Array:
-        return jnp.stack([self.x_dot2, self.y_dot2, self.z_dot2], axis=-1)
+    @property
+    def z(self) -> jax.Array:
+        return self.control[..., 2]
 
-    def rpy(self) -> jax.Array:
-        return jnp.stack(
-            [self.phi_dot2, self.theta_dot2, self.psi_dot2], axis=-1
-        )
+    @property
+    def roll(self) -> jax.Array:
+        return self.control[..., 3]
 
-    def __array__(self, copy: bool = False) -> np.ndarray:
-        assert type(copy) is bool
-        vals = [self.x_dot2, self.y_dot2, self.z_dot2]
-        vals.extend([self.phi_dot2, self.theta_dot2, self.psi_dot2])
-        return np.stack(vals, axis=-1)
+    @property
+    def pitch(self) -> jax.Array:
+        return self.control[..., 4]
+
+    @property
+    def yaw(self) -> jax.Array:
+        return self.control[..., 5]
+
+    @property
+    def size(self) -> int:
+        """Get number of time steps that control represents."""
+        if len(self.control.shape) == 2:
+            return self.control.shape[0]
+        else:
+            return 1  # 1 time step
+
+    @classmethod
+    def from_flat(cls, flat: jax.Array) -> "Control":
+        """Convert a flat array to a control dataclass.
+
+        We assume that the flat array is of the form:
+            [x0, y0, z0, roll0, pitch0, yaw0,
+             x1, y1, z1, roll1, pitch1, yaw1,
+             ...]
+        where the first three elements are the x, y and z coordinates of the
+        first control point, the next three are the roll, pitch and yaw
+        angles of the first control point, and so on for all control points.
+        """
+        assert flat.size % 6 == 0
+        control = jnp.reshape(flat, (-1, 6))
+        return cls(control)
+
+    def flatten(self) -> jax.Array:
+        return jnp.ravel(self.control)
+
+    def get0(self) -> "Control":
+        """Usually create a new Control with *only* the initial control."""
+        if len(self.control.shape) == 2:
+            return Control(self.control[0])
+        else:
+            return self
 
 
 @jax.tree_util.register_dataclass
@@ -112,290 +220,64 @@ class TableStats:
 class TableSol:
     """A solution to the Stewart platform OCP."""
 
-    x: jax.Array
-    u: jax.Array
+    x: State
+    u: Control
     stats: TableStats
 
-    def pose_at(self, i: int | jax.Array) -> Pose:
-        return Pose(*self.x[..., i, :6])
 
-    def pose_dot_at(self, i: int | jax.Array) -> PoseDot:
-        return PoseDot(*self.x[..., i, 6:12])
-
-    def pose_dot2_at(self, i: int | jax.Array) -> PoseDot2:
-        return PoseDot2(*self.u[..., i, :6])
-
-    def __iter__(self) -> tp.Iterator:
-        for field in dataclasses.fields(self):
-            yield getattr(self, field.name)
-
-    def __getitem__(
-        self, key: int | slice | tuple[int | slice, ...] | jax.Array
-    ) -> "TableSol":
-        if isinstance(key, slice):
-            x_key = slice(key.start, key.stop, key.step)
-            u_key = slice(key.start, key.stop - 1, key.step)
-        else:
-            x_key = key
-            u_key = key
-        return TableSol(
-            x=self.x[x_key],
-            u=self.u[u_key],
-            stats=self.stats,
-        )
-
-
-################
-# jax routines #
-################
+###############
+# conversions #
+###############
 
 
 @jax.jit
-def _get_R(phi: float, theta: float, psi: float) -> jax.Array:
-    """Get the rotation matrix."""
-    R_x = jnp.array(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, jnp.cos(phi), -jnp.sin(phi)],
-            [0.0, jnp.sin(phi), jnp.cos(phi)],
-        ]
-    )  # roll
-    R_y = jnp.array(
-        [
-            [jnp.cos(theta), 0.0, jnp.sin(theta)],
-            [0.0, 1.0, 0.0],
-            [-jnp.sin(theta), 0.0, jnp.cos(theta)],
-        ]
-    )  # pitch
-    R_z = jnp.array(
-        [
-            [jnp.cos(psi), -jnp.sin(psi), 0.0],
-            [jnp.sin(psi), jnp.cos(psi), 0.0],
-            [0.0, 0.0, 1.0],
-        ]
-    )  # yaw
-    return R_z @ R_y @ R_x
-
-
-@jax.jit
-def _get_R_dot(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-) -> jax.Array:
-    return jax.jvp(_get_R, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))[1]
-
-
-@jax.jit
-def _get_R_and_dot(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
+def _discrete_1d_euler(
+    x0: jax.Array,
+    v0: jax.Array,
+    a: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    return jax.jvp(_get_R, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))
+    r"""Discrete 1D Euler integration, with scalar initial data.
+
+    Parameters
+    ----------
+    x0 :
+        Initial position.
+    v0 :
+        Initial velocity.
+    a :
+        Constant accelerations.
+
+    Returns
+    -------
+    Integrated position and velocity.
+    """
+    a = jnp.ravel(a)  # really, an assertion...
+    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * a]))
+    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), const.dt * v[1:]]))
+    return x, v
 
 
-@jax.jit
-def _get_R_dot2(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    phi_dot2: float,
-    theta_dot2: float,
-    psi_dot2: float,
-) -> jax.Array:
-    primals = (phi, theta, psi)
-    tangents = (phi_dot, theta_dot, psi_dot)
-    tangents2 = (phi_dot2, theta_dot2, psi_dot2)
+def get_state(
+    control: Control,
+    state0: jax.Array,
+) -> State:
+    """Convert a control dataclass to a state dataclass."""
+    state0 = jnp.ravel(state0)
+    assert state0.size == 12
+    x0, y0, z0, roll0, pitch0, yaw0 = state0[:6]
+    x_dot0, y_dot0, z_dot0, roll_dot0, pitch_dot0, yaw_dot0 = state0[6:]
 
-    # we need a product rule, so we need two jvps
-    # namely, the tangents are also functions of time
-    # (we have also numerically checked these implementations with sympy)
+    x, x_dot = _discrete_1d_euler(x0, x_dot0, control.x)
+    y, y_dot = _discrete_1d_euler(y0, y_dot0, control.y)
+    z, z_dot = _discrete_1d_euler(z0, z_dot0, control.z)
+    roll, roll_dot = _discrete_1d_euler(roll0, roll_dot0, control.roll)
+    pitch, pitch_dot = _discrete_1d_euler(pitch0, pitch_dot0, control.pitch)
+    yaw, yaw_dot = _discrete_1d_euler(yaw0, yaw_dot0, control.yaw)
 
-    def _get_R_dot_0(phi_: float, theta_: float, psi_: float) -> jax.Array:
-        return jax.jvp(_get_R, (phi_, theta_, psi_), tangents)[1]
-
-    def _get_R_dot_1(
-        phi_dot_: float, theta_dot_: float, psi_dot_: float
-    ) -> jax.Array:
-        return jax.jvp(_get_R, primals, (phi_dot_, theta_dot_, psi_dot_))[1]
-
-    res0 = jax.jvp(_get_R_dot_0, primals, tangents)
-    res1 = jax.jvp(_get_R_dot_1, tangents, tangents2)
-    return res0[1] + res1[1]
-
-
-@jax.jit
-def _leg_pos(R: jax.Array, t: jax.Array) -> jax.Array:
-    lengths = []
-    delta = const.human_displacement
-    for i in range(6):
-        top_i = R @ (const.tops[i] + delta) - delta + t
-        diff = top_i - const.bots[i]
-        lengths.append(jnp.linalg.norm(diff))
-    return jnp.array(lengths)
-
-
-@jax.jit
-def _leg_vel(
-    R: jax.Array, t: jax.Array, R_dot: jax.Array, t_dot: jax.Array
-) -> jax.Array:
-    return jax.jvp(_leg_pos, (R, t), (R_dot, t_dot))[1]
-
-
-@jax.jit
-def _leg_pos_vel(
-    R: jax.Array, t: jax.Array, R_dot: jax.Array, t_dot: jax.Array
-) -> tuple[jax.Array, jax.Array]:
-    return jax.jvp(_leg_pos, (R, t), (R_dot, t_dot))
-
-
-@jax.jit
-def _leg_acc(
-    R: jax.Array,
-    t: jax.Array,
-    R_dot: jax.Array,
-    t_dot: jax.Array,
-    R_dot2: jax.Array,
-    t_dot2: jax.Array,
-) -> jax.Array:
-    def _leg_pos_0(R_: jax.Array, t_: jax.Array) -> jax.Array:
-        return jax.jvp(_leg_pos, (R_, t_), (R_dot, t_dot))[1]
-
-    def _leg_pos_1(R_dot_: jax.Array, t_dot_: jax.Array) -> jax.Array:
-        return jax.jvp(_leg_pos, (R, t), (R_dot_, t_dot_))[1]
-
-    res0 = jax.jvp(_leg_pos_0, (R, t), (R_dot, t_dot))[1]
-    res1 = jax.jvp(_leg_pos_1, (R_dot, t_dot), (R_dot2, t_dot2))[1]
-    return res0 + res1
-
-
-@functools.partial(jax.jit, static_argnames=("world",))
-def _get_PHI(
-    phi: float,
-    theta: float,
-    psi: float,
-    world: bool = False,
-) -> jax.Array:
-    """Matrix to map table euler angle derivatives to head angular velocity."""
-    # sympy generated
-    if not world:
-        return jnp.array(
-            [
-                [1, 0, -jnp.sin(theta)],
-                [0, jnp.cos(phi), jnp.sin(phi) * jnp.cos(theta)],
-                [0, -jnp.sin(phi), jnp.cos(phi) * jnp.cos(theta)],
-            ]
-        )
-    else:
-        return jnp.array(
-            [
-                [jnp.cos(psi) * jnp.cos(theta), -jnp.sin(psi), 0],
-                [jnp.sin(psi) * jnp.cos(theta), jnp.cos(psi), 0],
-                [-jnp.sin(theta), 0, 1],
-            ]
-        )
-
-
-@functools.partial(jax.jit, static_argnames=("world",))
-def _angle_vel(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    world: bool = False,
-) -> jax.Array:
-    """Angular velocity."""
-    PHI = _get_PHI(phi, theta, psi, world)
-    return jnp.linalg.inv(PHI) @ jnp.array([phi_dot, theta_dot, psi_dot])
-
-
-@functools.partial(jax.jit, static_argnames=("world",))
-def _angle_acc(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    phi_dot2: float,
-    theta_dot2: float,
-    psi_dot2: float,
-    world: bool = False,
-) -> jax.Array:
-    """Angular acceleration."""
-    # no product rule this time, because we already have the angular velocity
-    primals = (phi, theta, psi, phi_dot, theta_dot, psi_dot)
-    tangents = (phi_dot, theta_dot, psi_dot, phi_dot2, theta_dot2, psi_dot2)
-    return jax.jvp(
-        functools.partial(_angle_vel, world=world), primals, tangents
-    )[1]
-
-
-@jax.jit
-def _angle_joint(
-    x: jax.Array,
-    y: jax.Array,
-    z: jax.Array,
-    phi: jax.Array,
-    theta: jax.Array,
-    psi: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    """Joint angles, both top and bottom."""
-    R = _get_R(phi, theta, psi)
-    t = jnp.array([x, y, z])
-    top_angles = []
-    bot_angles = []
-    delta = const.human_displacement
-    for i in range(6):
-        top_i = R @ (const.tops[i] - delta) + delta + t
-        diff = top_i - const.bots[i]
-        leg_dir = diff / jnp.linalg.norm(diff)
-
-        top_mag = jnp.linalg.norm(jnp.cross(const.top_normals[i], leg_dir))
-        top_angles.append(jnp.asin(top_mag))
-
-        bot_mag = jnp.linalg.norm(jnp.cross(const.bot_normals[i], leg_dir))
-        bot_angles.append(jnp.asin(bot_mag))
-
-    return jnp.array(top_angles), jnp.array(bot_angles)
-
-
-@jax.jit
-def _angle_joint_top(
-    x: jax.Array,
-    y: jax.Array,
-    z: jax.Array,
-    phi: jax.Array,
-    theta: jax.Array,
-    psi: jax.Array,
-) -> jax.Array:
-    """Top joint angles."""
-    return _angle_joint(x, y, z, phi, theta, psi)[0]
-
-
-@jax.jit
-def _angle_joint_bot(
-    x: jax.Array,
-    y: jax.Array,
-    z: jax.Array,
-    phi: jax.Array,
-    theta: jax.Array,
-    psi: jax.Array,
-) -> jax.Array:
-    """Bottom joint angles."""
-    return _angle_joint(x, y, z, phi, theta, psi)[1]
+    non_dots = [x, y, z, roll, pitch, yaw]
+    dots = [x_dot, y_dot, z_dot, roll_dot, pitch_dot, yaw_dot]
+    state = jnp.transpose(jnp.vstack(non_dots + dots))
+    return State(state)
 
 
 ############
@@ -404,193 +286,250 @@ def _angle_joint_bot(
 
 
 @jax.jit
-def get_R(sol: TableSol) -> jax.Array:
-    """Get the rotation matrix.
-
-    We return a jax array, because this is really a private function.
-    """
-    pose = sol.pose_at(0)  # 1?
-    return _get_R(pose.phi, pose.theta, pose.psi)
+def rot(state: State) -> jax.Array:
+    """Get the rotation matrix."""
+    assert state.size == 1
+    return comp.rot(state.roll, state.pitch, state.yaw)
 
 
 @jax.jit
-def get_R_dot(sol: TableSol) -> jax.Array:
+def rot_T(state: State) -> jax.Array:
+    return jnp.transpose(rot(state))
+
+
+@jax.jit
+def rot_dot(state: State) -> jax.Array:
     """Get the rotation matrix derivative."""
-    pose = sol.pose_at(0)  # 1?
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    return _get_R_dot(
-        pose.phi,
-        pose.theta,
-        pose.psi,
-        pose_dot.phi_dot,
-        pose_dot.theta_dot,
-        pose_dot.psi_dot,
+    assert state.size == 1
+    return comp.rot_dot(
+        state.roll,
+        state.pitch,
+        state.yaw,
+        state.roll_dot,
+        state.pitch_dot,
+        state.yaw_dot,
     )
 
 
 @jax.jit
-def get_R_dot2(sol: TableSol) -> jax.Array:
+def rot_and_dot(state: State) -> jax.Array:
+    """Get the rotation matrix derivative."""
+    assert state.size == 1
+    return comp.rot_and_dot(
+        state.roll,
+        state.pitch,
+        state.yaw,
+        state.roll_dot,
+        state.pitch_dot,
+        state.yaw_dot,
+    )
+
+
+@jax.jit
+def rot_dot2(state: State, control: Control) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
-    pose = sol.pose_at(0)  # 1?
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    pose_ddot = sol.pose_dot2_at(0)
-    return _get_R_dot2(
-        pose.phi,
-        pose.theta,
-        pose.psi,
-        pose_dot.phi_dot,
-        pose_dot.theta_dot,
-        pose_dot.psi_dot,
-        pose_ddot.phi_dot2,
-        pose_ddot.theta_dot2,
-        pose_ddot.psi_dot2,
+    assert state.size == 1
+    assert control.size == 1
+    return comp.rot_dot2(
+        state.roll,
+        state.pitch,
+        state.yaw,
+        state.roll_dot,
+        state.pitch_dot,
+        state.yaw_dot,
+        control.roll,  # acc
+        control.pitch,  # acc
+        control.yaw,  # acc
     )
 
 
 @jax.jit
-def leg_pos(sol: TableSol) -> jax.Array:
+def leg_pos(state: State) -> jax.Array:
     """All leg lengths."""
-    R = get_R(sol)
-    t = sol.pose_at(0).xyz()  # 1?
-    return jnp.array(_leg_pos(R, t))
+    assert state.size == 1
+    R = rot(state)
+    t = jnp.array([state.x, state.y, state.z])
+    return comp.leg_pos(R, t)
 
 
 @jax.jit
-def leg_vel(sol: TableSol) -> jax.Array:
+def leg_vel(state: State) -> jax.Array:
     """All leg velocities."""
-    R = get_R(sol)
-    R_dot = get_R_dot(sol)
-    t = sol.pose_at(0).xyz()  # 1?
-    t_dot = sol.pose_dot_at(0).xyz()  # 1?
-    return jnp.array(_leg_vel(R, t, R_dot, t_dot))
+    assert state.size == 1
+    R, R_dot = rot_and_dot(state)
+    t = jnp.array([state.x, state.y, state.z])
+    t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
+    return comp.leg_vel(R, t, R_dot, t_dot)
 
 
 @jax.jit
-def leg_acc(sol: TableSol) -> jax.Array:
+def leg_pos_vel(state: State) -> tuple[jax.Array, jax.Array]:
+    """All leg lengths and velocities."""
+    assert state.size == 1
+    R, R_dot = rot_and_dot(state)
+    t = jnp.array([state.x, state.y, state.z])
+    t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
+    return comp.leg_pos_vel(R, t, R_dot, t_dot)
+
+
+@jax.jit
+def leg_acc(state: State, control: Control) -> jax.Array:
     """All leg accelerations."""
-    R = get_R(sol)
-    R_dot = get_R_dot(sol)
-    R_dot2 = get_R_dot2(sol)
-    t = sol.pose_at(0).xyz()  # 1?
-    t_dot = sol.pose_dot_at(0).xyz()  # 1?
-    t_dot2 = sol.pose_dot2_at(0).xyz()
-    return jnp.array(_leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2))
+    assert state.size == 1
+    assert control.size == 1
+    R, R_dot = rot_and_dot(state)
+    R_dot2 = rot_dot2(state, control)
+    t = jnp.array([state.x, state.y, state.z])
+    t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
+    t_dot2 = jnp.array([control.x, control.y, control.z])
+    return comp.leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2)
+
+
+@functools.partial(jax.jit, static_argnames=("world",))
+def tranfer_PHI(state: State, world: bool = False) -> jax.Array:
+    """Matrix to map table euler angle derivatives to head angular velocity."""
+    assert state.size == 1
+    return comp.transfer_PHI(state.roll, state.pitch, state.yaw, world)
+
+
+@functools.partial(jax.jit, static_argnames=("world",))
+def angle_vel(state: State, world: bool = False) -> jax.Array:
+    """Angular velocity."""
+    assert state.size == 1
+    angles = [state.roll, state.pitch, state.yaw]
+    angles_dot = [state.roll_dot, state.pitch_dot, state.yaw_dot]
+    inputs = angles + angles_dot + [world]
+    return comp.angle_vel(*inputs)
+
+
+@functools.partial(jax.jit, static_argnames=("world",))
+def angle_acc(state: State, control: Control, world: bool = False) -> jax.Array:
+    """Angular acceleration."""
+    assert state.size == 1
+    assert control.size == 1
+    angles = [state.roll, state.pitch, state.yaw]
+    angles_dot = [state.roll_dot, state.pitch_dot, state.yaw_dot]
+    angles_dot2 = [control.roll, control.pitch, control.yaw]
+    inputs = angles + angles_dot + angles_dot2 + [world]
+    return comp.angle_acc(*inputs)
 
 
 @jax.jit
-def angle_pos(sol: TableSol) -> jax.Array:
-    """Angle position."""
-    return sol.pose_at(0).rpy()  # 1?
+def angle_joint(state: State) -> tuple[jax.Array, jax.Array]:
+    """Angles at joints."""
+    assert state.size == 1
+    s = state
+    return comp.angle_joint(s.x, s.y, s.z, s.roll, s.pitch, s.yaw)
+
+
+@jax.jit
+def angle_joint_top(state: State) -> jax.Array:
+    """Angles at top joints."""
+    assert state.size == 1
+    joint_top, _ = angle_joint(state)
+    return joint_top
+
+
+@jax.jit
+def angle_joint_bot(state: State) -> jax.Array:
+    """Agnles at bottom joints."""
+    assert state.size == 1
+    _, joint_bot = angle_joint(state)
+    return joint_bot
+
+
+###############
+# viz helpers #
+###############
 
 
 @jax.jit
 def human_angle_vel(sol: TableSol) -> jax.Array:
     """Human angular velocity."""
-    pose = sol.pose_at(0)  # 1?
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy()))
+    state0 = sol.x.get0()
+    return angle_vel(state0)
 
 
 @jax.jit
 def table_angle_vel(sol: TableSol) -> jax.Array:
     """Table angular velocity."""
-    pose = sol.pose_at(0)  # 1?
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    return jnp.array(_angle_vel(*pose.rpy(), *pose_dot.rpy(), world=True))
+    state0 = sol.x.get0()
+    return angle_vel(state0, world=True)
 
 
 @jax.jit
 def human_angle_acc(sol: TableSol) -> jax.Array:
     """Angular acceleration."""
-    pose = sol.pose_at(0)  # 1?
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    pose_dot2 = sol.pose_dot2_at(0)
-    return jnp.array(_angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy()))
+    state0 = sol.x.get0()
+    control0 = sol.u.get0()
+    return angle_acc(state0, control0)
 
 
 @jax.jit
 def table_angle_acc(sol: TableSol) -> jax.Array:
     """Table angular acceleration."""
-    pose = sol.pose_at(0)  # 1?
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    pose_dot2 = sol.pose_dot2_at(0)
-    return jnp.array(
-        _angle_acc(*pose.rpy(), *pose_dot.rpy(), *pose_dot2.rpy(), world=True)
-    )
+    state0 = sol.x.get0()
+    control0 = sol.u.get0()
+    return angle_acc(state0, control0, world=True)
 
 
 @jax.jit
 def table_angle(sol: TableSol) -> jax.Array:
     """Table angle."""
-    pose = sol.pose_at(0)  # 1?
-    return jnp.degrees(pose.rpy())
+    state0 = sol.x.get0()
+    rpy = jnp.array([state0.roll, state0.pitch, state0.yaw])
+    return jnp.degrees(rpy)
 
 
 @jax.jit
 def table_pos(sol: TableSol) -> jax.Array:
     """Table position."""
-    pose = sol.pose_at(0)  # 1?
-    return jnp.array(pose.xyz())
+    state0 = sol.x.get0()
+    return jnp.array([state0.x, state0.y, state0.z])
 
 
 @jax.jit
 def table_vel(sol: TableSol) -> jax.Array:
     """Table velocity."""
-    pose_dot = sol.pose_dot_at(0)  # 1?
-    return jnp.array(pose_dot.xyz())
+    state0 = sol.x.get0()
+    return jnp.array([state0.x_dot, state0.y_dot, state0.z_dot])
 
 
 @jax.jit
 def table_acc(sol: TableSol) -> jax.Array:
     """Table acceleration."""
-    pose_dot2 = sol.pose_dot2_at(0)
-    return pose_dot2.xyz()
-
-
-@jax.jit
-def angle_joint_top(sol: TableSol) -> jax.Array:
-    """Top joint angles."""
-    pose = sol.pose_at(0)  # 1?
-    return jnp.array(_angle_joint_top(*pose.xyz(), *pose.rpy()))
-
-
-@jax.jit
-def angle_joint_bot(sol: TableSol) -> jax.Array:
-    """Bottom joint angles."""
-    pose = sol.pose_at(0)  # 1?
-    return jnp.array(_angle_joint_bot(*pose.xyz(), *pose.rpy()))
+    control0 = sol.u.get0()
+    return jnp.array([control0.x, control0.y, control0.z])
 
 
 @jax.jit
 def human_vel(sol: TableSol) -> jax.Array:
     """Human velocity."""
-    vel = sol.pose_dot_at(0).xyz()  # 1?
-    R = jnp.array(get_R(sol))
-    R_dot = jnp.array(get_R_dot(sol))
-    return R.T @ (R_dot @ const.human_displacement + vel)
+    state0 = sol.x.get0()
+    R = rot(state0)
+    vel = jnp.array([state0.x_dot, state0.y_dot, state0.z_dot])
+    return R.T @ vel
 
 
 @jax.jit
 def human_acc(sol: TableSol) -> jax.Array:
     """Human acceleration."""
-    acc = sol.pose_dot2_at(0).xyz()
-    R = jnp.array(get_R(sol))
-    R_dot2 = jnp.array(get_R_dot2(sol))
-    return R.T @ (R_dot2 @ const.human_displacement + acc + const.gravity)
-    # return R.T @ (acc + const.gravity)
+    state0 = sol.x.get0()
+    control0 = sol.u.get0()
+    acc = jnp.array([control0.x, control0.y, control0.z])
+    R = rot(state0)
+    return R.T @ (acc + const.gravity)
 
 
 @functools.partial(jax.jit, static_argnames=["fun"])
 def sol_vmap(
     fun: tp.Callable[[TableSol], jax.Array], sol: TableSol
 ) -> jax.Array:
-    sol.x = sol.x[1:]  # skip initial condition
+    sol.x = sol.x.pop0()  # skip initial condition
     leaves, treedef = jax.tree_util.tree_flatten(sol)
 
     def flat_fun(*args) -> jax.Array:
         sol = jax.tree_util.tree_unflatten(treedef, args)
-        sol.x = jnp.atleast_2d(sol.x)
-        sol.u = jnp.atleast_2d(sol.u)
         return fun(sol)
 
     in_axes = [0, 0] + [None] * (len(leaves) - 2)  # probably 3 `None`s

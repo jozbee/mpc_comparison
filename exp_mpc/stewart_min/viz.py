@@ -11,6 +11,7 @@ import matplotlib.lines as mpl_lines
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.comp as comp
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.opt as opt
 
@@ -22,7 +23,12 @@ def waypoints_from_solutions(
     trajectory: list[utils.TableSol],
 ) -> list[np.ndarray]:
     """Convert a list of solutions to a list of waypoints."""
-    return [np.array(sol.pose_at(0)) for sol in trajectory]
+    waypoints = []
+    for traj in trajectory:
+        s = traj.x.get0()
+        pose = np.array([s.x, s.y, s.z, s.roll, s.pitch, s.yaw])
+        waypoints.append(pose)
+    return waypoints
 
 
 def animate_trajectory(
@@ -96,12 +102,12 @@ def animate_trajectory(
 
     control_axes[-1].set_xlabel("Horizon")
     control_abs = np.abs(
-        np.concatenate([np.ravel(traj.u) for traj in trajectory])
+        np.concatenate([np.ravel(traj.u.control) for traj in trajectory])
     )
     control_lim = np.mean(control_abs) + np.std(control_abs) * 4.0
     # control_lim = np.max(control_abs)
     control_axes[-1].set_ylim(-control_lim, control_lim)
-    control_axes[-1].set_xlim(0, trajectory[0].u.shape[0])
+    control_axes[-1].set_xlim(0, trajectory[0].u.size)
     fig.text(0.04, 0.5, "Control", va="center", rotation="vertical")
 
     # 3D plot for platform visualization
@@ -210,13 +216,13 @@ def animate_trajectory(
         )
         current_sol: utils.TableSol = trajectory[sol_index]  # type: ignore
         u_horizon = current_sol.u
-        horizon_t = np.arange(u_horizon.shape[0])
+        horizon_t = np.arange(u_horizon.size)
         for j in range(6):
-            control_lines[j].set_data(horizon_t, u_horizon[:, j])
+            control_lines[j].set_data(horizon_t, u_horizon.control[:, j])
 
         x, y, z, roll, pitch, yaw = interp_trajectory[i]
         position = np.array([x, y, z])
-        R = utils._get_R(roll, pitch, yaw)
+        R = comp.rot(roll, pitch, yaw)
 
         # Update platform position
         delta = const.human_displacement
@@ -456,7 +462,7 @@ def animate_human_trajectory(
         setup_plot(ax, title, ylabel, min_lim, max_lim)
 
     # Set initial axis limits
-    horizon_len = trajectory[0].x.shape[0]
+    horizon_len = trajectory[0].x.size
     for row in axes:
         for ax in row:
             ax.set_xlim(0, horizon_len - 1)
@@ -489,7 +495,7 @@ def animate_human_trajectory(
         traj_index = min(traj_index, len(trajectory) - 1)
 
         current_sol = trajectory[traj_index]
-        horizon_len = current_sol.u.shape[0]
+        horizon_len = current_sol.u.size
         horizon_t = np.arange(horizon_len)
 
         # Extract horizon data
@@ -1028,11 +1034,14 @@ def plot_actuator_trajectory(
 
     colors = [mpl.colormaps["viridis"](c) for c in np.linspace(0, 1, 6)]
 
+    x0s = [sol.x.get0() for sol in trajectory]
+    u0s = [sol.u.get0() for sol in trajectory]
+
     ###############
     # leg lengths #
     ###############
 
-    leg_pos = [utils.leg_pos(sol) for sol in trajectory]
+    leg_pos = [utils.leg_pos(x0) for x0 in x0s]
     leg_pos = jnp.array(leg_pos)
 
     ax_pos = axes[0, 0]
@@ -1070,7 +1079,7 @@ def plot_actuator_trajectory(
     # leg velocities #
     ##################
 
-    leg_vel = [utils.leg_vel(sol) for sol in trajectory]
+    leg_vel = [utils.leg_vel(x0) for x0 in x0s]
     leg_vel = jnp.array(leg_vel)
 
     ax_vel = axes[0, 1]
@@ -1108,7 +1117,7 @@ def plot_actuator_trajectory(
     # leg accelerations #
     #####################
 
-    leg_acc = [utils.leg_acc(sol) for sol in trajectory]
+    leg_acc = [utils.leg_acc(x0, u0) for x0, u0 in zip(x0s, u0s)]
     leg_acc = jnp.array(leg_acc)
 
     ax_acc = axes[1, 0]
@@ -1132,11 +1141,11 @@ def plot_actuator_trajectory(
     # joint angles #
     ################
 
-    top_joint_angles = [utils.angle_joint_top(sol) for sol in trajectory]
+    top_joint_angles = [utils.angle_joint_top(x0) for x0 in x0s]
     top_joint_angles = np.array(top_joint_angles)
     top_joint_angles = np.degrees(top_joint_angles)
 
-    bot_joint_angles = [utils.angle_joint_bot(sol) for sol in trajectory]
+    bot_joint_angles = [utils.angle_joint_bot(x0) for x0 in x0s]
     bot_joint_angles = np.array(bot_joint_angles)
     bot_joint_angles = np.degrees(bot_joint_angles)
 
@@ -1181,30 +1190,6 @@ def plot_actuator_trajectory(
     ax_angles.legend()
 
     return fig
-
-
-def split_tablesol(
-    table_sol: utils.TableSol, keep_dim: bool = True
-) -> list[utils.TableSol]:
-    """Split a TableSol into a list of of 2 point horizon TableSol."""
-    assert table_sol.u.shape[0] > 1
-    split_sols = []
-    for i in range(table_sol.u.shape[0]):
-        split_sol = table_sol[i]
-        split_sol.u = jnp.atleast_2d(split_sol.u)
-        split_sol.x = jnp.atleast_2d(split_sol.x)
-        split_sols.append(split_sol)
-
-    if keep_dim:
-        for i in range(len(split_sols)):
-            split_sols[i].u = jnp.tile(
-                split_sols[i].u, reps=(table_sol.u.shape[0], 1)
-            )
-            split_sols[i].x = jnp.tile(
-                split_sols[i].x, reps=(table_sol.x.shape[0], 1)
-            )
-
-    return split_sols
 
 
 def plot_cost_trajectory(
@@ -1284,14 +1269,12 @@ def plot_cost_trajectory(
     def head_fun(
         weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
     ) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         return 0.5 * jnp.mean(
             opt.head_xyz_acc_cost_arr(
                 weights=weights,
                 acc_ref=acc_ref,
-                state=state,
-                control=control,
+                state=sol.x,
+                control=sol.u,
             )
         )
 
@@ -1329,14 +1312,12 @@ def plot_cost_trajectory(
     def omega_fun(
         weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
     ) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         return 0.5 * jnp.mean(
             opt.omega_cost_arr(
                 weights=weights,
                 omega_ref=omega_ref,
-                state=state,
-                control=control,
+                state=sol.x,
+                control=sol.u,
             )
         )
 
@@ -1372,14 +1353,12 @@ def plot_cost_trajectory(
 
     @jax.jit
     def leg_vel_fun(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         length_cost_arr, vel_cost_arr = opt.leg_boundary_cost_arr(
             weights=weights,
             length_cost=cost_terms.leg_cost,
             vel_cost=cost_terms.leg_vel_cost,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
         length_cost_val = jnp.mean(length_cost_arr, axis=0)
         vel_cost_val = jnp.mean(vel_cost_arr, axis=0)
@@ -1432,13 +1411,11 @@ def plot_cost_trajectory(
 
     @jax.jit
     def joint_angle_fun(sol: utils.TableSol) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         angle_cost_arr = opt.joint_angle_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.joint_angle_cost,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
         angle_cost_val = jnp.mean(angle_cost_arr, axis=0)
         return angle_cost_val
@@ -1465,13 +1442,11 @@ def plot_cost_trajectory(
 
     @jax.jit
     def yaw_fun(sol: utils.TableSol) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         yaw_cost_arr = opt.yaw_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.yaw_cost,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
         yaw_cost_val = jnp.mean(yaw_cost_arr, axis=0)
         return yaw_cost_val
@@ -1495,10 +1470,9 @@ def plot_cost_trajectory(
 
     @jax.jit
     def control_fun(sol: utils.TableSol) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
         control_cost_arr = opt.control_cost_arr(
             weights=weights,
-            control=control,
+            control=sol.u,
         )
         control_cost_val = 0.5 * jnp.mean(control_cost_arr, axis=0)
         return control_cost_val
@@ -1655,7 +1629,7 @@ def animate_cost_trajectory(
     assert len(omega_refs.shape) == 3
     assert omega_refs.shape[-1] == 3
 
-    n_horizon = trajectory[0].u.shape[0]
+    n_horizon = trajectory[0].u.size
     init_index = 0
 
     ############
@@ -1666,13 +1640,11 @@ def animate_cost_trajectory(
     def head_fun(
         weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
     ) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         return opt.head_xyz_acc_cost_arr(
             weights=weights,
             acc_ref=acc_ref,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
 
     def weight2head_acc(weights: opt.Weights) -> jax.Array:
@@ -1711,13 +1683,11 @@ def animate_cost_trajectory(
     def omega_fun(
         weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
     ) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         return opt.omega_cost_arr(
             weights=weights,
             omega_ref=omega_ref,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
 
     def weight2omega(weights: opt.Weights) -> jax.Array:
@@ -1754,14 +1724,12 @@ def animate_cost_trajectory(
 
     @jax.jit
     def leg_vel_fun(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         length_cost_arr, vel_cost_arr = opt.leg_boundary_cost_arr(
             weights=weights,
             length_cost=cost_terms.leg_cost,
             vel_cost=cost_terms.leg_vel_cost,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
         length_cost_val = length_cost_arr
         vel_cost_val = vel_cost_arr
@@ -1822,13 +1790,11 @@ def animate_cost_trajectory(
 
     @jax.jit
     def joint_angle_fun(sol: utils.TableSol) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         return opt.joint_angle_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.joint_angle_cost,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
 
     joint_angle = jnp.stack([joint_angle_fun(sol) for sol in trajectory])
@@ -1855,13 +1821,11 @@ def animate_cost_trajectory(
 
     @jax.jit
     def yaw_fun(sol: utils.TableSol) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
-        state = opt.get_state(control, sol.x[0])
         return opt.yaw_boundary_cost_arr(
             weights=weights,
             cost=cost_terms.yaw_cost,
-            state=state,
-            control=control,
+            state=sol.x,
+            control=sol.u,
         )
 
     yaw = jnp.stack([yaw_fun(sol) for sol in trajectory])
@@ -1884,10 +1848,9 @@ def animate_cost_trajectory(
 
     @jax.jit
     def control_fun(sol: utils.TableSol) -> jax.Array:
-        control = opt.Control.from_flat(sol.u)
         return opt.control_cost_arr(
             weights=weights,
-            control=control,
+            control=sol.u,
         )
 
     control = jnp.stack([control_fun(sol) for sol in trajectory])
