@@ -71,3 +71,18 @@ bot_normals = np.array(
     ]
 )
 bot_normals /= np.linalg.norm(bot_normals, axis=1)[:, np.newaxis]
+
+# integration matrices for vestibular models
+# for their meaning and derivation, see `vestibular.ipynb`
+E0_acc = np.array([[0.98963583, -0.00129002], [0.00497405, 0.99999677]])
+E1_acc = np.array([[4.97404728e-03], [1.24567102e-05]])
+C_acc = np.array([[0.911, 0.0900068]])
+E0_omega = np.array(
+    [
+        [9.50588885e-01, -6.42132787e-03, -1.59328193e-04],
+        [4.87544271e-03, 9.99983811e-01, -4.01684389e-07],
+        [1.22915423e-05, 4.99997291e-03, 9.99999999e-01],
+    ]
+)
+E1_omega = np.array([[4.87544271e-03], [1.22915423e-05], [2.05721124e-08]])
+C_omega = np.array([[10.09803922, 0.0, 0.0]])

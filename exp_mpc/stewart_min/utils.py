@@ -25,14 +25,118 @@ import exp_mpc.stewart_min.comp as comp
 # book-keeping #
 ################
 
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class VState:
+    """Helper for indexing Vestibular state arrays.
+
+    Internal states for the vestibular model are given by `x_state`, and the
+    observed states are `y_state`.
+    Indexing conventions are given in the `property` decorators.
+    Usually, these arrays are 2D, with the rows representing time.
+    """
+
+    x_state: jax.Array
+    y_state: jax.Array
+
+    def __post_init__(self):
+        # vestibular models are SISO, with 3 internal states for each
+        #  component of the semi-circular canal and 2 internal states for
+        #  each linear acceleration components.
+        x_num = 3 * const.E0_acc.shape[0] + 3 * const.E0_omega.shape[0]
+        assert x_num == 15  # subject to change?
+        y_num = 3 + 3  # 3 linear accelerations and 3 angular velocities
+
+        if len(self.x_state.shape) == 2:
+            assert len(self.y_state.shape) == 2
+            assert self.x_state.shape[0] == self.y_state.shape[0]
+            assert self.x_state.shape[1] == x_num
+            assert self.y_state.shape[1] == y_num
+        elif len(self.x_state.shape) == 1:
+            assert len(self.y_state.shape) == 1
+            assert self.x_state.size == x_num
+            assert self.y_state.size == y_num
+        else:
+            raise RuntimeError(f"bad x_state shape: {self.x_state.shape}")
+
+    @property
+    def x_accx(self) -> jax.Array:
+        return self.x_state[..., 0 : 0 + 2]
+
+    @property
+    def x_accy(self) -> jax.Array:
+        return self.x_state[..., 2 : 2 + 2]
+
+    @property
+    def x_accz(self) -> jax.Array:
+        return self.x_state[..., 4 : 4 + 2]
+
+    @property
+    def x_omegax(self) -> jax.Array:
+        return self.x_state[..., 6 : 6 + 3]
+
+    @property
+    def x_omegay(self) -> jax.Array:
+        return self.x_state[..., 9 : 9 + 3]
+
+    @property
+    def x_omegaz(self) -> jax.Array:
+        return self.x_state[..., 12 : 12 + 3]
+
+    @property
+    def y_accx(self) -> jax.Array:
+        return self.y_state[..., 0]
+
+    @property
+    def y_accy(self) -> jax.Array:
+        return self.y_state[..., 1]
+
+    @property
+    def y_accz(self) -> jax.Array:
+        return self.y_state[..., 2]
+
+    @property
+    def y_omegax(self) -> jax.Array:
+        return self.y_state[..., 3]
+
+    @property
+    def y_omegay(self) -> jax.Array:
+        return self.y_state[..., 4]
+
+    @property
+    def y_omegaz(self) -> jax.Array:
+        return self.y_state[..., 5]
+
+    def pop0(self) -> "VState":
+        """Create a new VState without the first time step.
+
+        This is useful when the initial state should be ignored in a
+        computation.
+        """
+        assert len(self.x_state.shape) == 2
+        assert len(self.y_state.shape) == 2
+        assert self.x_state.shape[0] >= 2
+        assert self.y_state.shape[0] == self.x_state.shape[0]
+        return VState(self.x_state[1:], self.y_state[1:])
+
+    def get0(self) -> "VState":
+        """Usually create a new State with *only* the initial state."""
+        if len(self.y_state.shape) == 2:
+            return VState(self.x_state[0], self.y_state[0])
+        else:
+            return self
+
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
-class State:
-    """Helper for indexing a state array.
+class RState:
+    """Helper for indexing a Robot state arrays.
 
-    The `state` attribute should be 2D, with rows representing time and columns
-    representing state values.
+    Usually, the `state` attribute should be 2D, with rows representing time
+    and columns representing state values.
+    Sometimes, `state` may represent a single time point, in which case the
+    array is 1D.
+    These properties are enforced in `__post_init__`.
     See the various `property` decorators for specific indexing conventions.
 
     Note that the initial state is usually stored, so we have a special method
@@ -108,20 +212,20 @@ class State:
     def flatten(self) -> jax.Array:
         return jnp.ravel(self.state)
 
-    def pop0(self) -> "State":
-        """Create a new State without the first time step.
+    def pop0(self) -> "RState":
+        """Create a new RState without the first time step.
 
         This is useful when the initial state should be ignored in a
         computation.
         """
         assert len(self.state.shape) == 2
         assert self.state.shape[0] >= 2
-        return State(self.state[1:])
+        return RState(self.state[1:])
 
-    def get0(self) -> "State":
+    def get0(self) -> "RState":
         """Usually create a new State with *only* the initial state."""
         if len(self.state.shape) == 2:
-            return State(self.state[0])
+            return RState(self.state[0])
         else:
             return self
 
@@ -220,64 +324,11 @@ class TableStats:
 class TableSol:
     """A solution to the Stewart platform OCP."""
 
-    x: State
+    x: RState
     u: Control
+    vstate_irl: VState
+    vstate_sim: VState
     stats: TableStats
-
-
-###############
-# conversions #
-###############
-
-
-@jax.jit
-def _discrete_1d_euler(
-    x0: jax.Array,
-    v0: jax.Array,
-    a: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    r"""Discrete 1D Euler integration, with scalar initial data.
-
-    Parameters
-    ----------
-    x0 :
-        Initial position.
-    v0 :
-        Initial velocity.
-    a :
-        Constant accelerations.
-
-    Returns
-    -------
-    Integrated position and velocity.
-    """
-    a = jnp.ravel(a)  # really, an assertion...
-    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * a]))
-    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), const.dt * v[1:]]))
-    return x, v
-
-
-def get_state(
-    control: Control,
-    state0: jax.Array,
-) -> State:
-    """Convert a control dataclass to a state dataclass."""
-    state0 = jnp.ravel(state0)
-    assert state0.size == 12
-    x0, y0, z0, roll0, pitch0, yaw0 = state0[:6]
-    x_dot0, y_dot0, z_dot0, roll_dot0, pitch_dot0, yaw_dot0 = state0[6:]
-
-    x, x_dot = _discrete_1d_euler(x0, x_dot0, control.x)
-    y, y_dot = _discrete_1d_euler(y0, y_dot0, control.y)
-    z, z_dot = _discrete_1d_euler(z0, z_dot0, control.z)
-    roll, roll_dot = _discrete_1d_euler(roll0, roll_dot0, control.roll)
-    pitch, pitch_dot = _discrete_1d_euler(pitch0, pitch_dot0, control.pitch)
-    yaw, yaw_dot = _discrete_1d_euler(yaw0, yaw_dot0, control.yaw)
-
-    non_dots = [x, y, z, roll, pitch, yaw]
-    dots = [x_dot, y_dot, z_dot, roll_dot, pitch_dot, yaw_dot]
-    state = jnp.transpose(jnp.vstack(non_dots + dots))
-    return State(state)
 
 
 ############
@@ -286,19 +337,19 @@ def get_state(
 
 
 @jax.jit
-def rot(state: State) -> jax.Array:
+def rot(state: RState) -> jax.Array:
     """Get the rotation matrix."""
     assert state.size == 1
     return comp.rot(state.roll, state.pitch, state.yaw)
 
 
 @jax.jit
-def rot_T(state: State) -> jax.Array:
+def rot_T(state: RState) -> jax.Array:
     return jnp.transpose(rot(state))
 
 
 @jax.jit
-def rot_dot(state: State) -> jax.Array:
+def rot_dot(state: RState) -> jax.Array:
     """Get the rotation matrix derivative."""
     assert state.size == 1
     return comp.rot_dot(
@@ -312,7 +363,7 @@ def rot_dot(state: State) -> jax.Array:
 
 
 @jax.jit
-def rot_and_dot(state: State) -> jax.Array:
+def rot_and_dot(state: RState) -> jax.Array:
     """Get the rotation matrix derivative."""
     assert state.size == 1
     return comp.rot_and_dot(
@@ -326,7 +377,7 @@ def rot_and_dot(state: State) -> jax.Array:
 
 
 @jax.jit
-def rot_dot2(state: State, control: Control) -> jax.Array:
+def rot_dot2(state: RState, control: Control) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
     assert state.size == 1
     assert control.size == 1
@@ -344,7 +395,7 @@ def rot_dot2(state: State, control: Control) -> jax.Array:
 
 
 @jax.jit
-def leg_pos(state: State) -> jax.Array:
+def leg_pos(state: RState) -> jax.Array:
     """All leg lengths."""
     assert state.size == 1
     R = rot(state)
@@ -353,7 +404,7 @@ def leg_pos(state: State) -> jax.Array:
 
 
 @jax.jit
-def leg_vel(state: State) -> jax.Array:
+def leg_vel(state: RState) -> jax.Array:
     """All leg velocities."""
     assert state.size == 1
     R, R_dot = rot_and_dot(state)
@@ -363,7 +414,7 @@ def leg_vel(state: State) -> jax.Array:
 
 
 @jax.jit
-def leg_pos_vel(state: State) -> tuple[jax.Array, jax.Array]:
+def leg_pos_vel(state: RState) -> tuple[jax.Array, jax.Array]:
     """All leg lengths and velocities."""
     assert state.size == 1
     R, R_dot = rot_and_dot(state)
@@ -373,7 +424,7 @@ def leg_pos_vel(state: State) -> tuple[jax.Array, jax.Array]:
 
 
 @jax.jit
-def leg_acc(state: State, control: Control) -> jax.Array:
+def leg_acc(state: RState, control: Control) -> jax.Array:
     """All leg accelerations."""
     assert state.size == 1
     assert control.size == 1
@@ -386,14 +437,14 @@ def leg_acc(state: State, control: Control) -> jax.Array:
 
 
 @functools.partial(jax.jit, static_argnames=("world",))
-def tranfer_PHI(state: State, world: bool = False) -> jax.Array:
+def tranfer_PHI(state: RState, world: bool = False) -> jax.Array:
     """Matrix to map table euler angle derivatives to head angular velocity."""
     assert state.size == 1
     return comp.transfer_PHI(state.roll, state.pitch, state.yaw, world)
 
 
 @functools.partial(jax.jit, static_argnames=("world",))
-def angle_vel(state: State, world: bool = False) -> jax.Array:
+def angle_vel(state: RState, world: bool = False) -> jax.Array:
     """Angular velocity."""
     assert state.size == 1
     angles = [state.roll, state.pitch, state.yaw]
@@ -403,7 +454,9 @@ def angle_vel(state: State, world: bool = False) -> jax.Array:
 
 
 @functools.partial(jax.jit, static_argnames=("world",))
-def angle_acc(state: State, control: Control, world: bool = False) -> jax.Array:
+def angle_acc(
+    state: RState, control: Control, world: bool = False
+) -> jax.Array:
     """Angular acceleration."""
     assert state.size == 1
     assert control.size == 1
@@ -415,7 +468,7 @@ def angle_acc(state: State, control: Control, world: bool = False) -> jax.Array:
 
 
 @jax.jit
-def angle_joint(state: State) -> tuple[jax.Array, jax.Array]:
+def angle_joint(state: RState) -> tuple[jax.Array, jax.Array]:
     """Angles at joints."""
     assert state.size == 1
     s = state
@@ -423,7 +476,7 @@ def angle_joint(state: State) -> tuple[jax.Array, jax.Array]:
 
 
 @jax.jit
-def angle_joint_top(state: State) -> jax.Array:
+def angle_joint_top(state: RState) -> jax.Array:
     """Angles at top joints."""
     assert state.size == 1
     joint_top, _ = angle_joint(state)
@@ -431,7 +484,7 @@ def angle_joint_top(state: State) -> jax.Array:
 
 
 @jax.jit
-def angle_joint_bot(state: State) -> jax.Array:
+def angle_joint_bot(state: RState) -> jax.Array:
     """Agnles at bottom joints."""
     assert state.size == 1
     _, joint_bot = angle_joint(state)
@@ -439,8 +492,151 @@ def angle_joint_bot(state: State) -> jax.Array:
 
 
 ###############
-# viz helpers #
+# conversions #
 ###############
+
+
+def get_rstate(
+    control: Control,
+    rstate0: jax.Array,
+) -> RState:
+    """Get robot state from controls.
+
+    Parameters
+    ----------
+    control :
+        Robot controls.
+    rstate0 :
+        Current robot state.
+        (Not the initial state from the previous iteration.
+        Namely, dissimilar to the initial states in `get_vstate`, below.)
+
+    Returns
+    --
+    """
+    rstate0 = jnp.ravel(rstate0)
+    assert rstate0.size == 12
+    x0, y0, z0, roll0, pitch0, yaw0 = rstate0[:6]
+    x_dot0, y_dot0, z_dot0, roll_dot0, pitch_dot0, yaw_dot0 = rstate0[6:]
+
+    x, x_dot = comp.discrete_1d_euler(x0, x_dot0, control.x)
+    y, y_dot = comp.discrete_1d_euler(y0, y_dot0, control.y)
+    z, z_dot = comp.discrete_1d_euler(z0, z_dot0, control.z)
+    roll, roll_dot = comp.discrete_1d_euler(roll0, roll_dot0, control.roll)
+    pitch, pitch_dot = comp.discrete_1d_euler(pitch0, pitch_dot0, control.pitch)
+    yaw, yaw_dot = comp.discrete_1d_euler(yaw0, yaw_dot0, control.yaw)
+
+    non_dots = [x, y, z, roll, pitch, yaw]
+    dots = [x_dot, y_dot, z_dot, roll_dot, pitch_dot, yaw_dot]
+    state = jnp.transpose(jnp.vstack(non_dots + dots))
+    return RState(state)
+
+
+def get_vstate(
+    acc_ctrl: jax.Array,
+    omega_ctrl: jax.Array,
+    vstate0: jax.Array,
+) -> VState:
+    """Get vestibular state dataclass.
+
+    Parameters
+    ----------
+    acc_ctrl :
+        Control linear accelerations, for vestibular model.
+        (Acutal linear accelerations, before vestibular processing.)
+    omega_ctrl :
+        Control angular velocities, for vestibular model.
+        (Acutal angular velocities, before vestibular processing.)
+    vstate0 :
+        Initial vestibular state.
+
+    Returns
+    -------
+    Vestibular state.
+    """
+    vstate0 = jnp.ravel(vstate0)
+    x_num_acc = const.E0_acc.shape[0]
+    x_num_omega = const.E1_omega.shape[0]
+    assert vstate0.size == 3 * (x_num_acc + x_num_omega)
+
+    acc0 = vstate0[: 3 * x_num_acc]
+    accx0, accy0, accz0 = list(acc0.reshape(-1, x_num_acc))
+    omega0 = vstate0[3 * x_num_acc :]
+    omegax0, omegay0, omegaz0 = list(omega0.reshape(-1, x_num_omega))
+    acc_lti_int = functools.partial(
+        comp.lti_int, const.E0_acc, const.E1_acc, const.C_acc
+    )
+    omega_lti_int = functools.partial(
+        comp.lti_int, const.E0_omega, const.E1_omega, const.C_omega
+    )
+
+    x_accx, y_accx = acc_lti_int(accx0, acc_ctrl[:, 0])
+    x_accy, y_accy = acc_lti_int(accy0, acc_ctrl[:, 1])
+    x_accz, y_accz = acc_lti_int(accz0, acc_ctrl[:, 2])
+
+    x_omegax, y_omegax = omega_lti_int(omegax0, omega_ctrl[:, 0])
+    x_omegay, y_omegay = omega_lti_int(omegay0, omega_ctrl[:, 1])
+    x_omegaz, y_omegaz = omega_lti_int(omegaz0, omega_ctrl[:, 2])
+
+    x_state = jnp.hstack([x_accx, x_accy, x_accz, x_omegax, x_omegay, x_omegaz])
+    y_state = jnp.transpose(
+        jnp.vstack([y_accx, y_accy, y_accz, y_omegax, y_omegay, y_omegaz])
+    )
+    return VState(x_state, y_state)
+
+
+def get_vstate_irl(
+    rstate: RState,
+    control: Control,
+    control0: jax.Array,
+    vstate0: jax.Array,
+) -> VState:
+    """Get vestibular state dataclass, from robot information.
+
+    Parameters
+    ----------
+    rstate :
+        Robot states.
+    control :
+        Robot controls.
+    control0 :
+        Control applied during previous iteration.
+    vstate0 :
+        Vestibular state from previous iteration.
+
+    Returns
+    -------
+    Vestibular state.
+    """
+    assert len(control0.shape) == 1
+    assert control0.size == 6
+
+    def head_acc(rstate: RState, acc: jax.Array) -> jax.Array:
+        assert rstate.size == 1  # one time step
+        assert len(acc.shape) == 1
+        assert acc.size == 3
+        R = rot(rstate)
+        return R.T @ (acc + const.gravity)
+
+    # hack: add initial control to current control, for conventional purposes
+    #  see below convention
+    # also, note that we need to add gravity, because the robot control lacks
+    #  this information
+    lin_accs = [control0[:3].reshape(1, -1), control.control[:, :3]]
+    acc_ctrl = jnp.vstack(lin_accs)
+    acc_ctrl = jax.vmap(head_acc)(rstate, acc_ctrl)
+    omega_ctrl = jax.vmap(angle_vel)(rstate)
+    vstate = get_vstate(acc_ctrl, omega_ctrl, vstate0)
+
+    # convention: technically, vstate0 represents the initial state from the
+    #  previous mpc calculation, and not the initial state for the current run
+    # namely, a control was applied between the two values
+    return vstate.pop0()
+
+
+################
+# viz wrappers #
+################
 
 
 @jax.jit

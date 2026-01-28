@@ -1,6 +1,6 @@
 """Computations, in jax.
 
-Routines for primitive (mostly geometric) computations, in jax.
+Routines for primitive computations, in jax.
 """
 
 import functools
@@ -8,6 +8,11 @@ import jax
 import jax.numpy as jnp
 
 import exp_mpc.stewart_min.const as const
+
+
+############
+# geometry #
+############
 
 
 @jax.jit
@@ -259,3 +264,98 @@ def angle_joint_bot(
 ) -> jax.Array:
     """Bottom joint angles."""
     return angle_joint(x, y, z, phi, theta, psi)[1]
+
+
+###############
+# integration #
+###############
+
+
+@jax.jit
+def discrete_1d_euler(
+    x0: jax.Array,
+    v0: jax.Array,
+    a: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    r"""Discrete 1D Euler integration, with scalar initial data.
+
+    Parameters
+    ----------
+    x0 :
+        Initial position.
+    v0 :
+        Initial velocity.
+    a :
+        Constant accelerations.
+
+    Returns
+    -------
+    Integrated position and velocity.
+    """
+    a = jnp.ravel(a)  # really, an assertion...
+    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * a]))
+    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), const.dt * v[1:]]))
+    return x, v
+
+
+@jax.jit
+def lti_int(
+    E0: jax.Array,
+    E1: jax.Array,
+    C: jax.Array,
+    x0: jax.Array,
+    u: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Fast integration scheme for SISO LTI systems.
+
+    See `vestibular.ipynb` for more detail on the meanings.
+    Namely, `E0` and `E1` implicitly encode the step size discretization, and
+    `u`.
+    Also, this routine is somewhat specialized for single-input single-output
+    for strictly proper LTI systems.
+    Note that $D = 0$ is assumed.
+    (The shapes would have to be modified for the more general case.
+    SISO behavior is asserted.)
+
+    Parameters
+    ----------
+    E0 :
+        State integration matrix.
+    E1 :
+        Control integration matrix.
+    C :
+        Observing matrix.
+    x0 :
+        Initial state
+    u :
+        Control variables.
+
+    Returns
+    -------
+    A pair `(x, y)`, the internal and observed states.
+    Note that `x` contains the initial state.
+    """
+    x0 = jnp.ravel(x0)
+    u = jnp.ravel(u)
+    E1 = jnp.squeeze(E1)
+    C = jnp.squeeze(C)
+
+    assert E0.shape[0] == E0.shape[1]
+    assert len(E1.shape) == 1
+    assert E1.size == E0.shape[1]
+    assert len(C.shape) == 1
+    assert C.size == E0.shape[1]
+    assert x0.size == E0.shape[1]
+    assert u.size > 0
+
+    x = jnp.empty(shape=(u.size + 1, x0.size), dtype=float)
+    x = x.at[0].set(x0)
+
+    def for_body(i: int, x: jax.Array) -> jax.Array:
+        xi = E0 @ x[i] + E1 * u[i]
+        x = x.at[i + 1].set(xi)
+        return x
+
+    x = jax.lax.fori_loop(0, u.size, for_body, x)
+    y = jnp.squeeze(C @ x.T)
+    return x, y

@@ -946,6 +946,127 @@ def plot_human_trajectory(
     return fig
 
 
+def plot_vestibular_trajectory(
+    trajectory: list[utils.TableSol],
+    fig_title: str = "Vestibular Trajectory",
+    fig_kwds: dict = {},
+) -> mpl_fig.Figure:
+    #########
+    # setup #
+    #########
+
+    gridspec_kw = {
+        # "height_ratios": [1.0, 1.0, 1.0, 1.0],
+        # "width_ratios": [1.0, 1.0, 1.0],
+        "wspace": 0.35,
+        "hspace": 0.35,
+    }
+    fig, axes = plt.subplots(
+        nrows=2, ncols=3, gridspec_kw=gridspec_kw, figsize=(16, 8), **fig_kwds
+    )
+    fig.suptitle(fig_title, fontsize=16)
+
+    times = jnp.arange(0, len(trajectory), dtype=float) * const.dt
+
+    ####################
+    # angular velocity #
+    ####################
+
+    # compute
+    @jax.jit
+    def get_omegas(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
+        irl0 = sol.vstate_irl.get0()
+        vstate0_irl = jnp.array([irl0.y_omegax, irl0.y_omegay, irl0.y_omegaz])
+        sim0 = sol.vstate_sim.get0()
+        vstate0_sim = jnp.array([sim0.y_omegax, sim0.y_omegay, sim0.y_omegaz])
+        return vstate0_irl, vstate0_sim
+
+    omegas = jnp.array([get_omegas(sol)[0] for sol in trajectory])
+    omegas_ref = jnp.array([get_omegas(sol)[1] for sol in trajectory])
+
+    # plot
+    simple_plot(
+        axis=axes[0, 0],
+        time=times,
+        data=omegas[:, 0],
+        title="X Angular Velocity",
+        data_label="[rad/s]",
+        min_limit=-const.max_angle_vel,
+        max_limit=const.max_angle_vel,
+        reference=omegas_ref[:, 0],
+    )
+    simple_plot(
+        axis=axes[0, 1],
+        time=times,
+        data=omegas[:, 1],
+        title="Y Angular Velocity",
+        data_label="[rad/s]",
+        min_limit=-const.max_angle_vel,
+        max_limit=const.max_angle_vel,
+        reference=omegas_ref[:, 1],
+    )
+    simple_plot(
+        axis=axes[0, 2],
+        time=times,
+        data=omegas[:, 2],
+        title="Z Angular Velocity",
+        data_label="[rad/s]",
+        min_limit=-const.max_angle_vel,
+        max_limit=const.max_angle_vel,
+        reference=omegas_ref[:, 2],
+    )
+
+    #######################
+    # linear acceleration #
+    #######################
+
+    # compute
+    @jax.jit
+    def get_accs(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
+        irl0 = sol.vstate_irl.get0()
+        vstate0_irl = jnp.array([irl0.y_accx, irl0.y_accy, irl0.y_accz])
+        sim0 = sol.vstate_sim.get0()
+        vstate0_sim = jnp.array([sim0.y_accx, sim0.y_accy, sim0.y_accz])
+        return vstate0_irl, vstate0_sim
+
+    accs = jnp.array([get_accs(sol)[0] for sol in trajectory])
+    accs_ref = jnp.array([get_accs(sol)[1] for sol in trajectory])
+
+    # plot
+    simple_plot(
+        axis=axes[1, 0],
+        time=times,
+        data=accs[:, 0],
+        title="X Linear Acceleration",
+        data_label="[m/s^2]",
+        min_limit=-const.max_cart_acc,
+        max_limit=const.max_cart_acc,
+        reference=accs_ref[:, 0],
+    )
+    simple_plot(
+        axis=axes[1, 1],
+        time=times,
+        data=accs[:, 1],
+        title="Y Linear Acceleration",
+        data_label="[m/s^2]",
+        min_limit=-const.max_cart_acc,
+        max_limit=const.max_cart_acc,
+        reference=accs_ref[:, 1],
+    )
+    simple_plot(
+        axis=axes[1, 2],
+        time=times,
+        data=accs[:, 2],
+        title="Z Linear Acceleration",
+        data_label="[m/s^2]",
+        min_limit=-const.max_cart_acc,
+        max_limit=const.max_cart_acc,
+        reference=accs_ref[:, 2],
+    )
+
+    return fig
+
+
 def plot_cartesian_table_trajectory(
     trajectory: list[utils.TableSol],
     fig_title: str = "Table Trajectory",
