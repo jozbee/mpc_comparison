@@ -355,7 +355,7 @@ def _omega_cost(
     diff = omega_irl - omega_sim
     w = weights.scale_omega(diff.shape[0])
     diff *= w
-    err = jax.vmap(jnp.dot)(diff, diff)
+    err = 0.5 * jax.vmap(jnp.dot)(diff, diff)
     cost_arr = jax.vmap(_hyper)(err)
     return jnp.sum(jnp.mean(cost_arr, axis=0))
 
@@ -642,6 +642,7 @@ def get_scipy_cost(
     return cost_wrapper, cost_jac_wrapper
 
 
+@jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class TrainState:
     """State (aux info) for training routine."""
