@@ -1394,7 +1394,7 @@ def plot_cost_trajectory(
             opt.head_xyz_acc_cost_arr(
                 weights=weights,
                 acc_ref=acc_ref,
-                state=sol.x,
+                rstate=sol.x,
                 control=sol.u,
             )
         )
@@ -1437,7 +1437,7 @@ def plot_cost_trajectory(
             opt.omega_cost_arr(
                 weights=weights,
                 omega_ref=omega_ref,
-                state=sol.x,
+                rstate=sol.x,
                 control=sol.u,
             )
         )
@@ -1764,7 +1764,7 @@ def animate_cost_trajectory(
         return opt.head_xyz_acc_cost_arr(
             weights=weights,
             acc_ref=acc_ref,
-            state=sol.x,
+            rstate=sol.x,
             control=sol.u,
         )
 
@@ -1807,7 +1807,7 @@ def animate_cost_trajectory(
         return opt.omega_cost_arr(
             weights=weights,
             omega_ref=omega_ref,
-            state=sol.x,
+            rstate=sol.x,
             control=sol.u,
         )
 
