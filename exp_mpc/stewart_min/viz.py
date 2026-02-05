@@ -1387,23 +1387,18 @@ def plot_cost_trajectory(
     ############
 
     @jax.jit
-    def head_fun(
-        weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
-    ) -> jax.Array:
+    def head_fun(weights: opt.Weights, sol: utils.TableSol) -> jax.Array:
         return 0.5 * jnp.mean(
             opt.head_xyz_acc_cost_arr(
                 weights=weights,
-                acc_ref=acc_ref,
-                rstate=sol.x,
+                vstate_irl=sol.vstate_irl.pop0(),
+                vstate_sim=sol.vstate_sim.pop0(),
                 control=sol.u,
             )
         )
 
     def weight2head_acc(weights: opt.Weights) -> jax.Array:
-        vals = [
-            head_fun(weights, sol, ref)
-            for sol, ref in zip(trajectory, acc_refs)
-        ]
+        vals = [head_fun(weights, sol) for sol in trajectory]
         return jnp.array(vals)
 
     id_head_acc = weight2head_acc(id_weights)
@@ -1430,14 +1425,12 @@ def plot_cost_trajectory(
     ##############
 
     @jax.jit
-    def omega_fun(
-        weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
-    ) -> jax.Array:
+    def omega_fun(weights: opt.Weights, sol: utils.TableSol) -> jax.Array:
         return 0.5 * jnp.mean(
             opt.omega_cost_arr(
                 weights=weights,
-                omega_ref=omega_ref,
-                rstate=sol.x,
+                vstate_irl=sol.vstate_irl.pop0(),
+                vstate_sim=sol.vstate_sim.pop0(),
                 control=sol.u,
             )
         )
@@ -1758,21 +1751,16 @@ def animate_cost_trajectory(
     ############
 
     @jax.jit
-    def head_fun(
-        weights: opt.Weights, sol: utils.TableSol, acc_ref: jax.Array
-    ) -> jax.Array:
+    def head_fun(weights: opt.Weights, sol: utils.TableSol) -> jax.Array:
         return opt.head_xyz_acc_cost_arr(
             weights=weights,
-            acc_ref=acc_ref,
-            rstate=sol.x,
+            vstate_irl=sol.vstate_irl.pop0(),
+            vstate_sim=sol.vstate_sim.pop0(),
             control=sol.u,
         )
 
     def weight2head_acc(weights: opt.Weights) -> jax.Array:
-        vals = [
-            head_fun(weights, sol, ref)
-            for sol, ref in zip(trajectory, acc_refs)
-        ]
+        vals = [head_fun(weights, sol) for sol in trajectory]
         return jnp.stack(vals)
 
     id_head_acc = weight2head_acc(id_weights)
@@ -1801,21 +1789,16 @@ def animate_cost_trajectory(
     ##############
 
     @jax.jit
-    def omega_fun(
-        weights: opt.Weights, sol: utils.TableSol, omega_ref: jax.Array
-    ) -> jax.Array:
+    def omega_fun(weights: opt.Weights, sol: utils.TableSol) -> jax.Array:
         return opt.omega_cost_arr(
             weights=weights,
-            omega_ref=omega_ref,
-            rstate=sol.x,
+            vstate_irl=sol.vstate_irl.pop0(),
+            vstate_sim=sol.vstate_sim.pop0(),
             control=sol.u,
         )
 
     def weight2omega(weights: opt.Weights) -> jax.Array:
-        vals = [
-            omega_fun(weights, sol, ref)
-            for sol, ref in zip(trajectory, omega_refs)
-        ]
+        vals = [omega_fun(weights, sol) for sol in trajectory]
         return jnp.stack(vals)
 
     id_omega = weight2omega(id_weights)

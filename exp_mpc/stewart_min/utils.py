@@ -36,7 +36,7 @@ class VState:
     Usually, these arrays are 2D, with the rows representing time.
     """
 
-    x_state: jax.Array
+    x_state: tp.Optional[jax.Array]
     y_state: jax.Array
 
     def __post_init__(self):
@@ -47,40 +47,61 @@ class VState:
         assert x_num == 15  # subject to change?
         y_num = 3 + 3  # 3 linear accelerations and 3 angular velocities
 
-        if len(self.x_state.shape) == 2:
-            assert len(self.y_state.shape) == 2
-            assert self.x_state.shape[0] == self.y_state.shape[0]
-            assert self.x_state.shape[1] == x_num
-            assert self.y_state.shape[1] == y_num
-        elif len(self.x_state.shape) == 1:
-            assert len(self.y_state.shape) == 1
-            assert self.x_state.size == x_num
-            assert self.y_state.size == y_num
+        # hack, because some-times we don't really want the x_state.
+        if self.x_state is None:
+            if len(self.y_state.shape) == 2:
+                assert self.y_state.shape[1] == y_num, f"{self.y_state.shape}"
+            elif len(self.y_state.shape) == 1:
+                assert self.y_state.size == y_num
+            else:
+                raise RuntimeError(f"bad y_state shape: {self.y_state.shape}")
         else:
-            raise RuntimeError(f"bad x_state shape: {self.x_state.shape}")
+            if len(self.x_state.shape) == 2:
+                assert len(self.y_state.shape) == 2
+                assert self.x_state.shape[0] == self.y_state.shape[0]
+                assert self.x_state.shape[1] == x_num
+                assert self.y_state.shape[1] == y_num
+            elif len(self.x_state.shape) == 1:
+                assert len(self.y_state.shape) == 1
+                assert self.x_state.size == x_num
+                assert self.y_state.size == y_num
+            else:
+                raise RuntimeError(f"bad x_state shape: {self.x_state.shape}")
 
     @property
     def x_accx(self) -> jax.Array:
+        if self.x_state is None:
+            raise RuntimeError("x_state is None")
         return self.x_state[..., 0 : 0 + 2]
 
     @property
     def x_accy(self) -> jax.Array:
+        if self.x_state is None:
+            raise RuntimeError("x_state is None")
         return self.x_state[..., 2 : 2 + 2]
 
     @property
     def x_accz(self) -> jax.Array:
+        if self.x_state is None:
+            raise RuntimeError("x_state is None")
         return self.x_state[..., 4 : 4 + 2]
 
     @property
     def x_omegax(self) -> jax.Array:
+        if self.x_state is None:
+            raise RuntimeError("x_state is None")
         return self.x_state[..., 6 : 6 + 3]
 
     @property
     def x_omegay(self) -> jax.Array:
+        if self.x_state is None:
+            raise RuntimeError("x_state is None")
         return self.x_state[..., 9 : 9 + 3]
 
     @property
     def x_omegaz(self) -> jax.Array:
+        if self.x_state is None:
+            raise RuntimeError("x_state is None")
         return self.x_state[..., 12 : 12 + 3]
 
     @property
@@ -113,16 +134,21 @@ class VState:
         This is useful when the initial state should be ignored in a
         computation.
         """
-        assert len(self.x_state.shape) == 2
         assert len(self.y_state.shape) == 2
-        assert self.x_state.shape[0] >= 2
-        assert self.y_state.shape[0] == self.x_state.shape[0]
-        return VState(self.x_state[1:], self.y_state[1:])
+        if self.x_state is not None:
+            assert len(self.x_state.shape) == 2
+            assert self.x_state.shape[0] >= 2
+            assert self.y_state.shape[0] == self.x_state.shape[0]
+            return VState(self.x_state[1:], self.y_state[1:])
+        else:
+            assert self.y_state.shape[0] >= 2
+            return VState(None, self.y_state[1:])
 
     def get0(self) -> "VState":
         """Usually create a new State with *only* the initial state."""
         if len(self.y_state.shape) == 2:
-            return VState(self.x_state[0], self.y_state[0])
+            x_state = None if self.x_state is None else self.x_state[0]
+            return VState(x_state, self.y_state[0])
         else:
             return self
 
@@ -632,6 +658,65 @@ def get_vstate_irl(
     #  previous mpc calculation, and not the initial state for the current run
     # namely, a control was applied between the two values
     return vstate.pop0()
+
+
+def get_states_with_eigen(
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    rstate0: jax.Array,
+    vstate0_irl: jax.Array,
+    vstate0_sim: jax.Array,
+    control0: jax.Array,
+    control: Control,
+) -> tuple[RState, VState, VState]:
+    # get irl controls
+    control_with0 = Control.from_flat(jnp.vstack([control0, control.control]))
+    rstate = get_rstate(control, jnp.array(rstate0))
+    acc_irl = jax.vmap(
+        lambda r, u: rot(r).T @ (jnp.array([u.x, u.y, u.z]) + const.gravity)
+    )(rstate, control_with0)
+    omega_irl = jax.vmap(angle_vel)(rstate)
+
+    # partition
+    a_num = 3 * const.E0_acc.shape[0]
+    v0_irl_a = vstate0_irl[:a_num]
+    v0_irl_w = vstate0_irl[a_num:]
+    v0_sim_a = vstate0_sim[:a_num]
+    v0_sim_w = vstate0_sim[a_num:]
+
+    # initial irl update (for closed feedback)
+    v0_irl_a = comp.lti_int_single(
+        const.E0_acc, const.E1_acc, v0_irl_a, acc_irl[0]
+    )
+    v0_irl_w = comp.lti_int_single(
+        const.E0_omega, const.E1_omega, v0_irl_w, omega_irl[0]
+    )
+    acc_irl = acc_irl[1:]
+    omega_irl = omega_irl[1:]
+
+    # setup general states and controls
+    v0_a = jnp.concatenate([v0_irl_a, v0_sim_a])
+    v0_w = jnp.concatenate([v0_irl_w, v0_sim_w])
+    u_a = jnp.hstack([acc_irl, acc_ref])
+    u_w = jnp.hstack([omega_irl, omega_ref])
+
+    # integrate
+    y_a = comp.eigen_int(
+        const.D_acc, const.EP1_acc, const.CP_acc, const.P_acc_inv, v0_a, u_a
+    )
+    y_w = comp.eigen_int(
+        const.D_omega,
+        const.EP1_omega,
+        const.CP_omega,
+        const.P_omega_inv,
+        v0_w,
+        u_w,
+    )
+
+    # res
+    y_irl = jnp.vstack([y_a[:3], y_w[:3]])
+    y_sim = jnp.vstack([y_a[3:], y_w[3:]])
+    return rstate, VState(None, y_irl.T), VState(None, y_sim.T)
 
 
 ################

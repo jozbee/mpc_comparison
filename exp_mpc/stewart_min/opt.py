@@ -65,29 +65,29 @@ class Weights:
     yaw: jax.Array = _init_field(jnp.ones(1))
     control: jax.Array = _init_field(jnp.ones(6))
 
-    def __post_init__(self) -> None:
-        assert self.acc.ndim == 1
-        assert self.acc.shape[0] == 3
-        assert self.omega.ndim == 1
-        assert self.omega.shape[0] == 3
-        assert self.leg.ndim == 1
-        assert self.leg.shape[0] == 6
-        assert self.leg_vel.ndim == 1
-        assert self.leg_vel.shape[0] == 6
-        assert self.joint_angle.ndim == 1
-        assert self.joint_angle.shape[0] == 12
-        assert self.yaw.ndim == 1
-        assert self.yaw.shape[0] == 1
-        assert self.control.ndim == 1
-        assert self.control.shape[0] == 6
+    # def __post_init__(self) -> None:
+    #     assert self.acc.ndim == 1
+    #     assert self.acc.shape[0] == 3
+    #     assert self.omega.ndim == 1
+    #     assert self.omega.shape[0] == 3
+    #     assert self.leg.ndim == 1
+    #     assert self.leg.shape[0] == 6
+    #     assert self.leg_vel.ndim == 1
+    #     assert self.leg_vel.shape[0] == 6
+    #     assert self.joint_angle.ndim == 1
+    #     assert self.joint_angle.shape[0] == 12
+    #     assert self.yaw.ndim == 1
+    #     assert self.yaw.shape[0] == 1
+    #     assert self.control.ndim == 1
+    #     assert self.control.shape[0] == 6
 
-        assert jnp.issubdtype(self.acc.dtype, jnp.floating)
-        assert jnp.issubdtype(self.omega.dtype, jnp.floating)
-        assert jnp.issubdtype(self.leg.dtype, jnp.floating)
-        assert jnp.issubdtype(self.leg_vel.dtype, jnp.floating)
-        assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
-        assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
-        assert jnp.issubdtype(self.control.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.acc.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.omega.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.leg.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.leg_vel.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
+    #     assert jnp.issubdtype(self.control.dtype, jnp.floating)
 
     def _time_scale(self, n: int, name: str) -> jax.Array:
         """Get time scale weights for flat array.
@@ -227,172 +227,74 @@ def _hyper(x: jax.Array) -> jax.Array:
 ########
 
 
-@jax.vmap
-def _v_acc(v, u):
-    """Update vestibular linear accelerations, discretely."""
-    return const.E0_acc @ v + np.squeeze(const.E1_acc) * u
-
-
-def _head_xyz_acc_cost_single(
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    ref: jax.Array,
-    rstate: utils.RState,
-    control: utils.Control,
-    w: jax.Array,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Cost for a single input pairing."""
-    # robot
-    R = utils.rot(rstate)
-    acc = jnp.array([control.x, control.y, control.z])
-    world = acc + const.gravity
-    head = R.T @ world
-
-    # vestibular
-    vstate1_irl = _v_acc(vstate0_irl.reshape(3, -1), head)
-    vstate1_sim = _v_acc(vstate0_sim.reshape(3, -1), ref)
-
-    # cost
-    diff = jnp.squeeze(const.C_acc @ (vstate1_irl - vstate1_sim).T)
-    diff *= w
-    delta_xy = diff.at[:2].get()
-    delta_z = diff.at[2].get()
-    cost = _hyper(delta_xy @ delta_xy) + _hyper(delta_z * delta_z)
-
-    return jnp.ravel(vstate1_irl), jnp.ravel(vstate1_sim), cost
-
-
-def _head_xyz_acc_cost_scan(
-    carry: tuple[jax.Array, jax.Array],
-    args: tuple[jax.Array, utils.RState, utils.Control, jax.Array],
-) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
-    vstate1_irl, vstate1_sim, cost = _head_xyz_acc_cost_single(
-        carry[0], carry[1], args[0], args[1], args[2], args[3]
-    )
-    return (vstate1_irl, vstate1_sim), cost
-
-
 def head_xyz_acc_cost_arr(
     weights: Weights,
-    acc_ref: jax.Array,
-    rstate: utils.RState,
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    control0: jax.Array,
+    vstate_irl: utils.VState,
+    vstate_sim: utils.VState,
     control: utils.Control,
 ) -> jax.Array:
     """Head acceleration cost terms."""
-    # assert
-    assert acc_ref.ndim == 2
-    assert acc_ref.shape[1] == 3
-    assert acc_ref.shape[0] == control.x.size
-    assert control0.shape == (3,)
-
-    # setup
     w = weights.scale_acc(control.size)
-    assert w.shape == acc_ref.shape
+    a_irl = jnp.array([vstate_irl.y_accx, vstate_irl.y_accy, vstate_irl.y_accz])
+    a_sim = jnp.array([vstate_sim.y_accx, vstate_sim.y_accy, vstate_sim.y_accz])
+    diff = (a_irl - a_sim) * w.T
+    diff_xy = diff[:2]
+    diff_z = diff[2]
 
-    # update vstate0_irl (for closed-loop feedback)
-    R = utils.rot(rstate.get0())
-    u0 = R.T @ (control0 + const.gravity)
-    vstate0_irl = jnp.ravel(_v_acc(vstate0_irl.reshape(3, -1), u0))
+    def hyper(arr0, arr1):
+        arr0 = jnp.atleast_1d(arr0)
+        arr1 = jnp.atleast_1d(arr1)
+        return _hyper(arr0 @ arr0) + _hyper(arr1 @ arr1)
 
-    # skip initial conditions in state
-    _, cost_arr = jax.lax.scan(
-        f=_head_xyz_acc_cost_scan,
-        init=(vstate0_irl, vstate0_sim),
-        xs=(acc_ref, rstate.pop0(), control, w),
-    )
-    return cost_arr
+    return jax.vmap(hyper)(diff_xy.T, diff_z)
 
 
 def _head_xyz_acc_cost(
     weights: Weights,
-    acc_ref: jax.Array,
-    rstate: utils.RState,
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    control0: jax.Array,
+    vstate_irl: utils.VState,
+    vstate_sim: utils.VState,
     control: utils.Control,
 ) -> jax.Array:
     """Head acceleration cost."""
-    cost_arr = head_xyz_acc_cost_arr(
-        weights, acc_ref, rstate, vstate0_irl, vstate0_sim, control0, control
-    )
-    return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
-
-
-@jax.vmap
-def _v_omega(v, u):
-    """Update vestibular angular velocity, discretely."""
-    return const.E0_omega @ v + np.squeeze(const.E1_omega) * u
-
-
-def _omega_cost_single(
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    ref: jax.Array,
-    rstate: utils.RState,
-    w: jax.Array,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Cost for a single input pairing."""
-    u = utils.angle_vel(rstate)
-    vstate1_irl = _v_omega(vstate0_irl.reshape(3, -1), u)
-    vstate1_sim = _v_omega(vstate0_sim.reshape(3, -1), ref)
-    diff = jnp.squeeze(const.C_omega @ (vstate1_irl - vstate1_sim).T)
-    diff *= w
-    cost = _hyper(diff @ diff)
-    return jnp.ravel(vstate1_irl), jnp.ravel(vstate1_sim), cost
-
-
-def _omega_cost_scan(
-    carry: tuple[jax.Array, jax.Array],
-    args: tuple[jax.Array, utils.RState, jax.Array],
-) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
-    vstate1_irl, vstate1_sim, cost = _omega_cost_single(
-        carry[0], carry[1], args[0], args[1], args[2]
-    )
-    return (vstate1_irl, vstate1_sim), cost
+    cost_arr = head_xyz_acc_cost_arr(weights, vstate_irl, vstate_sim, control)
+    return 0.5 * jnp.mean(cost_arr)
 
 
 def omega_cost_arr(
     weights: Weights,
-    omega_ref: jax.Array,
-    rstate: utils.RState,
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
+    vstate_irl: utils.VState,
+    vstate_sim: utils.VState,
+    control: utils.Control,
 ) -> jax.Array:
-    """Angular velocity cost."""
-    assert omega_ref.ndim == 2
-    assert omega_ref.shape[1] == 3
-    assert omega_ref.shape[0] == rstate.roll.size - 1
-
-    # update vstate0_irl (for closed-loop feedback)
-    w = weights.scale_omega(rstate.roll.size - 1)
-    u0 = utils.angle_vel(rstate.get0())
-    vstate0_irl = jnp.ravel(_v_omega(vstate0_irl.reshape(3, -1), u0))
-
-    # skip initial conditions in state
-    _, cost_arr = jax.lax.scan(
-        f=_omega_cost_scan,
-        init=(vstate0_irl, vstate0_sim),
-        xs=(omega_ref, rstate.pop0(), w),
+    """Angular velocity cost terms."""
+    w = weights.scale_acc(control.size)
+    w_irl = jnp.array(
+        [vstate_irl.y_omegax, vstate_irl.y_omegay, vstate_irl.y_omegaz]
     )
-    return cost_arr
+    w_sim = jnp.array(
+        [vstate_sim.y_omegax, vstate_sim.y_omegay, vstate_sim.y_omegaz]
+    )
+    diff = (w_irl - w_sim) * w.T
+    diff_xy = diff[:2]
+    diff_z = diff[2]
+
+    def hyper(arr0, arr1):
+        arr0 = jnp.atleast_1d(arr0)
+        arr1 = jnp.atleast_1d(arr1)
+        return _hyper(arr0 @ arr0) + _hyper(arr1 @ arr1)
+
+    return jax.vmap(hyper)(diff_xy.T, diff_z)
 
 
 def _omega_cost(
     weights: Weights,
-    omega_ref: jax.Array,
-    rstate: utils.RState,
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
+    vstate_irl: utils.VState,
+    vstate_sim: utils.VState,
+    control: utils.Control,
 ) -> jax.Array:
     """Angular velocity cost."""
-    cost_arr = omega_cost_arr(
-        weights, omega_ref, rstate, vstate0_irl, vstate0_sim
-    )
-    return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
+    cost_arr = omega_cost_arr(weights, vstate_irl, vstate_sim, control)
+    return 0.5 * jnp.mean(cost_arr)
 
 
 def leg_boundary_cost_arr(
@@ -524,33 +426,16 @@ def _cost(
     vstate0_sim: jax.Array,
     control0: jax.Array,
     control: utils.Control,
-    rstate: tp.Optional[utils.RState] = None,  # should be None in general
 ) -> jax.Array:
-    # precompute
-    if rstate is None:
-        rstate = utils.get_rstate(control, rstate0)
-
-    # partition vstates into helpful components
-    vstate_acc_num = 3 * const.E0_acc.shape[0]
-    vstate0_irl_acc = vstate0_irl[:vstate_acc_num]
-    vstate0_irl_omega = vstate0_irl[vstate_acc_num:]
-    vstate0_sim_acc = vstate0_sim[:vstate_acc_num]
-    vstate0_sim_omega = vstate0_sim[vstate_acc_num:]
+    # precompute states
+    rstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
+        acc_ref, omega_ref, rstate0, vstate0_irl, vstate0_sim, control0, control
+    )
 
     # cost
     cost = jnp.array(0.0)
-    cost += _head_xyz_acc_cost(
-        weights,
-        acc_ref,
-        rstate,
-        vstate0_irl_acc,
-        vstate0_sim_acc,
-        control0[:3],
-        control,
-    )
-    cost += _omega_cost(
-        weights, omega_ref, rstate, vstate0_irl_omega, vstate0_sim_omega
-    )
+    cost += _head_xyz_acc_cost(weights, vstate_irl, vstate_sim, control)
+    cost += _omega_cost(weights, vstate_irl, vstate_sim, control)
     cost += _leg_boundary_cost(
         weights, cost_terms.leg_cost, cost_terms.leg_vel_cost, rstate, control
     )

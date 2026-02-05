@@ -6,6 +6,7 @@ Routines for primitive computations, in jax.
 import functools
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import exp_mpc.stewart_min.const as const
 
@@ -359,3 +360,111 @@ def lti_int(
     x = jax.lax.fori_loop(0, u.size, for_body, x)
     y = jnp.squeeze(C @ x.T)
     return x, y
+
+
+def lti_int_single(
+    E0: jax.Array | np.ndarray,
+    E1: jax.Array | np.ndarray,
+    x0: jax.Array,
+    u: jax.Array,
+) -> jax.Array:
+    """A single update of `lti_int`, but slightly more general.
+
+    Parameters
+    ----------
+    E0 :
+        State integration matrix
+    E1 :
+        Control integration matrix
+    x0 :
+        Initial state
+    u :
+        Control on x0.
+
+    Returns
+    -------
+    Single updated state
+    """
+    x0 = x0.reshape(-1, E0.shape[0])
+    x1 = E0 @ x0.T + E1 @ u.reshape(1, -1)
+    return jnp.ravel(x1.T)
+
+
+def eigen_int(
+    D: jax.Array | np.ndarray,
+    EP1: jax.Array | np.ndarray,
+    CP: jax.Array | np.ndarray,
+    P_inv: jax.Array | np.ndarray,
+    x0: jax.Array,
+    u: jax.Array,
+) -> jax.Array:
+    """LTI integration, but using eigen-integration matrices.
+
+    Note that we do not return the internal states, for efficiency.
+    The observed states are all that is desired, for computation.
+    If we wanted the internal states, we would also need to have access to the
+    matrix `P` (or compute it from `P_inv`).
+
+    Note that the data layout is pretty specific.
+    See the beginning assertions.
+    E.g., x0 is flat, but has a 2d structure that conforms (in some sense) with
+    the 2d shape of u.
+
+    Parameters
+    ----------
+    D :
+        Eigven values for E0.
+    EP1 :
+        P_inv @ E1
+    CP :
+        C @ P
+    x0 :
+        Initial (internal) state.
+    u :
+        Controls.
+
+    Returns
+    -------
+    Observed variables: y.
+    """
+    assert len(D.shape) == 1
+    assert len(EP1.shape) == 2
+    assert EP1.shape[1] == 1
+    assert D.size == EP1.shape[0]
+    assert P_inv.shape[0] == P_inv.shape[1] and P_inv.shape[0] == EP1.shape[0]
+    assert len(x0.shape) == 1
+    assert x0.size % P_inv.shape[0] == 0
+    assert len(u.shape) == 2
+    assert u.shape[1] == x0.size // P_inv.shape[0]
+    assert u.size > 0
+
+    # transform into the eigen vector coordinates
+    x0 = jnp.transpose(P_inv @ x0.reshape(-1, D.size).T)
+
+    # control wizardry with shapes...
+    # ut is a 3-tensor, with indices
+    #  (references index, state component index, time index)
+    ut = jnp.transpose(EP1 @ u.T.reshape(1, -1))  # (time, ref/state)
+    ut = ut.reshape(x0.shape[0], -1, x0.shape[1])  # (ref, time, state)
+    ut = jnp.transpose(ut, axes=(0, 2, 1))  # (ref, state, time)
+
+    # desired final state shape: (ref, time, state)
+    # iterations:
+    #  initial conditions, components, time
+
+    def eigen_update(d, x0, u):
+        x1 = d * x0 + u
+        return x1, x1
+
+    def scan_eigen_update(x0, d, u):
+        part_eigen_update = functools.partial(eigen_update, d)
+        return jax.lax.scan(part_eigen_update, x0, u)[1]
+
+    d = jnp.tile(D, reps=(ut.shape[0], 1))
+    x = jax.vmap(jax.vmap(scan_eigen_update))(x0, d, ut)
+    assert isinstance(x, jax.Array)
+    x = jnp.transpose(x, axes=(0, 2, 1))  # (ref, time, state)
+
+    # desired final output shape (SISO): (ref, time)
+    y = jax.vmap(lambda x: jnp.squeeze(CP @ x.T))(x)
+    return y
