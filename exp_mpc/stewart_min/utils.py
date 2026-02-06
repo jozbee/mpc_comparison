@@ -362,20 +362,15 @@ class TableSol:
 ############
 
 
-@jax.jit
-def rot(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def rot(state: RState, use_xy: bool = True) -> jax.Array:
     """Get the rotation matrix."""
     assert state.size == 1
-    return comp.rot(state.roll, state.pitch, state.yaw)
+    return comp.rot(state.roll, state.pitch, state.yaw, use_xy)
 
 
-@jax.jit
-def rot_T(state: RState) -> jax.Array:
-    return jnp.transpose(rot(state))
-
-
-@jax.jit
-def rot_dot(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def rot_dot(state: RState, use_xy: bool = True) -> jax.Array:
     """Get the rotation matrix derivative."""
     assert state.size == 1
     return comp.rot_dot(
@@ -385,11 +380,12 @@ def rot_dot(state: RState) -> jax.Array:
         state.roll_dot,
         state.pitch_dot,
         state.yaw_dot,
+        use_xy,
     )
 
 
-@jax.jit
-def rot_and_dot(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def rot_and_dot(state: RState, use_xy: bool = True) -> jax.Array:
     """Get the rotation matrix derivative."""
     assert state.size == 1
     return comp.rot_and_dot(
@@ -399,11 +395,12 @@ def rot_and_dot(state: RState) -> jax.Array:
         state.roll_dot,
         state.pitch_dot,
         state.yaw_dot,
+        use_xy,
     )
 
 
-@jax.jit
-def rot_dot2(state: RState, control: Control) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def rot_dot2(state: RState, control: Control, use_xy: bool = True) -> jax.Array:
     """Get the second derivative of the rotation matrix."""
     assert state.size == 1
     assert control.size == 1
@@ -417,45 +414,50 @@ def rot_dot2(state: RState, control: Control) -> jax.Array:
         control.roll,  # acc
         control.pitch,  # acc
         control.yaw,  # acc
+        use_xy,
     )
 
 
-@jax.jit
-def leg_pos(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_rotary"])
+def leg_pos(state: RState, use_rotary: bool = True) -> jax.Array:
     """All leg lengths."""
     assert state.size == 1
-    R = rot(state)
+    R = rot(state, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
     return comp.leg_pos(R, t)
 
 
-@jax.jit
-def leg_vel(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_rotary"])
+def leg_vel(state: RState, use_rotary: bool = True) -> jax.Array:
     """All leg velocities."""
     assert state.size == 1
-    R, R_dot = rot_and_dot(state)
+    R, R_dot = rot_and_dot(state, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
     t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
     return comp.leg_vel(R, t, R_dot, t_dot)
 
 
-@jax.jit
-def leg_pos_vel(state: RState) -> tuple[jax.Array, jax.Array]:
+@functools.partial(jax.jit, static_argnames=["use_rotary"])
+def leg_pos_vel(
+    state: RState, use_rotary: bool = True
+) -> tuple[jax.Array, jax.Array]:
     """All leg lengths and velocities."""
     assert state.size == 1
-    R, R_dot = rot_and_dot(state)
+    R, R_dot = rot_and_dot(state, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
     t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
     return comp.leg_pos_vel(R, t, R_dot, t_dot)
 
 
-@jax.jit
-def leg_acc(state: RState, control: Control) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_rotary"])
+def leg_acc(
+    state: RState, control: Control, use_rotary: bool = True
+) -> jax.Array:
     """All leg accelerations."""
     assert state.size == 1
     assert control.size == 1
-    R, R_dot = rot_and_dot(state)
-    R_dot2 = rot_dot2(state, control)
+    R, R_dot = rot_and_dot(state, use_rotary)
+    R_dot2 = rot_dot2(state, control, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
     t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
     t_dot2 = jnp.array([control.x, control.y, control.z])
@@ -493,27 +495,29 @@ def angle_acc(
     return comp.angle_acc(*inputs)
 
 
-@jax.jit
-def angle_joint(state: RState) -> tuple[jax.Array, jax.Array]:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def angle_joint(
+    state: RState, use_xy: bool = True
+) -> tuple[jax.Array, jax.Array]:
     """Angles at joints."""
     assert state.size == 1
     s = state
-    return comp.angle_joint(s.x, s.y, s.z, s.roll, s.pitch, s.yaw)
+    return comp.angle_joint(s.x, s.y, s.z, s.roll, s.pitch, s.yaw, use_xy)
 
 
-@jax.jit
-def angle_joint_top(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def angle_joint_top(state: RState, use_xy: bool = True) -> jax.Array:
     """Angles at top joints."""
     assert state.size == 1
-    joint_top, _ = angle_joint(state)
+    joint_top, _ = angle_joint(state, use_xy)
     return joint_top
 
 
-@jax.jit
-def angle_joint_bot(state: RState) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def angle_joint_bot(state: RState, use_xy: bool = True) -> jax.Array:
     """Agnles at bottom joints."""
     assert state.size == 1
-    _, joint_bot = angle_joint(state)
+    _, joint_bot = angle_joint(state, use_xy)
     return joint_bot
 
 

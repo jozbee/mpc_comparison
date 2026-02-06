@@ -16,8 +16,8 @@ import exp_mpc.stewart_min.const as const
 ############
 
 
-@jax.jit
-def rot(phi: float, theta: float, psi: float) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["use_xy"])
+def rot(phi: float, theta: float, psi: float, use_xy: bool = True) -> jax.Array:
     """Get the rotation matrix.
     
     (phi, theta, psi) = (roll, pitch, yaw)
@@ -36,17 +36,20 @@ def rot(phi: float, theta: float, psi: float) -> jax.Array:
             [-jnp.sin(theta), 0.0, jnp.cos(theta)],
         ]
     )  # pitch
-    R_z = jnp.array(
-        [
-            [jnp.cos(psi), -jnp.sin(psi), 0.0],
-            [jnp.sin(psi), jnp.cos(psi), 0.0],
-            [0.0, 0.0, 1.0],
-        ]
-    )  # yaw
-    return R_z @ R_y @ R_x
+    if not use_xy:
+        R_z = jnp.array(
+            [
+                [jnp.cos(psi), -jnp.sin(psi), 0.0],
+                [jnp.sin(psi), jnp.cos(psi), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )  # yaw
+        return R_z @ R_y @ R_x
+    else:
+        return R_y @ R_x
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["use_xy"])
 def rot_dot(
     phi: float,
     theta: float,
@@ -54,11 +57,15 @@ def rot_dot(
     phi_dot: float,
     theta_dot: float,
     psi_dot: float,
+    use_xy: bool = True,
 ) -> jax.Array:
-    return jax.jvp(rot, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))[1]
+    rot_part = functools.partial(rot, use_xy=use_xy)
+    return jax.jvp(rot_part, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))[
+        1
+    ]
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["use_xy"])
 def rot_and_dot(
     phi: float,
     theta: float,
@@ -66,11 +73,13 @@ def rot_and_dot(
     phi_dot: float,
     theta_dot: float,
     psi_dot: float,
+    use_xy: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
-    return jax.jvp(rot, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))
+    rot_part = functools.partial(rot, use_xy=use_xy)
+    return jax.jvp(rot_part, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["use_xy"])
 def rot_dot2(
     phi: float,
     theta: float,
@@ -81,7 +90,9 @@ def rot_dot2(
     phi_dot2: float,
     theta_dot2: float,
     psi_dot2: float,
+    use_xy: bool = True,
 ) -> jax.Array:
+    rot_part = functools.partial(rot, use_xy=use_xy)
     primals = (phi, theta, psi)
     tangents = (phi_dot, theta_dot, psi_dot)
     tangents2 = (phi_dot2, theta_dot2, psi_dot2)
@@ -91,12 +102,12 @@ def rot_dot2(
     # (we have also numerically checked these implementations with sympy)
 
     def _get_R_dot_0(phi_: float, theta_: float, psi_: float) -> jax.Array:
-        return jax.jvp(rot, (phi_, theta_, psi_), tangents)[1]
+        return jax.jvp(rot_part, (phi_, theta_, psi_), tangents)[1]
 
     def _get_R_dot_1(
         phi_dot_: float, theta_dot_: float, psi_dot_: float
     ) -> jax.Array:
-        return jax.jvp(rot, primals, (phi_dot_, theta_dot_, psi_dot_))[1]
+        return jax.jvp(rot_part, primals, (phi_dot_, theta_dot_, psi_dot_))[1]
 
     res0 = jax.jvp(_get_R_dot_0, primals, tangents)
     res1 = jax.jvp(_get_R_dot_1, tangents, tangents2)
@@ -107,8 +118,8 @@ def rot_dot2(
 def leg_pos(R: jax.Array, t: jax.Array) -> jax.Array:
     lengths = []
     delta = const.human_displacement
-    for i in range(6):
-        top_i = R @ (const.tops[i] + delta) - delta + t
+    for i in range(6):  # unroll
+        top_i = R @ (const.tops[i] - delta) + delta + t
         diff = top_i - const.bots[i]
         lengths.append(jnp.linalg.norm(diff))
     return jnp.array(lengths)
@@ -212,7 +223,7 @@ def angle_acc(
     )[1]
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["use_xy"])
 def angle_joint(
     x: jax.Array,
     y: jax.Array,
@@ -220,9 +231,10 @@ def angle_joint(
     phi: jax.Array,
     theta: jax.Array,
     psi: jax.Array,
+    use_xy: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     """Joint angles, both top and bottom."""
-    R = rot(phi, theta, psi)
+    R = rot(phi, theta, psi, use_xy)
     t = jnp.array([x, y, z])
     top_angles = []
     bot_angles = []
@@ -239,32 +251,6 @@ def angle_joint(
         bot_angles.append(jnp.asin(bot_mag))
 
     return jnp.array(top_angles), jnp.array(bot_angles)
-
-
-@jax.jit
-def angle_joint_top(
-    x: jax.Array,
-    y: jax.Array,
-    z: jax.Array,
-    phi: jax.Array,
-    theta: jax.Array,
-    psi: jax.Array,
-) -> jax.Array:
-    """Top joint angles."""
-    return angle_joint(x, y, z, phi, theta, psi)[0]
-
-
-@jax.jit
-def angle_joint_bot(
-    x: jax.Array,
-    y: jax.Array,
-    z: jax.Array,
-    phi: jax.Array,
-    theta: jax.Array,
-    psi: jax.Array,
-) -> jax.Array:
-    """Bottom joint angles."""
-    return angle_joint(x, y, z, phi, theta, psi)[1]
 
 
 ###############

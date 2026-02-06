@@ -121,6 +121,7 @@ def call_mp_animate_human_trajectory(
     trajectory: list[utils.TableSol],
     references: dict[str, jax.Array],
 ):
+    print("hello")
     args = AnimateHumanTrajectoryArgs(
         file_name=file_name,
         trajectory=trajectory,
@@ -130,7 +131,8 @@ def call_mp_animate_human_trajectory(
     temp_pickle = f"{temp_dir.name}/mp_animate_human_trajectory_args.pickle"
     with open(temp_pickle, "wb") as f:
         pickle.dump(args, f)
-    cmd = f"python3 {__file__} --animate-human-trajectory-args {temp_pickle}"
+    cmd = "source ~/.bash_profile && "
+    cmd += f"python3 {__file__} --animate-human-trajectory-args {temp_pickle}"
     process = subprocess.Popen(
         cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
@@ -200,9 +202,13 @@ def call_mp_animate_trajectory(
     temp_pickle = f"{temp_dir.name}/mp_animate_trajectory_args.pickle"
     with open(temp_pickle, "wb") as f:
         pickle.dump(args, f)
-    cmd = f"python3 {__file__} --animate-trajectory-args {temp_pickle}"
+    cmd = "source ~/.bash_profile && "
+    cmd += f"python3 {__file__} --animate-trajectory-args {temp_pickle}"
     process = subprocess.Popen(
-        cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        cmd,
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     process.wait()  # need to wait; otherwise the temp dir kills itself
 
@@ -294,7 +300,8 @@ def call_mp_animate_cost_trajectory(
     temp_pickle = f"{temp_dir.name}/mp_animate_cost_trajectory_args.pickle"
     with open(temp_pickle, "wb") as f:
         pickle.dump(args, f)
-    cmd = f"python3 {__file__} --animate-cost-trajectory-args {temp_pickle}"
+    cmd = "source ~/.bash_profile && "
+    cmd += f"python3 {__file__} --animate-cost-trajectory-args {temp_pickle}"
     process = subprocess.Popen(
         cmd,
         shell=True,

@@ -1389,7 +1389,7 @@ def plot_cost_trajectory(
     @jax.jit
     def head_fun(weights: opt.Weights, sol: utils.TableSol) -> jax.Array:
         return 0.5 * jnp.mean(
-            opt.head_xyz_acc_cost_arr(
+            opt.acc_cost_arr(
                 weights=weights,
                 vstate_irl=sol.vstate_irl.pop0(),
                 vstate_sim=sol.vstate_sim.pop0(),
@@ -1752,7 +1752,7 @@ def animate_cost_trajectory(
 
     @jax.jit
     def head_fun(weights: opt.Weights, sol: utils.TableSol) -> jax.Array:
-        return opt.head_xyz_acc_cost_arr(
+        return opt.acc_cost_arr(
             weights=weights,
             vstate_irl=sol.vstate_irl.pop0(),
             vstate_sim=sol.vstate_sim.pop0(),

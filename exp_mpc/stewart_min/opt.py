@@ -63,31 +63,35 @@ class Weights:
     leg_vel: jax.Array = _init_field(jnp.ones(6))
     joint_angle: jax.Array = _init_field(jnp.ones(12))
     yaw: jax.Array = _init_field(jnp.ones(1))
+    yaw_dot: jax.Array = _init_field(jnp.ones(1))
     control: jax.Array = _init_field(jnp.ones(6))
 
-    # def __post_init__(self) -> None:
-    #     assert self.acc.ndim == 1
-    #     assert self.acc.shape[0] == 3
-    #     assert self.omega.ndim == 1
-    #     assert self.omega.shape[0] == 3
-    #     assert self.leg.ndim == 1
-    #     assert self.leg.shape[0] == 6
-    #     assert self.leg_vel.ndim == 1
-    #     assert self.leg_vel.shape[0] == 6
-    #     assert self.joint_angle.ndim == 1
-    #     assert self.joint_angle.shape[0] == 12
-    #     assert self.yaw.ndim == 1
-    #     assert self.yaw.shape[0] == 1
-    #     assert self.control.ndim == 1
-    #     assert self.control.shape[0] == 6
+    def __post_init__(self) -> None:
+        assert self.acc.ndim == 1
+        assert self.acc.shape[0] == 3
+        assert self.omega.ndim == 1
+        assert self.omega.shape[0] == 3
+        assert self.leg.ndim == 1
+        assert self.leg.shape[0] == 6
+        assert self.leg_vel.ndim == 1
+        assert self.leg_vel.shape[0] == 6
+        assert self.joint_angle.ndim == 1
+        assert self.joint_angle.shape[0] == 12
+        assert self.yaw.ndim == 1
+        assert self.yaw.shape[0] == 1
+        assert self.yaw_dot.ndim == 1
+        assert self.yaw_dot.shape[0] == 1
+        assert self.control.ndim == 1
+        assert self.control.shape[0] == 6
 
-    #     assert jnp.issubdtype(self.acc.dtype, jnp.floating)
-    #     assert jnp.issubdtype(self.omega.dtype, jnp.floating)
-    #     assert jnp.issubdtype(self.leg.dtype, jnp.floating)
-    #     assert jnp.issubdtype(self.leg_vel.dtype, jnp.floating)
-    #     assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
-    #     assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
-    #     assert jnp.issubdtype(self.control.dtype, jnp.floating)
+        assert jnp.issubdtype(self.acc.dtype, jnp.floating)
+        assert jnp.issubdtype(self.omega.dtype, jnp.floating)
+        assert jnp.issubdtype(self.leg.dtype, jnp.floating)
+        assert jnp.issubdtype(self.leg_vel.dtype, jnp.floating)
+        assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
+        assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
+        assert jnp.issubdtype(self.yaw_dot.dtype, jnp.floating)
+        assert jnp.issubdtype(self.control.dtype, jnp.floating)
 
     def _time_scale(self, n: int, name: str) -> jax.Array:
         """Get time scale weights for flat array.
@@ -141,6 +145,13 @@ class Weights:
         val_scale = jnp.tile(self.yaw, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
+    def scale_yaw_dot(self, n: int) -> jax.Array:
+        """Get scale weights for flat yaw angle array."""
+        time_scale = self._time_scale(n, "yaw_dot")
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw_dot.size))
+        val_scale = jnp.tile(self.yaw_dot, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
     def scale_control(self, n: int) -> jax.Array:
         """Get scale weights for flat control array."""
         time_scale = self._time_scale(n, "control")
@@ -158,6 +169,7 @@ class ExpWeights(Weights):
     alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_yaw_dot: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
 
     def _time_scale(self, n: int, name: str) -> jax.Array:
@@ -170,6 +182,7 @@ class ExpWeights(Weights):
             "leg_vel": self.alpha_leg_vel,
             "joint_angle": self.alpha_joint_angle,
             "yaw": self.alpha_yaw,
+            "yaw_dot": self.alpha_yaw,
             "control": self.alpha_control,
         }
         return jnp.exp(-jnp.arange(n, dtype=float) / n * alpha_map[name])
@@ -182,6 +195,7 @@ class CostTerms:
     leg_vel_cost: quartic_cost.QuarticCost
     joint_angle_cost: quartic_cost.QuarticCost
     yaw_cost: quartic_cost.QuarticCost
+    yaw_dot_cost: quartic_cost.QuarticCost
 
 
 ###################
@@ -227,7 +241,7 @@ def _hyper(x: jax.Array) -> jax.Array:
 ########
 
 
-def head_xyz_acc_cost_arr(
+def acc_cost_arr(
     weights: Weights,
     vstate_irl: utils.VState,
     vstate_sim: utils.VState,
@@ -249,14 +263,14 @@ def head_xyz_acc_cost_arr(
     return jax.vmap(hyper)(diff_xy.T, diff_z)
 
 
-def _head_xyz_acc_cost(
+def _acc_cost(
     weights: Weights,
     vstate_irl: utils.VState,
     vstate_sim: utils.VState,
     control: utils.Control,
 ) -> jax.Array:
     """Head acceleration cost."""
-    cost_arr = head_xyz_acc_cost_arr(weights, vstate_irl, vstate_sim, control)
+    cost_arr = acc_cost_arr(weights, vstate_irl, vstate_sim, control)
     return 0.5 * jnp.mean(cost_arr)
 
 
@@ -303,13 +317,15 @@ def leg_boundary_cost_arr(
     vel_cost: quartic_cost.QuarticCost,
     state: utils.RState,
     control: utils.Control,
+    use_rotary: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     """Include leg length and leg velocity costs.
 
     By using automatic differentiation, we can compute the lengths and the
     velocities cheaper than computing them separately, which is productive.
     """
-    lengths, vels = jax.vmap(utils.leg_pos_vel)(state.pop0())
+    leg_pos_vel = functools.partial(utils.leg_pos_vel, use_rotary=use_rotary)
+    lengths, vels = jax.vmap(leg_pos_vel)(state.pop0())
     lengths = jnp.ravel(lengths)
     vels = jnp.ravel(vels)
     length_costs = jax.vmap(length_cost)(lengths)
@@ -327,6 +343,7 @@ def _leg_boundary_cost(
     vel_cost: quartic_cost.QuarticCost,
     state: utils.RState,
     control: utils.Control,
+    use_rotary: bool,
 ) -> jax.Array:
     """Include leg length and leg velocity costs.
 
@@ -334,15 +351,15 @@ def _leg_boundary_cost(
     velocities cheaper than computing them separately, which is productive.
     """
     length_cost_arr, vel_cost_arr = leg_boundary_cost_arr(
-        weights, length_cost, vel_cost, state, control
+        weights, length_cost, vel_cost, state, control, use_rotary
     )
     length_cost_val = jnp.sum(jnp.mean(length_cost_arr, axis=0))
     vel_cost_val = jnp.sum(jnp.mean(vel_cost_arr, axis=0))
     return length_cost_val + vel_cost_val
 
 
-def joint_angles(state: utils.RState) -> jax.Array:
-    return jnp.concatenate(utils.angle_joint(state))
+def joint_angles(state: utils.RState, use_rotary: bool) -> jax.Array:
+    return jnp.concatenate(utils.angle_joint(state, use_rotary))
 
 
 def joint_angle_boundary_cost_arr(
@@ -350,13 +367,15 @@ def joint_angle_boundary_cost_arr(
     cost: quartic_cost.QuarticCost,
     state: utils.RState,
     control: utils.Control,
+    use_rotary: bool = True,
 ) -> jax.Array:
     """Joint angle cost.
 
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    angles = jnp.ravel(jax.vmap(joint_angles)(state.pop0()))
+    joint_angles_part = functools.partial(joint_angles, use_rotary=use_rotary)
+    angles = jnp.ravel(jax.vmap(joint_angles_part)(state.pop0()))
     costs = jax.vmap(cost)(angles)
     w = weights.scale_joint_angle(control.size)
     return (costs * w).reshape(-1, 12)
@@ -367,13 +386,16 @@ def _joint_angle_boundary_cost(
     cost: quartic_cost.QuarticCost,
     state: utils.RState,
     control: utils.Control,
+    use_rotary: bool,
 ) -> jax.Array:
     """Joint angle cost.
 
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    cost_arr = joint_angle_boundary_cost_arr(weights, cost, state, control)
+    cost_arr = joint_angle_boundary_cost_arr(
+        weights, cost, state, control, use_rotary
+    )
     return jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
@@ -390,6 +412,28 @@ def yaw_boundary_cost_arr(
 
 
 def _yaw_boundary_cost(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: utils.RState,
+    control: utils.Control,
+) -> jax.Array:
+    cost_arr = yaw_boundary_cost_arr(weights, cost, state, control)
+    return jnp.sum(jnp.mean(cost_arr, axis=0))
+
+
+def yaw_dot_boundary_cost_arr(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: utils.RState,
+    control: utils.Control,
+) -> jax.Array:
+    yaw_dot = state.yaw_dot[1:]
+    costs = jax.vmap(cost)(yaw_dot)
+    w = weights.scale_yaw_dot(control.size)
+    return costs * w
+
+
+def _yaw_dot_boundary_cost(
     weights: Weights,
     cost: quartic_cost.QuarticCost,
     state: utils.RState,
@@ -426,6 +470,7 @@ def _cost(
     vstate0_sim: jax.Array,
     control0: jax.Array,
     control: utils.Control,
+    use_rotary: bool = True,  # static
 ) -> jax.Array:
     # precompute states
     rstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
@@ -434,15 +479,24 @@ def _cost(
 
     # cost
     cost = jnp.array(0.0)
-    cost += _head_xyz_acc_cost(weights, vstate_irl, vstate_sim, control)
+    cost += _acc_cost(weights, vstate_irl, vstate_sim, control)
     cost += _omega_cost(weights, vstate_irl, vstate_sim, control)
     cost += _leg_boundary_cost(
-        weights, cost_terms.leg_cost, cost_terms.leg_vel_cost, rstate, control
+        weights,
+        cost_terms.leg_cost,
+        cost_terms.leg_vel_cost,
+        rstate,
+        control,
+        use_rotary,
     )
     cost += _joint_angle_boundary_cost(
-        weights, cost_terms.joint_angle_cost, rstate, control
+        weights, cost_terms.joint_angle_cost, rstate, control, use_rotary
     )
     cost += _yaw_boundary_cost(weights, cost_terms.yaw_cost, rstate, control)
+    if use_rotary:
+        cost += _yaw_dot_boundary_cost(
+            weights, cost_terms.yaw_dot_cost, rstate, control
+        )
     cost += _control_cost(weights, control)
     return cost
 
@@ -452,7 +506,7 @@ def _cost(
 #######################
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["use_rotary"])
 def cost_flat_jax(
     weights: Weights,
     cost_terms: CostTerms,
@@ -463,6 +517,7 @@ def cost_flat_jax(
     vstate0_sim: jax.Array,
     control0: jax.Array,
     control_flat: jax.Array,
+    use_rotary: bool = True,
 ) -> jax.Array:
     control = utils.Control.from_flat(control_flat)
     return _cost(
@@ -475,10 +530,11 @@ def cost_flat_jax(
         vstate0_sim,
         control0,
         control,
+        use_rotary,
     )
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["use_rotary"])
 def cost_and_grad_flat_jax(
     weights: Weights,
     cost_terms: CostTerms,
@@ -489,6 +545,7 @@ def cost_and_grad_flat_jax(
     vstate0_sim: jax.Array,
     control0: jax.Array,
     control_flat: jax.Array,
+    use_rotary: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     cost = functools.partial(
         cost_flat_jax,
@@ -500,6 +557,7 @@ def cost_and_grad_flat_jax(
         vstate0_irl,
         vstate0_sim,
         control0,
+        use_rotary=use_rotary,
     )
     cost_and_grad = jax.value_and_grad(cost)
     return cost_and_grad(control_flat)
@@ -514,6 +572,7 @@ def get_scipy_cost(
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
     control0: jax.Array,
+    use_rotary: bool = True,
 ) -> tuple[tp.Callable, tp.Callable]:
     """Get scipy cost functions for L-BFGS-B.
 
@@ -536,8 +595,12 @@ def get_scipy_cost(
     rstate0 :
         Initial state, as a vector of size 12.
     vstate0_irl :
-        Previous staet
+        Previous real-life vestibular state.
+        (Take the previous so that rstate0 and control0 and provide feedback.)
     vstate0_sim :
+        Current simulation vestibular state
+    use_rotary :
+        True if there is a rotary top, and false otherwise.
 
     Returns
     -------
@@ -554,7 +617,9 @@ def get_scipy_cost(
         control0,
     )
 
-    cost_and_grad = functools.partial(cost_and_grad_flat_jax, *params)
+    cost_and_grad = functools.partial(
+        cost_and_grad_flat_jax, *params, use_rotary=use_rotary
+    )
 
     # history (use a list to mimic pointers)
     cost_mem: list[np.ndarray] = [np.array(np.nan)]
@@ -623,6 +688,7 @@ def get_scipy_cost_ts(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     train_state: TrainState,
+    use_rotary: bool = True,
 ) -> tuple[tp.Callable, tp.Callable]:
     """Wrapper for get_scipy_cost, but uses TrainState structure"""
     return get_scipy_cost(
@@ -634,4 +700,5 @@ def get_scipy_cost_ts(
         vstate0_irl=train_state.vstate0_irl,
         vstate0_sim=train_state.vstate0_sim,
         control0=train_state.control0,
+        use_rotary=use_rotary,
     )
