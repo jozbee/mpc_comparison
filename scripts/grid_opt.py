@@ -220,6 +220,8 @@ def single_sms(args: tuple) -> None:
 
     margins = [0.2, 0.1]
     sizes = [1.0, 2**3, 2**8]
+    yaw_margins = [0.2 / 3.0, 0.1 / 3.0]
+    yaw_sizes = [2**0, 2**3, 2**8]
 
     leg_cost = quartic_cost.QuarticCost.from_bounds(
         margins=[0.3, 0.2, 0.1],
@@ -240,14 +242,14 @@ def single_sms(args: tuple) -> None:
         high=const.joint_max_angle,
     )
     yaw_cost = quartic_cost.QuarticCost.from_bounds(
-        margins=margins,
-        sizes=sizes,
+        margins=yaw_margins,
+        sizes=yaw_sizes,
         low=-const.max_yaw,
         high=const.max_yaw,
     )
     yaw_dot_cost = quartic_cost.QuarticCost.from_bounds(
-        margins=margins,
-        sizes=sizes,
+        margins=yaw_margins,
+        sizes=yaw_sizes,
         low=-const.max_rotary_vel,
         high=const.max_rotary_vel,
     )
@@ -265,7 +267,7 @@ def single_sms(args: tuple) -> None:
     # run #
     #######
 
-    train_state = opt.TrainState.zero_init(n)
+    train_state = opt.TrainState.zero_init(n, vstate0_mode=("earth", "moon"))
     train_list = []
     times = []
     sol_list = []
@@ -324,9 +326,13 @@ def single_sms(args: tuple) -> None:
     acc_diff = acc_irl - acc_sim
     acc_diff = acc_diff[:, :2]  # ignore the z_component
 
-    omega_err = 0.5 * jnp.sum(omega_diff**4)
-    acc_err = 0.5 * jnp.sum(acc_diff**4)
+    omega_err = 0.5 * jnp.sum(omega_diff**2)
+    acc_err = 0.5 * jnp.sum(acc_diff**2)
     tot_err = omega_err + acc_err
+
+    omega_err_4 = 0.5 * jnp.sum(omega_diff**4)
+    acc_err_4 = 0.5 * jnp.sum(acc_diff**4)
+    tot_err_4 = omega_err_4 + acc_err_4
 
     ##########
     # pickle #
@@ -339,6 +345,11 @@ def single_sms(args: tuple) -> None:
         "omega_err": omega_err,
         "acc_err": acc_err,
         "tot_err": tot_err,
+        "omega_err_4": omega_err_4,
+        "acc_err_4": acc_err_4,
+        "tot_err_4": tot_err_4,
+        "omega_diff": omega_diff,
+        "acc_diff": acc_diff,
     }
     with open(f"{path}/{index}_params.pickle", "wb") as f:
         pickle.dump(res, f)
@@ -353,8 +364,9 @@ def single_sms(args: tuple) -> None:
 if __name__ == "__main__":
     random.seed(42)
 
-    exp_scale = [1e0, 5e0, 1e1, 5e1, 1e2, 5e2, 1e3]
+    # exp_scale = [1e0, 5e0, 1e1 , 5e1, 1e2, 5e2, 1e3]
     # alpha_scale = [-1.0, 0.0, 1.0, 2.0, 4.0]
+    exp_scale = [1e0, 5e0, 1e1]
     alpha_scale = [0.0, 1.0, 2.0, 4.0]
 
     acc_grid = [[s, s, 1e0] for s in exp_scale]
@@ -372,14 +384,17 @@ if __name__ == "__main__":
     args = [(i, grid[i], "./grid_data") for i in range(len(grid))]
 
     start_index = 0
-    cpu_count = mp.cpu_count() // 2
+    cpu_count = mp.cpu_count() // 2 + 2  # == 10
     tot = len(args)
     part_size = tot // cpu_count
     assert start_index < part_size
 
-    tmps = [args[part_size * i: part_size * (i + 1)] for i in range(cpu_count)]
-    tmps = [tmp[start_index:] for tmp in tmps]
-    args = list(itertools.chain(*tmps))
+    if start_index != 0:
+        tmps = [
+            args[part_size * i : part_size * (i + 1)] for i in range(cpu_count)
+        ]
+        tmps = [tmp[start_index:] for tmp in tmps]
+        args = list(itertools.chain(*tmps))
 
     with mp.Pool(processes=cpu_count) as p:
         p.map(single_sms, args)

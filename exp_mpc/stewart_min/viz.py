@@ -171,6 +171,12 @@ def animate_trajectory(
         [], [], [], "bo-", linewidth=2, markersize=5
     )
     legs = [ax_3d.plot([], [], [], "g-", linewidth=1)[0] for _ in range(6)]
+    axis_length = 0.2
+    head_axes = [
+        ax_3d.plot([], [], [], "r-", linewidth=2)[0],
+        ax_3d.plot([], [], [], "g-", linewidth=2)[0],
+        ax_3d.plot([], [], [], "b-", linewidth=2)[0],
+    ]
     leg_bars = ax_legs.bar(range(1, 7), [0] * 6, color="black", alpha=0.7)
     leg_text = ax_legs.text(
         0.02, 0.95, "", transform=ax_legs.transAxes, verticalalignment="top"
@@ -223,15 +229,26 @@ def animate_trajectory(
         x, y, z, roll, pitch, yaw = interp_trajectory[i]
         position = np.array([x, y, z])
         R = comp.rot(roll, pitch, yaw)
+        R_head = np.array(comp.rot(roll, pitch, yaw, use_xy=False))
 
         # Update platform position
         delta = const.human_displacement
-        tops_world = [R @ (p + delta) - delta + position for p in const.tops]
+        tops_world = [R @ (p - delta) + delta + position for p in const.tops]
         platform_x = [p[0] for p in tops_world] + [tops_world[0][0]]
         platform_y = [p[1] for p in tops_world] + [tops_world[0][1]]
         platform_z = [p[2] for p in tops_world] + [tops_world[0][2]]
         platform_polygon.set_data(platform_x, platform_y)
         platform_polygon.set_3d_properties(platform_z)  # type: ignore
+
+        # Update head reference frame
+        head_pos = const.human_displacement + position
+        axis_dirs = R_head @ np.eye(3)
+        for axis_line, axis_dir in zip(head_axes, axis_dirs.T):
+            end_pos = head_pos + axis_length * axis_dir
+            axis_line.set_data(
+                [head_pos[0], end_pos[0]], [head_pos[1], end_pos[1]]
+            )
+            axis_line.set_3d_properties([head_pos[2], end_pos[2]])  # type: ignore
 
         # Update legs
         leg_lengths = []
@@ -276,6 +293,7 @@ def animate_trajectory(
         return (
             platform_polygon,
             *legs,
+            *head_axes,
             *leg_bars,
             leg_text,
             progress_bar[0],
