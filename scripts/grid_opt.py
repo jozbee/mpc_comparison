@@ -1,30 +1,29 @@
 """Optimize mpc hyperparameters via grid search."""
 
-import time
-import random
-import itertools
-import functools
-import pickle
-import multiprocessing as mp
-
-import jax.numpy as jnp
-import scipy.optimize as sci_opt
-import tqdm
-import pandas as pd
-import matplotlib.pyplot as plt
-
-import exp_mpc.stewart_min.viz as viz
-import exp_mpc.stewart_min.const as const
-import exp_mpc.stewart_min.opt as opt
-import exp_mpc.stewart_min.utils as utils
-import exp_mpc.stewart_min.quartic_cost as quartic_cost
-
-import lbfgs.lbfgs as lbfgs
-
 import jax
 
 jax.config.update("jax_enable_x64", True)
 # jax.config.update("jax_log_compiles", True)
+
+import time  # noqa: E402
+import random  # noqa: E402
+import itertools  # noqa: E402
+import functools  # noqa: E402
+import pickle  # noqa: E402
+import multiprocessing as mp  # noqa: E402
+
+import jax.numpy as jnp  # noqa: E402
+import scipy.optimize as sci_opt  # noqa: E402
+import pandas as pd  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+
+import exp_mpc.stewart_min.viz as viz  # noqa: E402
+import exp_mpc.stewart_min.const as const  # noqa: E402
+import exp_mpc.stewart_min.opt as opt  # noqa: E402
+import exp_mpc.stewart_min.utils as utils  # noqa: E402
+import exp_mpc.stewart_min.quartic_cost as quartic_cost  # noqa: E402
+
+import lbfgs.lbfgs as lbfgs  # noqa: E402
 
 
 ###########
@@ -79,6 +78,7 @@ def cost(
         vstate0_sim=train_state.vstate0_sim,
         control0=train_state.control0,
         control_flat=control_flat,
+        use_rotary=True,
     )
 
 
@@ -224,8 +224,6 @@ def single_sms(args: tuple) -> None:
     leg_cost = quartic_cost.QuarticCost.from_bounds(
         margins=[0.3, 0.2, 0.1],
         sizes=[1.0, 2**3, 2**5, 2**10],
-        # margins=margins,
-        # sizes=sizes,
         low=const.leg_min,
         high=const.leg_max,
     )
@@ -247,11 +245,18 @@ def single_sms(args: tuple) -> None:
         low=-const.max_yaw,
         high=const.max_yaw,
     )
+    yaw_dot_cost = quartic_cost.QuarticCost.from_bounds(
+        margins=margins,
+        sizes=sizes,
+        low=-const.max_rotary_vel,
+        high=const.max_rotary_vel,
+    )
     cost_terms = opt.CostTerms(
         leg_cost=leg_cost,
         leg_vel_cost=leg_vel_cost,
         joint_angle_cost=joint_angle_cost,
         yaw_cost=yaw_cost,
+        yaw_dot_cost=yaw_dot_cost,
     )
 
     train_step = functools.partial(train_step_with_cost, n, weights, cost_terms)
@@ -319,8 +324,8 @@ def single_sms(args: tuple) -> None:
     acc_diff = acc_irl - acc_sim
     acc_diff = acc_diff[:, :2]  # ignore the z_component
 
-    omega_err = 0.5 * jnp.sum(jax.vmap(jnp.dot)(omega_diff, omega_diff))
-    acc_err = 0.5 * jnp.sum(jax.vmap(jnp.dot)(acc_diff, acc_diff))
+    omega_err = 0.5 * jnp.sum(omega_diff**4)
+    acc_err = 0.5 * jnp.sum(acc_diff**4)
     tot_err = omega_err + acc_err
 
     ##########
@@ -349,14 +354,15 @@ if __name__ == "__main__":
     random.seed(42)
 
     exp_scale = [1e0, 5e0, 1e1, 5e1, 1e2, 5e2, 1e3]
-    alpha_scale = [-1.0, 0.0, 1.0, 2.0, 4.0]
+    # alpha_scale = [-1.0, 0.0, 1.0, 2.0, 4.0]
+    alpha_scale = [0.0, 1.0, 2.0, 4.0]
 
     acc_grid = [[s, s, 1e0] for s in exp_scale]
     omega_xy_grid = [[s, s] for s in exp_scale]
     omega_z_grid = exp_scale.copy()
     alpha_acc_grid = alpha_scale.copy()
     alpha_omega_grid = alpha_scale.copy()
-    horizon_grid = [200, 400, 800]
+    horizon_grid = [200]  # [200, 400, 800]
 
     grid_terms = [acc_grid, omega_xy_grid, omega_z_grid]
     grid_terms.extend([alpha_acc_grid, alpha_omega_grid, horizon_grid])
@@ -365,7 +371,7 @@ if __name__ == "__main__":
 
     args = [(i, grid[i], "./grid_data") for i in range(len(grid))]
 
-    start_index = 26
+    start_index = 0
     cpu_count = mp.cpu_count() // 2
     tot = len(args)
     part_size = tot // cpu_count

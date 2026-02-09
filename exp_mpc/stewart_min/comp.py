@@ -19,7 +19,7 @@ import exp_mpc.stewart_min.const as const
 @functools.partial(jax.jit, static_argnames=["use_xy"])
 def rot(phi: float, theta: float, psi: float, use_xy: bool = True) -> jax.Array:
     """Get the rotation matrix.
-    
+
     (phi, theta, psi) = (roll, pitch, yaw)
     """
     R_x = jnp.array(

@@ -615,6 +615,14 @@ def get_vstate(
     return VState(x_state, y_state)
 
 
+def _head_acc(rstate: RState, acc: jax.Array) -> jax.Array:
+    assert rstate.size == 1  # one time step
+    assert len(acc.shape) == 1
+    assert acc.size == 3
+    R = rot(rstate, use_xy=False)
+    return R.T @ (acc + const.gravity)
+
+
 def get_vstate_irl(
     rstate: RState,
     control: Control,
@@ -641,20 +649,13 @@ def get_vstate_irl(
     assert len(control0.shape) == 1
     assert control0.size == 6
 
-    def head_acc(rstate: RState, acc: jax.Array) -> jax.Array:
-        assert rstate.size == 1  # one time step
-        assert len(acc.shape) == 1
-        assert acc.size == 3
-        R = rot(rstate)
-        return R.T @ (acc + const.gravity)
-
     # hack: add initial control to current control, for conventional purposes
     #  see below convention
     # also, note that we need to add gravity, because the robot control lacks
     #  this information
     lin_accs = [control0[:3].reshape(1, -1), control.control[:, :3]]
     acc_ctrl = jnp.vstack(lin_accs)
-    acc_ctrl = jax.vmap(head_acc)(rstate, acc_ctrl)
+    acc_ctrl = jax.vmap(_head_acc)(rstate, acc_ctrl)
     omega_ctrl = jax.vmap(angle_vel)(rstate)
     vstate = get_vstate(acc_ctrl, omega_ctrl, vstate0)
 
@@ -676,9 +677,7 @@ def get_states_with_eigen(
     # get irl controls
     control_with0 = Control.from_flat(jnp.vstack([control0, control.control]))
     rstate = get_rstate(control, jnp.array(rstate0))
-    acc_irl = jax.vmap(
-        lambda r, u: rot(r).T @ (jnp.array([u.x, u.y, u.z]) + const.gravity)
-    )(rstate, control_with0)
+    acc_irl = jax.vmap(_head_acc)(rstate, control_with0.control[:, :3])
     omega_irl = jax.vmap(angle_vel)(rstate)
 
     # partition

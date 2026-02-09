@@ -107,3 +107,11 @@ P_omega_inv = np.array(
 )
 EP1_omega = np.array([[0.00496671], [-0.00783963], [0.00775677]])
 CP_omega = np.array([[10.04742719, 0.09659172, 0.01121379]])
+
+# initial internal states for vestibular models at steady state, under
+#  given constant accelerations: earth gravity and moon gravity
+# these represent the asymptotic vestibular state under constant acceleration
+# the following are for the z-component of earth and moon gravity, respectively
+# cf. `vestibular.ipynb`
+v0_earth = np.array([9.18440318e-06, 3.78252396e01])
+v0_moon = np.array([1.52137156e-06, 6.26564876e00])

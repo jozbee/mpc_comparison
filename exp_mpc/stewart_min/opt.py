@@ -281,7 +281,7 @@ def omega_cost_arr(
     control: utils.Control,
 ) -> jax.Array:
     """Angular velocity cost terms."""
-    w = weights.scale_acc(control.size)
+    w = weights.scale_omega(control.size)
     w_irl = jnp.array(
         [vstate_irl.y_omegax, vstate_irl.y_omegay, vstate_irl.y_omegaz]
     )
@@ -418,7 +418,7 @@ def _yaw_boundary_cost(
     control: utils.Control,
 ) -> jax.Array:
     cost_arr = yaw_boundary_cost_arr(weights, cost, state, control)
-    return jnp.sum(jnp.mean(cost_arr, axis=0))
+    return jnp.mean(cost_arr)
 
 
 def yaw_dot_boundary_cost_arr(
@@ -439,8 +439,8 @@ def _yaw_dot_boundary_cost(
     state: utils.RState,
     control: utils.Control,
 ) -> jax.Array:
-    cost_arr = yaw_boundary_cost_arr(weights, cost, state, control)
-    return jnp.sum(jnp.mean(cost_arr, axis=0))
+    cost_arr = yaw_dot_boundary_cost_arr(weights, cost, state, control)
+    return jnp.mean(cost_arr)
 
 
 def control_cost_arr(
@@ -654,13 +654,21 @@ class TrainState:
     control_flat: jax.Array
 
     @classmethod
-    def zero_init(cls, horizon_num: int) -> "TrainState":
+    def zero_init(
+        cls, horizon_num: int, vstate0_mode: tp.Optional[tuple[str, str]] = None
+    ) -> "TrainState":
         """Init train state with zeros.
 
         Parameters
         ----------
         horizon_num :
             Number of time steps in horizon length.
+        vstate0_mode :
+            Determines if the initial vestibular states should be initialized
+            to respect gravity.
+            The first and second entries represent the irl and sim conditions,
+            respectively.
+            If not `None`, the options are "earth" or "moon"
 
         Returns
         -------
@@ -670,13 +678,27 @@ class TrainState:
         r_num = u_num * 2
         v_num = 3 * const.E0_acc.shape[0] + 3 * const.E0_omega.shape[0]
 
+        # gravity_range and gravity_map (setup)
+        gr = (2 * const.E0_acc.shape[0], 3 * const.E0_acc.shape[0])
+        g_map = {"earth": const.v0_earth, "moon": const.v0_moon}
+
         def zeros(n):
             return jnp.zeros(n, dtype=float)
 
+        vstate0_irl = zeros(v_num)
+        vstate0_sim = zeros(v_num)
+        if vstate0_mode is not None:
+            vstate0_irl = vstate0_irl.at[gr[0] : gr[1]].set(
+                g_map[vstate0_mode[0]]
+            )
+            vstate0_sim = vstate0_sim.at[gr[0] : gr[1]].set(
+                g_map[vstate0_mode[1]]
+            )
+
         return cls(
             rstate0=zeros(r_num),
-            vstate0_irl=zeros(v_num),
-            vstate0_sim=zeros(v_num),
+            vstate0_irl=vstate0_irl,
+            vstate0_sim=vstate0_sim,
             control0=zeros(u_num),
             control_flat=zeros(u_num * horizon_num),
         )
