@@ -281,7 +281,8 @@ def discrete_1d_euler(
     """
     a = jnp.ravel(a)  # really, an assertion...
     v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * a]))
-    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), const.dt * v[1:]]))
+    v0 = const.dt * v[:-1] + 0.5 * const.dt**2 * a
+    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), v0]))
     return x, v
 
 

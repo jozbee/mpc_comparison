@@ -25,6 +25,11 @@ int main() {
   std::vector<double> last_control(200 * 6, 0.0);
   std::vector<std::vector<double>> control_hist;
 
+  vstate0_irl[4] = 9.18440318e-06;  // earth
+  vstate0_irl[5] = 3.78252396e01;   // earth
+  vstate0_sim[4] = 9.18440318e-06;  // earth
+  vstate0_sim[5] = 3.78252396e01;   // earth
+
   // pjrt setup
   auto client = std::make_shared<pjrt::Client>();
   auto devices = client->get_devices();

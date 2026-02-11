@@ -104,8 +104,6 @@ def mpc_solver(
     rstate = utils.RState(rstate0)
     acc_irl = utils.rot(rstate, use_xy=False).T @ (control0[:3] + const.gravity)
     omega_irl = utils.angle_vel(rstate)
-    # acc_irl = jnp.ones(3)
-    # omega_irl = jnp.ones(3)
 
     # partition
     a_num = 3 * const.E0_acc.shape[0]
@@ -132,11 +130,6 @@ def mpc_solver(
     v0_irl = jnp.concatenate([v0_irl_a, v0_irl_w])
     v0_sim = jnp.concatenate([v0_sim_a, v0_sim_w])
     return control, v0_irl, v0_sim
-
-    # TODO: delete
-    # tmp = jnp.concatenate([acc_ref[0], omega_ref[0], rstate0, control0])
-    # last_control = last_control.at[:tmp.size].set(tmp)
-    # return last_control, v0_irl, v0_sim
 
 
 if __name__ == "__main__":
