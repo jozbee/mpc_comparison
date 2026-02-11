@@ -6,3 +6,4 @@ ltex*
 *.png
 .DS_Store
 *data
+artifacts

@@ -465,7 +465,7 @@ def leg_acc(
 
 
 @functools.partial(jax.jit, static_argnames=("world",))
-def tranfer_PHI(state: RState, world: bool = False) -> jax.Array:
+def transfer_PHI(state: RState, world: bool = False) -> jax.Array:
     """Matrix to map table euler angle derivatives to head angular velocity."""
     assert state.size == 1
     return comp.transfer_PHI(state.roll, state.pitch, state.yaw, world)

@@ -1,0 +1,6 @@
+[submodule "cpp/third_party/highfive"]
+	path = cpp/third_party/highfive
+	url = https://github.com/highfive-devs/highfive.git
+[submodule "cpp/third_party/call_jax_from_cpp"]
+	path = cpp/third_party/call_jax_from_cpp
+	url = https://github.com/jozbee/call_jax_from_cpp.git

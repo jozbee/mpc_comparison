@@ -198,7 +198,7 @@ def angle_vel(
 ) -> jax.Array:
     """Angular velocity."""
     PHI = transfer_PHI(phi, theta, psi, world)
-    return jnp.linalg.inv(PHI) @ jnp.array([phi_dot, theta_dot, psi_dot])
+    return PHI @ jnp.array([phi_dot, theta_dot, psi_dot])
 
 
 @functools.partial(jax.jit, static_argnames=("world",))

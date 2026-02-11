@@ -37,7 +37,7 @@ import exp_mpc.stewart_min.quartic_cost as quartic_cost
 # make sure to enable 64-bit precision for jax
 # this is necessary for good performance
 # use the following line when importing this library
-# `jax.config.update("jax_enable_x64", True)`
+jax.config.update("jax_enable_x64", True)
 
 
 #####################
