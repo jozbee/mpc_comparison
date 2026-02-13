@@ -1,0 +1,17 @@
+services:
+  mpc_x86:
+    container_name: mpc_x86
+    privileged: true
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ../
+        target: /root/mpc_comparison
+    command: [ "sleep", "infinity" ] # keep container open
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - "linux/amd64"
+    image: mpc_x86:latest

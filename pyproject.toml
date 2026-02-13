@@ -3,7 +3,7 @@ name = "exp_mpc"
 version = "0.1.0"
 description = "Experimental mpc computations"
 readme = "README.txt"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 license = {file = "LICENSE.txt"}
 authors = [
   {name = "Brent Koogler", email = "brkhnc@umsystem.edu"},

@@ -1,6 +1,6 @@
 .PHONY: \
 	all clean \
-	mpc_example_clean pjrt_clean
+	mpc_example_clean pjrt_clean mpc_export_clean
 
 all: mpc_example
 
@@ -17,12 +17,7 @@ mpc_example: src/mpc_example.cpp pjrt_exec mpc_export
 		-I./third_party/call_jax_from_cpp \
 		-I. -I./third_party/highfive/include $(shell pkg-config --cflags hdf5) \
 		$(shell pkg-config --libs hdf5) \
-		-L./artifacts -Wl,-rpath,./artifacts -lpjrt_c_api_cpu_plugin_darwin
-
-# -I. -I/opt/homebrew/Cellar/hdf5/1.14.6/include -I./third_party/highfive/include \
-# -L/opt/homebrew/Cellar/hdf5/1.14.6/lib -lhdf5_cpp -lhdf5_hl -lhdf5 \
-
-#		-L./artifacts -Wl,-rpath,./artifacts -lpjrt_c_api_cpu_plugin_linux
+		-L./artifacts -Wl,-rpath,./artifacts -lpjrt_c_api_cpu_plugin
 
 mpc_example_clean: pjrt_clean mpc_export_clean
 	rm -f mpc_example
@@ -44,7 +39,18 @@ pjrt_clean:
 ##############
 
 mpc_export: src/mpc_export.py
+	./build_scripts/editable_pip.sh
 	python3 src/mpc_export.py
 
 mpc_export_clean:
 	rm -f artifacts/mpc_export.binpb artifacts/mpc_export.json
+
+################
+# pjrt runtime #
+################
+
+pjrt_runtime: third_party/call_jax_from_cpp/third_party/xla/WORKSPACE
+	./build_scripts/compile_xla_runtime.sh
+
+pjrt_runtime_clean:
+	./build_scripts/pjrt_cleanup.sh

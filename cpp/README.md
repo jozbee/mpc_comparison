@@ -12,10 +12,25 @@ After initializing the [PJRT runtime](https://openxla.org/xla/pjrt/pjrt_integrat
 
 * `Makefile`: specifies how to manually compile `mpc_example.cpp`.
 Note that it calls the `Makefile` from `call_jax_from_cpp` in order to compile the PJRT wrappers.
-The PJRT runtime needs to be compiled separately, as described below, cf. [`compile_xla_runtime.sh`](https://github.com/jozbee/call_jax_from_cpp/blob/e1774cd614651b6e16b4ccff9f339243a881cf17/compile_xla_runtime.sh) from `call_jax_from_cpp`.
 
-Before calling `make`, make sure that `libpjrt_c_api_cpu_plugin_darwin.dylib` (or `libpjrt_c_api_cpu_plugin.so` on Linux) is in the `cpp/artifacts/` directory.
-Cf. `compile_xla_runtime.sh` for help.
-Note that the Makefile compiles the MPC binary and puts it in `cpp/artifacts/` alongside the PJRT plugin.
+Before calling `make all`, make sure that `libpjrt_c_api_cpu_plugin.so` (or `libpjrt_c_api_cpu_plugin.dylib` on Linux) is in the `cpp/artifacts/` directory.
+There's a separate make command for this: `make pjrt_runtime`.
 To run the program, call `make` in the `cpp` directory, and then call the built executable `mpc_example`.
 To visualize the results, see `notebooks/cpp_analysis.ipynb`.
+
+A Dockerfile is provided to demonstrate a minimal working environment, cf. `.devcontainer/Dockerfile`.
+Assuming that you are in the root of the git repository, a typical initial usage follows:
+
+```
+$ cd .devcontainer
+$ docker-compose build mpc_x86
+$ docker-compose up -d mpc_x86
+$ docker-compose exec -w /root/mpc_comparison mpc_x86 /bin/bash  # enter the container
+# cd cpp
+# make pjrt_runtime
+# make  # compile mpc_example
+# ./mpc_example
+```
+
+Note that on Linux, the default is to run docker commands as root.
+However, with [some setup](https://docs.docker.com/engine/install/linux-postinstall/), you can run docker command as a non-root user.
