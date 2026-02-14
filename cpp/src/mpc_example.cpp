@@ -3,6 +3,7 @@
  * @brief Example of using `pjrt_exec` and `jax2exec` to call mpc jax from C++.
  */
 
+#include <filesystem>
 #include <iostream>
 #include <thread>
 
@@ -125,6 +126,7 @@ int main() {
 
   // save interesting data to file (and use scoping for implicit file closing)
   {
+    std::filesystem::create_directories("./data");
     HighFive::File file("./data/mpc_example_data.h5", HighFive::File::Truncate);
     file.createDataSet("control_hist", control_hist);
     file.createDataSet("timings", timings);
