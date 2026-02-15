@@ -1,12 +1,18 @@
 import numpy as np
 import scipy.linalg as sci_lin
+import scipy.integrate as sci_int
+import control as ct
+
+
+###############
+# constraints #
+###############
 
 
 leg_min = 1160.410000 * 1e-3
 leg_max = 1770.010000 * 1e-3
 leg_mid = (leg_min + leg_max) / 2.0  # 1.46521
 dt = 0.005
-# dt = 0.0004  # stability?
 
 joint_max_angle = 42.0 * np.pi / 180.0
 # top_max_angle = 42.0 * np.pi / 180.0
@@ -23,11 +29,23 @@ max_cart_acc = 18.0  # human
 max_angle_vel = 4.8  # human
 max_angle_acc = 2100.0  # human
 
+
+########
+# misc #
+########
+
+
 # warning: positive
 # (think: to stay in place on earth, we are accelerating up wards to counteract
 #   gravity)
 gravity = np.array([0.0, 0.0, 9.81])
 human_displacement = np.array([0.0, 0.0, 0.588])
+
+
+############
+# geometry #
+############
+
 
 bots = np.array(
     [
@@ -75,43 +93,113 @@ bot_normals = np.array(
 )
 bot_normals /= np.linalg.norm(bot_normals, axis=1)[:, np.newaxis]
 
-# integration matrices for vestibular models
-# for their meaning and derivation, see `vestibular.ipynb`
-E0_acc = np.array([[0.98963583, -0.00129002], [0.00497405, 0.99999677]])
-E1_acc = np.array([[4.97404728e-03], [1.24567102e-05]])
-C_acc = np.array([[0.911, 0.0900068]])
-E0_omega = np.array(
-    [
-        [9.50588885e-01, -6.42132787e-03, -1.59328193e-04],
-        [4.87544271e-03, 9.99983811e-01, -4.01684389e-07],
-        [1.22915423e-05, 4.99997291e-03, 9.99999999e-01],
-    ]
+
+####################
+# vestibular model #
+####################
+
+# see `vestibular.ipynb` for the interpretation of the following quantities
+
+
+def get_E0_E1(ss: ct.StateSpace, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    E0 = sci_lin.expm(ss.A * dt)
+    E1 = sci_int.quad_vec(
+        f=lambda t: sci_lin.expm(ss.A * (dt - t)) @ ss.B,
+        a=0,
+        b=dt,
+    )[0]
+    return E0, E1
+
+
+def get_eigen_matrices(
+    E0: np.ndarray, E1: np.ndarray, C: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    res = sci_lin.eig(E0)
+    D, P = res[0], res[1]
+    D = D.real
+    P_inv = np.linalg.inv(P)
+    EP1 = P_inv @ E1
+    CP = C @ P
+    return D, P_inv, EP1, CP
+
+
+def obs_x1(
+    E0: np.ndarray,
+    E1: np.ndarray,
+    C: np.ndarray,
+    y: np.ndarray,
+    u: np.ndarray,
+) -> np.ndarray:
+    """Returns initial hidden state x1 corresponding to y1."""
+    n = E0.shape[0]
+    mpow = np.linalg.matrix_power
+    squee = np.squeeze
+
+    y = np.ravel(y)
+    u = np.ravel(u)
+    assert y.size == n
+    assert u.size == n - 1
+
+    # For `n == 3`, we have the following matrices:
+    # `
+    # O = np.vstack([C, C @ E0, C @ E0 @ E0])
+    # U = np.array([
+    #     [0., 0.],
+    #     [np.squeeze(C @ E1), 0.],
+    #     [np.squeeze(C @ E0 @ E1), np.squeeze(C @ E1)],
+    # ])
+    # `
+    # The following code is valid for general `n`.
+
+    O = np.vstack([C @ mpow(E0, i) for i in range(n)])  # noqa: E741
+    U_vals = [0.0, 0.0] + [squee(C @ mpow(E0, i) @ E1) for i in range(n - 1)]
+    U = np.array(
+        [
+            [U_vals[j] for j in range(i + 1, i + 1 - (n - 1), -1)]
+            for i in range(n)
+        ]
+    )
+    return np.linalg.solve(O, y - U @ u)
+
+
+# definition
+s = ct.tf("s")
+acc_transfer = 0.911 * (s + 0.0988)
+acc_transfer /= (s + 0.133) * (s + 1.95)
+omega_transfer = 10.3 * s * 30 * s
+omega_transfer /= (10.2 * s + 1) * (0.1 * s + 1) * (30 * s + 1)
+
+# setup
+acc_ss = acc_transfer.to_ss()
+omega_ss = omega_transfer.to_ss()
+C_acc = acc_ss.C
+C_omega = omega_ss.C
+
+# integration matrices
+E0_acc, E1_acc = get_E0_E1(acc_ss, dt_sim)
+E0_omega, E1_omega = get_E0_E1(omega_ss, dt_sim)
+
+# eigen matrices
+D_acc, P_acc_inv, EP1_acc, CP_acc = get_eigen_matrices(E0_acc, E1_acc, C_acc)
+D_omega, P_omega_inv, EP1_omega, CP_omega = get_eigen_matrices(
+    E0_omega, E1_omega, C_omega
 )
-E1_omega = np.array([[4.87544271e-03], [1.22915423e-05], [2.05721124e-08]])
-C_omega = np.array([[10.09803922, 0.0, 0.0]])
 
-# eigen-integration matrices for vestibular model
-# cf. `vestibular.ipynb`
-D_acc = np.array([0.99029738, 0.99933522])
-P_acc_inv = np.array([[-1.20608765, -0.16040978], [-0.55520448, -1.082648]])
-EP1_acc = np.array([[-0.00600114], [-0.0027751]])
-CP_acc = np.array([[-0.76955197, 0.03088434]])
-
-D_omega = np.array([0.95122942, 0.99950992, 0.99983335])
-P_omega_inv = np.array(
-    [
-        [1.01838279e00, 1.33787544e-01, 3.32804834e-03],
-        [-1.56830945e00, -1.57353713e01, -5.22769614e-01],
-        [1.55148427e00, 1.56669489e01, 1.52106358e00],
-    ],
+# starting conditions
+earth_gravity = gravity[2]
+moon_gravity = np.array(1.625)  # m / s
+fac = acc_transfer(0.0).real
+v0_earth = obs_x1(
+    E0_acc,
+    E1_acc,
+    C_acc,
+    np.ones(2) * fac * earth_gravity,
+    np.ones(1) * earth_gravity,
 )
-EP1_omega = np.array([[0.00496671], [-0.00783963], [0.00775677]])
-CP_omega = np.array([[10.04742719, 0.09659172, 0.01121379]])
-
-# initial internal states for vestibular models at steady state, under
-#  given constant accelerations: earth gravity and moon gravity
-# these represent the asymptotic vestibular state under constant acceleration
-# the following are for the z-component of earth and moon gravity, respectively
-# cf. `vestibular.ipynb`
-v0_earth = np.array([9.18440318e-06, 3.78252396e01])
-v0_moon = np.array([1.52137156e-06, 6.26564876e00])
+v0_moon = obs_x1(
+    E0_acc,
+    E1_acc,
+    C_acc,
+    np.ones(2) * fac * moon_gravity,
+    np.ones(1) * moon_gravity,
+)

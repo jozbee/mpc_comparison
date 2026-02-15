@@ -5,7 +5,6 @@ import jax
 jax.config.update("jax_enable_x64", True)
 # jax.config.update("jax_log_compiles", True)
 
-import time  # noqa: E402
 import random  # noqa: E402
 import itertools  # noqa: E402
 import functools  # noqa: E402
@@ -13,7 +12,6 @@ import pickle  # noqa: E402
 import multiprocessing as mp  # noqa: E402
 
 import jax.numpy as jnp  # noqa: E402
-import scipy.optimize as sci_opt  # noqa: E402
 import pandas as pd  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 
@@ -22,8 +20,6 @@ import exp_mpc.stewart_min.const as const  # noqa: E402
 import exp_mpc.stewart_min.opt as opt  # noqa: E402
 import exp_mpc.stewart_min.utils as utils  # noqa: E402
 import exp_mpc.stewart_min.quartic_cost as quartic_cost  # noqa: E402
-
-import lbfgs.lbfgs as lbfgs  # noqa: E402
 
 
 ###########
@@ -59,95 +55,6 @@ def load_sms_references(file_path: str) -> tuple[jax.Array, jax.Array]:
     omega_ref = omega_ref[offset:, :]
 
     return acc_ref, omega_ref
-
-
-def cost(
-    args: tuple[
-        opt.TrainState, opt.Weights, opt.CostTerms, jax.Array, jax.Array
-    ],
-    control_flat: jax.Array,
-) -> jax.Array:
-    train_state, weights, cost_terms, acc_ref, omega_ref = args
-    return opt.cost_flat_jax(
-        weights=weights,
-        cost_terms=cost_terms,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
-        rstate0=train_state.rstate0,
-        vstate0_irl=train_state.vstate0_irl,
-        vstate0_sim=train_state.vstate0_sim,
-        control0=train_state.control0,
-        control_flat=control_flat,
-        use_rotary=True,
-    )
-
-
-cost_and_grad = jax.jit(jax.value_and_grad(cost, argnums=1))
-lbfgs_jit = jax.jit(lbfgs.lbfgs)
-
-
-def train_step_with_cost(
-    n: int,
-    weights: opt.Weights,
-    cost_terms: opt.CostTerms,
-    train_state: opt.TrainState,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    **kwargs,
-) -> tuple[opt.TrainState, utils.TableSol, sci_opt.OptimizeResult, float]:
-    acc_ref = jnp.ravel(acc_ref)
-    omega_ref = jnp.ravel(omega_ref)
-    assert acc_ref.size == 3
-    assert omega_ref.size == 3
-
-    acc_ref = jnp.tile(A=acc_ref, reps=(n, 1))
-    omega_ref = jnp.tile(A=omega_ref, reps=(n, 1))
-
-    ts = train_state
-    opt_options = kwargs.get("opt_options", {"maxiter": 16, "maxls": 8})
-    opt_params = lbfgs.OptParamsLBFGS(
-        fun=cost_and_grad,
-        max_iter=opt_options["maxiter"],
-        max_ls=opt_options["maxls"],
-        tol=1e-5,
-        c1=1e-4,
-        c2=0.9,
-    )
-    t0 = time.time()
-    res = lbfgs_jit(
-        opt_params=opt_params,
-        x0=train_state.control_flat,
-        fun_params=(ts, weights, cost_terms, acc_ref, omega_ref),
-    )
-    res[0].block_until_ready()
-    t1 = time.time()
-    t_tot = t1 - t0
-
-    control = utils.Control.from_flat(res[0])
-    rstate = utils.get_rstate(control, ts.rstate0)
-    vstate_irl = utils.get_vstate_irl(
-        rstate, control, ts.control0, ts.vstate0_irl
-    )
-    vstate_sim = utils.get_vstate(acc_ref, omega_ref, ts.vstate0_sim)
-    table_sol = utils.TableSol(
-        x=rstate,
-        u=control,
-        vstate_irl=vstate_irl,
-        vstate_sim=vstate_sim,
-        stats=utils.TableStats(
-            time=jnp.squeeze(t_tot),
-            status=jnp.array(0),
-            cost=jnp.array(res[1]),
-        ),
-    )
-    next_state = opt.TrainState(
-        rstate0=rstate.state[1],
-        vstate0_irl=vstate_irl.x_state[1],
-        vstate0_sim=vstate_sim.x_state[1],
-        control0=control.control[0],
-        control_flat=control.flatten(),
-    )
-    return next_state, table_sol, res, t_tot
 
 
 @jax.jit
@@ -261,7 +168,9 @@ def single_sms(args: tuple) -> None:
         yaw_dot_cost=yaw_dot_cost,
     )
 
-    train_step = functools.partial(train_step_with_cost, n, weights, cost_terms)
+    train_step = functools.partial(
+        opt.train_step_with_cost, weights, cost_terms
+    )
 
     #######
     # run #
@@ -276,10 +185,10 @@ def single_sms(args: tuple) -> None:
     # for i in tqdm.tqdm(range(num_steps)):
     for i in range(num_steps):
         train_state, sol, res, t_tot = train_step(
+            jnp.tile(acc_ref[begin + i], (n, 1)),
+            jnp.tile(omega_ref[begin + i], (n, 1)),
             train_state,
-            acc_ref[begin + i],
-            omega_ref[begin + i],
-            opt_options={"maxiter": 2, "maxls": 4},
+            opt_options={"maxiter": 2, "maxls": 1},
         )
         train_list.append(train_state)
         sol_list.append(sol)

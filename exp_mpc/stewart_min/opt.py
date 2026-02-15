@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import time
 import typing as tp
 
 import numpy as np
@@ -33,6 +34,11 @@ import jax.numpy as jnp
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.quartic_cost as quartic_cost
+
+import lbfgs.lbfgs as lbfgs
+
+# lbfgs_res = (minimizer, value, gradient)
+lbfgs_result: tp.TypeAlias = tuple[jax.Array, jax.Array, jax.Array]
 
 # make sure to enable 64-bit precision for jax
 # this is necessary for good performance
@@ -258,7 +264,7 @@ def acc_cost_arr(
     def hyper(arr0, arr1):
         arr0 = jnp.atleast_1d(arr0)
         arr1 = jnp.atleast_1d(arr1)
-        return _hyper(arr0 @ arr0) + _hyper(arr1 @ arr1)
+        return _hyper(arr0 @ arr0)  # + _hyper(arr1 @ arr1)  # TODO: delete?
 
     return jax.vmap(hyper)(diff_xy.T, diff_z)
 
@@ -724,3 +730,107 @@ def get_scipy_cost_ts(
         control0=train_state.control0,
         use_rotary=use_rotary,
     )
+
+
+################
+# jax training #
+################
+
+
+def lbfgs_cost(
+    args: tuple[TrainState, Weights, CostTerms, jax.Array, jax.Array],
+    control_flat: jax.Array,
+) -> jax.Array:
+    train_state, weights, cost_terms, acc_ref, omega_ref = args
+    return cost_flat_jax(
+        weights=weights,
+        cost_terms=cost_terms,
+        acc_ref=acc_ref,
+        omega_ref=omega_ref,
+        rstate0=train_state.rstate0,
+        vstate0_irl=train_state.vstate0_irl,
+        vstate0_sim=train_state.vstate0_sim,
+        control0=train_state.control0,
+        control_flat=control_flat,
+        use_rotary=True,
+    )
+
+
+lbfgs_cost_and_grad = jax.jit(jax.value_and_grad(lbfgs_cost, argnums=1))
+
+
+@functools.partial(jax.jit, static_argnames=["max_iter", "max_ls"])
+def train_step_with_cost_jit(
+    weights: Weights,
+    cost_terms: CostTerms,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    train_state: TrainState,
+    max_iter: int = 16,
+    max_ls: int = 8,
+) -> tuple[TrainState, utils.TableSol, lbfgs_result]:
+    ts = train_state
+    opt_params = lbfgs.OptParamsLBFGS(
+        fun=lbfgs_cost_and_grad,
+        max_iter=max_iter,
+        max_ls=max_ls,
+        tol=1e-5,
+        c1=1e-4,
+        c2=0.9,
+    )
+    res = lbfgs.lbfgs(
+        opt_params=opt_params,
+        x0=train_state.control_flat,
+        fun_params=(ts, weights, cost_terms, acc_ref, omega_ref),
+    )
+
+    control = utils.Control.from_flat(res[0])
+    rstate = utils.get_rstate(control, ts.rstate0)
+    vstate_irl = utils.get_vstate_irl(
+        rstate, control, ts.control0, ts.vstate0_irl
+    )
+    vstate_sim = utils.get_vstate(acc_ref, omega_ref, ts.vstate0_sim)
+    table_sol = utils.TableSol(
+        x=rstate,
+        u=control,
+        vstate_irl=vstate_irl,
+        vstate_sim=vstate_sim,
+        stats=utils.TableStats(
+            time=jnp.squeeze(0.0),
+            status=jnp.array(0),
+            cost=jnp.array(res[1]),
+        ),
+    )
+
+    next_state = TrainState(
+        rstate0=rstate.state[1],
+        vstate0_irl=vstate_irl.x_state[0],  # NOT off-by-one
+        vstate0_sim=vstate_sim.x_state[1],
+        control0=control.control[0],
+        control_flat=control.flatten(),
+    )
+    return next_state, table_sol, res
+
+
+def train_step_with_cost(
+    weights: Weights,
+    cost_terms: CostTerms,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    train_state: TrainState,
+    **kwargs,
+) -> tuple[TrainState, utils.TableSol, lbfgs_result, float]:
+    t0 = time.time()
+    opt_options = kwargs.get("opt_options", {"maxiter": 16, "maxls": 8})
+    res = train_step_with_cost_jit(
+        weights,
+        cost_terms,
+        acc_ref,
+        omega_ref,
+        train_state,
+        opt_options["maxiter"],
+        opt_options["maxls"],
+    )
+    res[0].control0.block_until_ready()
+    t1 = time.time()
+    return res[0], res[1], res[2], t1 - t0
