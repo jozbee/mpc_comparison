@@ -260,6 +260,7 @@ def angle_joint(
 
 @jax.jit
 def discrete_1d_euler(
+    dt: jax.Array,
     x0: jax.Array,
     v0: jax.Array,
     a: jax.Array,
@@ -280,8 +281,8 @@ def discrete_1d_euler(
     Integrated position and velocity.
     """
     a = jnp.ravel(a)  # really, an assertion...
-    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), const.dt * a]))
-    v0 = const.dt * v[:-1] + 0.5 * const.dt**2 * a
+    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), dt * a]))
+    v0 = dt * v[:-1] + 0.5 * dt**2 * a
     x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), v0]))
     return x, v
 
@@ -291,6 +292,7 @@ def lti_int(
     E0: jax.Array,
     E1: jax.Array,
     C: jax.Array,
+    D: jax.Array,
     x0: jax.Array,
     u: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
@@ -313,6 +315,8 @@ def lti_int(
         Control integration matrix.
     C :
         Observing matrix.
+    D :
+        Observed control matrix.
     x0 :
         Initial state
     u :
@@ -344,8 +348,11 @@ def lti_int(
         x = x.at[i + 1].set(xi)
         return x
 
+    # skip intial condition, because can't optimize over it, and it isn't
+    #  really meaninful in the context of having a matrix D
     x = jax.lax.fori_loop(0, u.size, for_body, x)
-    y = jnp.squeeze(C @ x.T)
+    x = x[1:]
+    y = C @ x.T + jnp.squeeze(D @ jnp.atleast_2d(u))
     return x, y
 
 
@@ -378,13 +385,14 @@ def lti_int_single(
 
 
 def eigen_int(
-    D: jax.Array | np.ndarray,
+    eig: jax.Array | np.ndarray,
     EP1: jax.Array | np.ndarray,
     CP: jax.Array | np.ndarray,
+    D: jax.Array | np.ndarray,
     P_inv: jax.Array | np.ndarray,
     x0: jax.Array,
     u: jax.Array,
-) -> jax.Array:
+) -> tuple[jax.Array, jax.Array]:
     """LTI integration, but using eigen-integration matrices.
 
     Note that we do not return the internal states, for efficiency.
@@ -399,12 +407,14 @@ def eigen_int(
 
     Parameters
     ----------
-    D :
+    eig :
         Eigven values for E0.
     EP1 :
         P_inv @ E1
     CP :
         C @ P
+    D :
+        y = C @ x + D @ u
     x0 :
         Initial (internal) state.
     u :
@@ -412,12 +422,14 @@ def eigen_int(
 
     Returns
     -------
-    Observed variables: y.
+    Internal States and observed variables: (x, y).
+    WARNING: The returned internal states `x` are in the eigen-basis, so to
+    get the actual states, one needs to transform to `P @ x`.
     """
-    assert len(D.shape) == 1
+    assert len(eig.shape) == 1
     assert len(EP1.shape) == 2
     assert EP1.shape[1] == 1
-    assert D.size == EP1.shape[0]
+    assert eig.size == EP1.shape[0]
     assert P_inv.shape[0] == P_inv.shape[1] and P_inv.shape[0] == EP1.shape[0]
     assert len(x0.shape) == 1
     assert x0.size % P_inv.shape[0] == 0
@@ -426,7 +438,7 @@ def eigen_int(
     assert u.size > 0
 
     # transform into the eigen vector coordinates
-    x0 = jnp.transpose(P_inv @ x0.reshape(-1, D.size).T)
+    x0 = jnp.transpose(P_inv @ x0.reshape(-1, eig.size).T)
 
     # control wizardry with shapes...
     # ut is a 3-tensor, with indices
@@ -447,11 +459,16 @@ def eigen_int(
         part_eigen_update = functools.partial(eigen_update, d)
         return jax.lax.scan(part_eigen_update, x0, u)[1]
 
-    d = jnp.tile(D, reps=(ut.shape[0], 1))
+    d = jnp.tile(eig, reps=(ut.shape[0], 1))
     x = jax.vmap(jax.vmap(scan_eigen_update))(x0, d, ut)
     assert isinstance(x, jax.Array)
     x = jnp.transpose(x, axes=(0, 2, 1))  # (ref, time, state)
 
-    # desired final output shape (SISO): (ref, time)
-    y = jax.vmap(lambda x: jnp.squeeze(CP @ x.T))(x)
-    return y
+    def get_y(x, u):
+        return jnp.squeeze(CP @ x.T + D @ jnp.atleast_2d(u))
+
+    # desired final output shape (SISO): (time, ref)
+    y = jnp.transpose(jax.vmap(get_y)(x, u.T))
+    x = jnp.transpose(x, axes=(1, 0, 2))  # (time, ref, state)
+    x = x.reshape(x.shape[0], -1)  # (time, flattened ref-states)
+    return x, y

@@ -16,9 +16,83 @@ import typing as tp
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.comp as comp
+
+
+###########
+# helpers #
+###########
+
+
+def refinement_m(n: int, dt: float, dtp: float) -> int:
+    """See the docstring for `control_refinement`."""
+    return int(np.floor(dt * n / dtp))
+
+
+@functools.partial(jax.vmap, in_axes=[None, None, None, 1])
+@functools.partial(jax.vmap, in_axes=[0, None, None, None])
+def _control_refinement(
+    k: jax.Array, dt: jax.Array, dtp: jax.Array, u: jax.Array
+) -> jax.Array:
+    ell = jnp.ceil(k * dtp / dt).astype(int)
+    s1 = jnp.min(jnp.array([dtp, ell * dt - k * dtp]))
+    s2 = jnp.max(jnp.array([0, (k + 1) * dtp - ell * dt]))
+    return (s1 * u[ell - 1] + s2 * u[ell]) / dtp
+
+
+@functools.partial(jax.jit, static_argnames=["dt", "dtp"])
+def control_refinement(
+    dt: jax.Array, dtp: jax.Array, u: jax.Array
+) -> jax.Array:
+    r"""Average the controls `u` to get a refinement.
+
+    Usually `dt == const.dt_sim` and `dtp == const.dt`.
+
+    Parameters
+    ----------
+    dt :
+        Uniform time steps corresponding to the controls `u`.
+    dtp :
+        Refined time steps.
+        The implementation only makes sense for `dt >= dtp`.
+    u :
+        Controls to refine.
+        Shape is 2d, with axis==0 corresponding to time.
+
+    Notes
+    -----
+    Suppose that we have a sequence of controls
+    $u_0, u_1, \ldots, u_{n - 1}$, where $u_k$ is supposed to be applied on
+    $[t_k, t_{k + 1}]$, where $t_k = t_0 + k \, \Delta t$.
+    Define the (continuous-time, but not continuous) indicator function
+    $u(t) = u_k$ when $t \in [t_k, t_{k + 1}]$.
+    Now suppose that a corresponding sequence
+    $\tilde{u}_0, \tilde{u}_1, \ldots, \tilde{u}_{m - 1}$ at times
+    $\tilde{t}_k = t_0 + k \, \widetilde{\Delta t}$ such that
+    $$
+    \tilde{u}_k = \frac{1}{\widetilde{\Delta t}}
+    \int_{\tilde{t}_k}^{\tilde{t}_{k + 1}} u(t) \operatorname*{d}\!t.
+    $$
+    Here, $m := \lfloor t_n / \widetilde{\Delta t} \rfloor$.
+    We assume that $\widetilde{\Delta t} < \Delta t$, because that
+    is what we use in practice and it simplifies the logic somewhat.
+    For the problem statement `dt` == $\Delta t$ and
+    `dtp` == $\widehat{\Delta t}$.
+
+    The outer vmap works with each control axis, and the inner vmap refines each
+    of these control axes.
+    Note that given the assumption that dtp < dt, there can be at most two
+    overlapping intervals, which to code makes judicious use of.
+    """
+    # for correct shapes, we need to tranpose the outputs
+    assert len(u.shape) == 2
+    n = u.shape[0]
+    m = refinement_m(n, dt, dtp)
+    k = jnp.arange(m)
+    return jnp.transpose(_control_refinement(k, dt, dtp, u))
 
 
 ################
@@ -43,8 +117,9 @@ class VState:
         # vestibular models are SISO, with 3 internal states for each
         #  component of the semi-circular canal and 2 internal states for
         #  each linear acceleration components.
-        x_num = 3 * const.E0_acc.shape[0] + 3 * const.E0_omega.shape[0]
-        assert x_num == 15  # subject to change?
+        acc_num = const.vspec_acc.E0.shape[0]
+        omega_num = const.vspec_omega.E0.shape[0]
+        x_num = 3 * acc_num + 3 * omega_num
         y_num = 3 + 3  # 3 linear accelerations and 3 angular velocities
 
         # hack, because some-times we don't really want the x_state.
@@ -59,7 +134,9 @@ class VState:
             if len(self.x_state.shape) == 2:
                 assert len(self.y_state.shape) == 2
                 assert self.x_state.shape[0] == self.y_state.shape[0]
-                assert self.x_state.shape[1] == x_num
+                assert self.x_state.shape[1] == x_num, (
+                    f"{self.x_state.shape}, {x_num}"
+                )
                 assert self.y_state.shape[1] == y_num
             elif len(self.x_state.shape) == 1:
                 assert len(self.y_state.shape) == 1
@@ -334,6 +411,26 @@ class Control:
         else:
             return self
 
+    def refine_control(
+        self, dt: jax.Array | float, dtp: jax.Array | float
+    ) -> "Control":
+        """Get averaged refined controls.
+
+        Parameters
+        ----------
+        dt :
+            Time step corresponding to current controls.
+        dtp :
+            Time step for refined controls.
+            Assume that `dt >= dtp`.
+
+        Returns
+        -------
+        Refined controls.
+        """
+        assert len(self.control.shape) == 2
+        return Control(control_refinement(dt, dtp, self.control))
+
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
@@ -527,6 +624,7 @@ def angle_joint_bot(state: RState, use_xy: bool = True) -> jax.Array:
 
 
 def get_rstate(
+    dt: jax.Array,
     control: Control,
     rstate0: jax.Array,
 ) -> RState:
@@ -549,12 +647,14 @@ def get_rstate(
     x0, y0, z0, roll0, pitch0, yaw0 = rstate0[:6]
     x_dot0, y_dot0, z_dot0, roll_dot0, pitch_dot0, yaw_dot0 = rstate0[6:]
 
-    x, x_dot = comp.discrete_1d_euler(x0, x_dot0, control.x)
-    y, y_dot = comp.discrete_1d_euler(y0, y_dot0, control.y)
-    z, z_dot = comp.discrete_1d_euler(z0, z_dot0, control.z)
-    roll, roll_dot = comp.discrete_1d_euler(roll0, roll_dot0, control.roll)
-    pitch, pitch_dot = comp.discrete_1d_euler(pitch0, pitch_dot0, control.pitch)
-    yaw, yaw_dot = comp.discrete_1d_euler(yaw0, yaw_dot0, control.yaw)
+    x, x_dot = comp.discrete_1d_euler(dt, x0, x_dot0, control.x)
+    y, y_dot = comp.discrete_1d_euler(dt, y0, y_dot0, control.y)
+    z, z_dot = comp.discrete_1d_euler(dt, z0, z_dot0, control.z)
+    roll, roll_dot = comp.discrete_1d_euler(dt, roll0, roll_dot0, control.roll)
+    pitch, pitch_dot = comp.discrete_1d_euler(
+        dt, pitch0, pitch_dot0, control.pitch
+    )
+    yaw, yaw_dot = comp.discrete_1d_euler(dt, yaw0, yaw_dot0, control.yaw)
 
     non_dots = [x, y, z, roll, pitch, yaw]
     dots = [x_dot, y_dot, z_dot, roll_dot, pitch_dot, yaw_dot]
@@ -563,6 +663,8 @@ def get_rstate(
 
 
 def get_vstate(
+    vspec_acc: const.VSpec,
+    vspec_omega: const.VSpec,
     acc_ctrl: jax.Array,
     omega_ctrl: jax.Array,
     vstate0: jax.Array,
@@ -571,6 +673,9 @@ def get_vstate(
 
     Parameters
     ----------
+    vspec :
+        Implicitly determines which time step we are using.
+        E.g., are we using sim or irl.
     acc_ctrl :
         Control linear accelerations, for vestibular model.
         (Acutal linear accelerations, before vestibular processing.)
@@ -584,9 +689,12 @@ def get_vstate(
     -------
     Vestibular state.
     """
+    s_acc = vspec_acc
+    s_ome = vspec_omega
+
     vstate0 = jnp.ravel(vstate0)
-    x_num_acc = const.E0_acc.shape[0]
-    x_num_omega = const.E1_omega.shape[0]
+    x_num_acc = s_acc.E0.shape[0]
+    x_num_omega = s_ome.E1.shape[0]
     assert vstate0.size == 3 * (x_num_acc + x_num_omega)
 
     acc0 = vstate0[: 3 * x_num_acc]
@@ -594,10 +702,10 @@ def get_vstate(
     omega0 = vstate0[3 * x_num_acc :]
     omegax0, omegay0, omegaz0 = list(omega0.reshape(-1, x_num_omega))
     acc_lti_int = functools.partial(
-        comp.lti_int, const.E0_acc, const.E1_acc, const.C_acc
+        comp.lti_int, s_acc.E0, s_acc.E1, s_acc.C, s_acc.D
     )
     omega_lti_int = functools.partial(
-        comp.lti_int, const.E0_omega, const.E1_omega, const.C_omega
+        comp.lti_int, s_ome.E0, s_ome.E1, s_ome.C, s_ome.D
     )
 
     x_accx, y_accx = acc_lti_int(accx0, acc_ctrl[:, 0])
@@ -624,6 +732,8 @@ def _head_acc(rstate: RState, acc: jax.Array) -> jax.Array:
 
 
 def get_vstate_irl(
+    vspec_acc: const.VSpec,
+    vspec_omega: const.VSpec,
     rstate: RState,
     control: Control,
     control0: jax.Array,
@@ -657,7 +767,7 @@ def get_vstate_irl(
     acc_ctrl = jnp.vstack(lin_accs)
     acc_ctrl = jax.vmap(_head_acc)(rstate, acc_ctrl)
     omega_ctrl = jax.vmap(angle_vel)(rstate)
-    vstate = get_vstate(acc_ctrl, omega_ctrl, vstate0)
+    vstate = get_vstate(vspec_acc, vspec_omega, acc_ctrl, omega_ctrl, vstate0)
 
     # convention: technically, vstate0 represents the initial state from the
     #  previous mpc calculation, and not the initial state for the current run
@@ -666,6 +776,9 @@ def get_vstate_irl(
 
 
 def get_states_with_eigen(
+    dt: jax.Array,
+    vspec_acc: const.VSpec,
+    vspec_omega: const.VSpec,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     rstate0: jax.Array,
@@ -674,26 +787,33 @@ def get_states_with_eigen(
     control0: jax.Array,
     control: Control,
 ) -> tuple[RState, VState, VState]:
+    """Return states, using eigenvector state-space computations.
+
+    WARNING: the returned VState internal states should be interpreted as
+    eigen-states.
+    To get the correct internal states, you need to transform `P @ x` where the
+    columns of `P` are the eigenvectors of `E0`.
+    """
+    s_acc = vspec_acc
+    s_ome = vspec_omega
+
     # get irl controls
     control_with0 = Control.from_flat(jnp.vstack([control0, control.control]))
-    rstate = get_rstate(control, jnp.array(rstate0))
+    rstate = get_rstate(dt, control, jnp.array(rstate0))
     acc_irl = jax.vmap(_head_acc)(rstate, control_with0.control[:, :3])
     omega_irl = jax.vmap(angle_vel)(rstate)
 
     # partition
-    a_num = 3 * const.E0_acc.shape[0]
+    a_num = 3 * s_acc.E0.shape[0]
+    w_num = 3 * s_ome.E0.shape[0]
     v0_irl_a = vstate0_irl[:a_num]
     v0_irl_w = vstate0_irl[a_num:]
     v0_sim_a = vstate0_sim[:a_num]
     v0_sim_w = vstate0_sim[a_num:]
 
     # initial irl update (for closed feedback)
-    v0_irl_a = comp.lti_int_single(
-        const.E0_acc, const.E1_acc, v0_irl_a, acc_irl[0]
-    )
-    v0_irl_w = comp.lti_int_single(
-        const.E0_omega, const.E1_omega, v0_irl_w, omega_irl[0]
-    )
+    v0_irl_a = comp.lti_int_single(s_acc.E0, s_acc.E1, v0_irl_a, acc_irl[0])
+    v0_irl_w = comp.lti_int_single(s_ome.E0, s_ome.E1, v0_irl_w, omega_irl[0])
     acc_irl = acc_irl[1:]
     omega_irl = omega_irl[1:]
 
@@ -704,22 +824,19 @@ def get_states_with_eigen(
     u_w = jnp.hstack([omega_irl, omega_ref])
 
     # integrate
-    y_a = comp.eigen_int(
-        const.D_acc, const.EP1_acc, const.CP_acc, const.P_acc_inv, v0_a, u_a
+    x_a, y_a = comp.eigen_int(
+        s_acc.eig, s_acc.EP1, s_acc.CP, s_acc.D, s_acc.P_inv, v0_a, u_a
     )
-    y_w = comp.eigen_int(
-        const.D_omega,
-        const.EP1_omega,
-        const.CP_omega,
-        const.P_omega_inv,
-        v0_w,
-        u_w,
+    x_w, y_w = comp.eigen_int(
+        s_ome.eig, s_ome.EP1, s_ome.CP, s_ome.D, s_ome.P_inv, v0_w, u_w
     )
 
     # res
-    y_irl = jnp.vstack([y_a[:3], y_w[:3]])
-    y_sim = jnp.vstack([y_a[3:], y_w[3:]])
-    return rstate, VState(None, y_irl.T), VState(None, y_sim.T)
+    x_irl = jnp.hstack([x_a[:, :a_num], x_w[:, :w_num]])
+    y_irl = jnp.hstack([y_a[:, :3], y_w[:, :3]])
+    x_sim = jnp.hstack([x_a[:, a_num:], x_w[:, w_num:]])
+    y_sim = jnp.hstack([y_a[:, 3:], y_w[:, 3:]])
+    return rstate, VState(x_irl, y_irl), VState(x_sim, y_sim)
 
 
 ################

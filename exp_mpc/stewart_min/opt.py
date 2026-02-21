@@ -68,6 +68,8 @@ class Weights:
     leg: jax.Array = _init_field(jnp.ones(6))
     leg_vel: jax.Array = _init_field(jnp.ones(6))
     joint_angle: jax.Array = _init_field(jnp.ones(12))
+    roll: jax.Array = _init_field(jnp.ones(1))
+    pitch: jax.Array = _init_field(jnp.ones(1))
     yaw: jax.Array = _init_field(jnp.ones(1))
     yaw_dot: jax.Array = _init_field(jnp.ones(1))
     control: jax.Array = _init_field(jnp.ones(6))
@@ -83,6 +85,10 @@ class Weights:
         assert self.leg_vel.shape[0] == 6
         assert self.joint_angle.ndim == 1
         assert self.joint_angle.shape[0] == 12
+        assert self.roll.ndim == 1
+        assert self.roll.shape[0] == 1
+        assert self.pitch.ndim == 1
+        assert self.pitch.shape[0] == 1
         assert self.yaw.ndim == 1
         assert self.yaw.shape[0] == 1
         assert self.yaw_dot.ndim == 1
@@ -95,6 +101,8 @@ class Weights:
         assert jnp.issubdtype(self.leg.dtype, jnp.floating)
         assert jnp.issubdtype(self.leg_vel.dtype, jnp.floating)
         assert jnp.issubdtype(self.joint_angle.dtype, jnp.floating)
+        assert jnp.issubdtype(self.roll.dtype, jnp.floating)
+        assert jnp.issubdtype(self.pitch.dtype, jnp.floating)
         assert jnp.issubdtype(self.yaw.dtype, jnp.floating)
         assert jnp.issubdtype(self.yaw_dot.dtype, jnp.floating)
         assert jnp.issubdtype(self.control.dtype, jnp.floating)
@@ -144,6 +152,20 @@ class Weights:
         val_scale = jnp.tile(self.joint_angle, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
+    def scale_roll(self, n: int) -> jax.Array:
+        """Get scale weights for flat roll angle array."""
+        time_scale = self._time_scale(n, "roll")
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.roll.size))
+        val_scale = jnp.tile(self.roll, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
+    def scale_pitch(self, n: int) -> jax.Array:
+        """Get scale weights for flat pitch angle array."""
+        time_scale = self._time_scale(n, "pitch")
+        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.pitch.size))
+        val_scale = jnp.tile(self.pitch, (n, 1))
+        return jnp.ravel(time_scale * val_scale)
+
     def scale_yaw(self, n: int) -> jax.Array:
         """Get scale weights for flat yaw angle array."""
         time_scale = self._time_scale(n, "yaw")
@@ -174,6 +196,8 @@ class ExpWeights(Weights):
     alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_roll: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_pitch: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_yaw_dot: jax.Array = _init_field(jnp.ones(1) * 0.0)
     alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
@@ -187,8 +211,10 @@ class ExpWeights(Weights):
             "leg": self.alpha_leg,
             "leg_vel": self.alpha_leg_vel,
             "joint_angle": self.alpha_joint_angle,
+            "roll": self.alpha_roll,
+            "pitch": self.alpha_pitch,
             "yaw": self.alpha_yaw,
-            "yaw_dot": self.alpha_yaw,
+            "yaw_dot": self.alpha_yaw_dot,
             "control": self.alpha_control,
         }
         return jnp.exp(-jnp.arange(n, dtype=float) / n * alpha_map[name])
@@ -200,6 +226,8 @@ class CostTerms:
     leg_cost: quartic_cost.QuarticCost
     leg_vel_cost: quartic_cost.QuarticCost
     joint_angle_cost: quartic_cost.QuarticCost
+    roll_cost: quartic_cost.QuarticCost
+    pitch_cost: quartic_cost.QuarticCost
     yaw_cost: quartic_cost.QuarticCost
     yaw_dot_cost: quartic_cost.QuarticCost
 
@@ -264,7 +292,7 @@ def acc_cost_arr(
     def hyper(arr0, arr1):
         arr0 = jnp.atleast_1d(arr0)
         arr1 = jnp.atleast_1d(arr1)
-        return _hyper(arr0 @ arr0)  # + _hyper(arr1 @ arr1)  # TODO: delete?
+        return _hyper(arr0 @ arr0) + _hyper(arr1 @ arr1)
 
     return jax.vmap(hyper)(diff_xy.T, diff_z)
 
@@ -405,6 +433,50 @@ def _joint_angle_boundary_cost(
     return jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
+def roll_boundary_cost_arr(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: utils.RState,
+    control: utils.Control,
+) -> jax.Array:
+    roll = state.roll[1:]
+    costs = jax.vmap(cost)(roll)
+    w = weights.scale_roll(control.size)
+    return costs * w
+
+
+def _roll_boundary_cost(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: utils.RState,
+    control: utils.Control,
+) -> jax.Array:
+    cost_arr = roll_boundary_cost_arr(weights, cost, state, control)
+    return jnp.mean(cost_arr)
+
+
+def pitch_boundary_cost_arr(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: utils.RState,
+    control: utils.Control,
+) -> jax.Array:
+    pitch = state.pitch[1:]
+    costs = jax.vmap(cost)(pitch)
+    w = weights.scale_pitch(control.size)
+    return costs * w
+
+
+def _pitch_boundary_cost(
+    weights: Weights,
+    cost: quartic_cost.QuarticCost,
+    state: utils.RState,
+    control: utils.Control,
+) -> jax.Array:
+    cost_arr = pitch_boundary_cost_arr(weights, cost, state, control)
+    return jnp.mean(cost_arr)
+
+
 def yaw_boundary_cost_arr(
     weights: Weights,
     cost: quartic_cost.QuarticCost,
@@ -434,6 +506,7 @@ def yaw_dot_boundary_cost_arr(
     control: utils.Control,
 ) -> jax.Array:
     yaw_dot = state.yaw_dot[1:]
+    yaw_dot = jnp.ravel(jnp.transpose(yaw_dot))
     costs = jax.vmap(cost)(yaw_dot)
     w = weights.scale_yaw_dot(control.size)
     return costs * w
@@ -466,6 +539,86 @@ def _control_cost(
     return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
+def _terminal_cost(
+    rstate: utils.RState,
+    vstate_irl: utils.VState,
+    vstate_sim: utils.VState,
+) -> jax.Array:
+    # setup
+    vi = vstate_irl
+    vs = vstate_sim
+
+    a_P = const.vspec_acc_sim.P
+    o_P = const.vspec_omega_sim.P
+
+    x_accx0 = a_P @ vs.x_accx[0]
+    x_accx1 = a_P @ vs.x_accx[-1]
+    x_accy0 = a_P @ vs.x_accy[0]
+    x_accy1 = a_P @ vs.x_accy[-1]
+    x_accz0 = a_P @ vs.x_accz[0]
+    x_accz1 = a_P @ vs.x_accz[-1]
+    x_omegax0 = o_P @ vs.x_omegax[0]
+    x_omegax1 = o_P @ vs.x_omegax[-1]
+    x_omegay0 = o_P @ vs.x_omegay[0]
+    x_omegay1 = o_P @ vs.x_omegay[-1]
+    x_omegaz0 = o_P @ vs.x_omegaz[0]
+    x_omegaz1 = o_P @ vs.x_omegaz[-1]
+
+    irl_x_omegaz1 = o_P @ vi.x_omegaz[-1]
+    o_diff = irl_x_omegaz1 - x_omegaz1
+
+    def o_V(x):
+        return jnp.dot(const.ome_V @ x, x)
+
+    # compute
+
+    def scale(x):
+        return jnp.exp(-50.0 * jnp.sum(jnp.square(x)))
+
+    vt_cost = o_V(o_diff) * (scale(x_omegaz0) * scale(x_omegaz1)) * 4.0
+
+    scale0 = jnp.array(
+        [
+            scale(x_accx0),
+            scale(x_accy0),
+            scale(x_accz0),
+            scale(x_omegax0),
+            scale(x_omegay0),
+            scale(x_omegaz0),
+            scale(x_accx0),
+            scale(x_accy0),
+            scale(x_accz0),
+            scale(x_omegax0),
+            scale(x_omegay0),
+            scale(x_omegaz0),
+        ]
+    )
+    scale1 = jnp.array(
+        [
+            scale(x_accx1),
+            scale(x_accy1),
+            scale(x_accz1),
+            scale(x_omegax1),
+            scale(x_omegay1),
+            scale(x_omegaz1),
+            scale(x_accx1),
+            scale(x_accy1),
+            scale(x_accz1),
+            scale(x_omegax1),
+            scale(x_omegay1),
+            scale(x_omegaz1),
+        ]
+    )
+
+    scales = scale0 * scale1 * 0.2
+    rt_cost = jnp.sum(jnp.square(rstate.state[-1]) * scales)
+    rt_cost += jnp.square(rstate.state[-1][5]) * (
+        scale(x_omegaz0) * scale(x_omegaz1) * 2.0
+    )
+
+    return rt_cost + vt_cost
+
+
 def _cost(
     weights: Weights,
     cost_terms: CostTerms,
@@ -480,7 +633,16 @@ def _cost(
 ) -> jax.Array:
     # precompute states
     rstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
-        acc_ref, omega_ref, rstate0, vstate0_irl, vstate0_sim, control0, control
+        const.dt_sim,
+        const.vspec_acc_sim,
+        const.vspec_omega_sim,
+        acc_ref,
+        omega_ref,
+        rstate0,
+        vstate0_irl,
+        vstate0_sim,
+        control0,
+        control,
     )
 
     # cost
@@ -498,12 +660,16 @@ def _cost(
     cost += _joint_angle_boundary_cost(
         weights, cost_terms.joint_angle_cost, rstate, control, use_rotary
     )
+    cost += _roll_boundary_cost(weights, cost_terms.roll_cost, rstate, control)
+    cost += _pitch_boundary_cost(
+        weights, cost_terms.pitch_cost, rstate, control
+    )
     cost += _yaw_boundary_cost(weights, cost_terms.yaw_cost, rstate, control)
-    if use_rotary:
-        cost += _yaw_dot_boundary_cost(
-            weights, cost_terms.yaw_dot_cost, rstate, control
-        )
+    cost += _yaw_dot_boundary_cost(
+        weights, cost_terms.yaw_dot_cost, rstate, control
+    )
     cost += _control_cost(weights, control)
+    cost += _terminal_cost(rstate, vstate_irl, vstate_sim)
     return cost
 
 
@@ -680,13 +846,17 @@ class TrainState:
         -------
         Zeroed train state.
         """
+        acc_num = const.vspec_acc.E0.shape[0]
+        omega_num = const.vspec_omega.E0.shape[0]
+        v0_earth = const.vspec_acc.v0_earth
+        v0_moon = const.vspec_acc.v0_moon
         u_num = 6
         r_num = u_num * 2
-        v_num = 3 * const.E0_acc.shape[0] + 3 * const.E0_omega.shape[0]
+        v_num = 3 * acc_num + 3 * omega_num
 
         # gravity_range and gravity_map (setup)
-        gr = (2 * const.E0_acc.shape[0], 3 * const.E0_acc.shape[0])
-        g_map = {"earth": const.v0_earth, "moon": const.v0_moon}
+        gr = (2 * acc_num, 3 * acc_num)
+        g_map = {"earth": v0_earth, "moon": v0_moon}
 
         def zeros(n):
             return jnp.zeros(n, dtype=float)
@@ -770,6 +940,8 @@ def train_step_with_cost_jit(
     max_ls: int = 8,
 ) -> tuple[TrainState, utils.TableSol, lbfgs_result]:
     ts = train_state
+
+    # compute
     opt_params = lbfgs.OptParamsLBFGS(
         fun=lbfgs_cost_and_grad,
         max_iter=max_iter,
@@ -784,12 +956,30 @@ def train_step_with_cost_jit(
         fun_params=(ts, weights, cost_terms, acc_ref, omega_ref),
     )
 
-    control = utils.Control.from_flat(res[0])
-    rstate = utils.get_rstate(control, ts.rstate0)
-    vstate_irl = utils.get_vstate_irl(
-        rstate, control, ts.control0, ts.vstate0_irl
+    # convert to non-sim time
+    control_sim = utils.Control.from_flat(res[0])
+    control = control_sim.refine_control(const.dt_sim, const.dt)
+    ctrl_refinement = functools.partial(
+        utils.control_refinement, const.dt_sim, const.dt
     )
-    vstate_sim = utils.get_vstate(acc_ref, omega_ref, ts.vstate0_sim)
+    acc_ref = ctrl_refinement(acc_ref)
+    omega_ref = ctrl_refinement(omega_ref)
+
+    # compute results
+    rstate = utils.get_rstate(const.dt, control, ts.rstate0)
+    vstate_irl = utils.get_vstate_irl(
+        const.vspec_acc,
+        const.vspec_omega,
+        rstate,
+        control,
+        ts.control0,
+        ts.vstate0_irl,
+    )
+    vstate_sim = utils.get_vstate(
+        const.vspec_acc, const.vspec_omega, acc_ref, omega_ref, ts.vstate0_sim
+    )
+
+    # bookkeeping
     table_sol = utils.TableSol(
         x=rstate,
         u=control,
@@ -801,13 +991,12 @@ def train_step_with_cost_jit(
             cost=jnp.array(res[1]),
         ),
     )
-
     next_state = TrainState(
         rstate0=rstate.state[1],
         vstate0_irl=vstate_irl.x_state[0],  # NOT off-by-one
         vstate0_sim=vstate_sim.x_state[1],
-        control0=control.control[0],
-        control_flat=control.flatten(),
+        control0=res[0][:6],
+        control_flat=res[0],
     )
     return next_state, table_sol, res
 
