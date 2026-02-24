@@ -630,6 +630,7 @@ def _cost(
     control0: jax.Array,
     control: utils.Control,
     use_rotary: bool = True,  # static
+    use_terminal: bool = True,
 ) -> jax.Array:
     # precompute states
     rstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
@@ -669,7 +670,8 @@ def _cost(
         weights, cost_terms.yaw_dot_cost, rstate, control
     )
     cost += _control_cost(weights, control)
-    cost += _terminal_cost(rstate, vstate_irl, vstate_sim)
+    if use_terminal:
+        cost += _terminal_cost(rstate, vstate_irl, vstate_sim)
     return cost
 
 
@@ -678,7 +680,7 @@ def _cost(
 #######################
 
 
-@functools.partial(jax.jit, static_argnames=["use_rotary"])
+@functools.partial(jax.jit, static_argnames=["use_rotary", "use_terminal"])
 def cost_flat_jax(
     weights: Weights,
     cost_terms: CostTerms,
@@ -690,6 +692,7 @@ def cost_flat_jax(
     control0: jax.Array,
     control_flat: jax.Array,
     use_rotary: bool = True,
+    use_terminal: bool = True,
 ) -> jax.Array:
     control = utils.Control.from_flat(control_flat)
     return _cost(
@@ -703,10 +706,11 @@ def cost_flat_jax(
         control0,
         control,
         use_rotary,
+        use_terminal,
     )
 
 
-@functools.partial(jax.jit, static_argnames=["use_rotary"])
+@functools.partial(jax.jit, static_argnames=["use_rotary", "use_terminal"])
 def cost_and_grad_flat_jax(
     weights: Weights,
     cost_terms: CostTerms,
@@ -718,6 +722,7 @@ def cost_and_grad_flat_jax(
     control0: jax.Array,
     control_flat: jax.Array,
     use_rotary: bool = True,
+    use_terminal: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     cost = functools.partial(
         cost_flat_jax,
@@ -730,6 +735,7 @@ def cost_and_grad_flat_jax(
         vstate0_sim,
         control0,
         use_rotary=use_rotary,
+        use_terminal=use_terminal,
     )
     cost_and_grad = jax.value_and_grad(cost)
     return cost_and_grad(control_flat)
@@ -929,8 +935,7 @@ def lbfgs_cost(
 lbfgs_cost_and_grad = jax.jit(jax.value_and_grad(lbfgs_cost, argnums=1))
 
 
-@functools.partial(jax.jit, static_argnames=["max_iter", "max_ls"])
-def train_step_with_cost_jit(
+def train_step_with_cost_jax(
     weights: Weights,
     cost_terms: CostTerms,
     acc_ref: jax.Array,
@@ -938,6 +943,7 @@ def train_step_with_cost_jit(
     train_state: TrainState,
     max_iter: int = 16,
     max_ls: int = 8,
+    unroll: bool = True,
 ) -> tuple[TrainState, utils.TableSol, lbfgs_result]:
     ts = train_state
 
@@ -954,6 +960,7 @@ def train_step_with_cost_jit(
         opt_params=opt_params,
         x0=train_state.control_flat,
         fun_params=(ts, weights, cost_terms, acc_ref, omega_ref),
+        unroll=unroll,
     )
 
     # convert to non-sim time
@@ -999,6 +1006,12 @@ def train_step_with_cost_jit(
         control_flat=res[0],
     )
     return next_state, table_sol, res
+
+
+train_step_with_cost_jit = jax.jit(
+    train_step_with_cost_jax,
+    static_argnames=["max_iter", "max_ls", "unroll"],
+)
 
 
 def train_step_with_cost(
