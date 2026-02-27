@@ -20,6 +20,7 @@ import numpy as np
 
 import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.comp as comp
+import exp_mpc.stewart_min.vest as vest
 
 
 ###########
@@ -99,6 +100,7 @@ def control_refinement(
 # book-keeping #
 ################
 
+
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class VState:
@@ -112,74 +114,6 @@ class VState:
 
     x_state: tp.Optional[jax.Array]
     y_state: jax.Array
-
-    def __post_init__(self):
-        # vestibular models are SISO, with 3 internal states for each
-        #  component of the semi-circular canal and 2 internal states for
-        #  each linear acceleration components.
-        acc_num = const.vspec_acc.E0.shape[0]
-        omega_num = const.vspec_omega.E0.shape[0]
-        x_num = 3 * acc_num + 3 * omega_num
-        y_num = 3 + 3  # 3 linear accelerations and 3 angular velocities
-
-        # hack, because some-times we don't really want the x_state.
-        if self.x_state is None:
-            if len(self.y_state.shape) == 2:
-                assert self.y_state.shape[1] == y_num, f"{self.y_state.shape}"
-            elif len(self.y_state.shape) == 1:
-                assert self.y_state.size == y_num
-            else:
-                raise RuntimeError(f"bad y_state shape: {self.y_state.shape}")
-        else:
-            if len(self.x_state.shape) == 2:
-                assert len(self.y_state.shape) == 2
-                assert self.x_state.shape[0] == self.y_state.shape[0]
-                assert self.x_state.shape[1] == x_num, (
-                    f"{self.x_state.shape}, {x_num}"
-                )
-                assert self.y_state.shape[1] == y_num
-            elif len(self.x_state.shape) == 1:
-                assert len(self.y_state.shape) == 1
-                assert self.x_state.size == x_num
-                assert self.y_state.size == y_num
-            else:
-                raise RuntimeError(f"bad x_state shape: {self.x_state.shape}")
-
-    @property
-    def x_accx(self) -> jax.Array:
-        if self.x_state is None:
-            raise RuntimeError("x_state is None")
-        return self.x_state[..., 0 : 0 + 2]
-
-    @property
-    def x_accy(self) -> jax.Array:
-        if self.x_state is None:
-            raise RuntimeError("x_state is None")
-        return self.x_state[..., 2 : 2 + 2]
-
-    @property
-    def x_accz(self) -> jax.Array:
-        if self.x_state is None:
-            raise RuntimeError("x_state is None")
-        return self.x_state[..., 4 : 4 + 2]
-
-    @property
-    def x_omegax(self) -> jax.Array:
-        if self.x_state is None:
-            raise RuntimeError("x_state is None")
-        return self.x_state[..., 6 : 6 + 3]
-
-    @property
-    def x_omegay(self) -> jax.Array:
-        if self.x_state is None:
-            raise RuntimeError("x_state is None")
-        return self.x_state[..., 9 : 9 + 3]
-
-    @property
-    def x_omegaz(self) -> jax.Array:
-        if self.x_state is None:
-            raise RuntimeError("x_state is None")
-        return self.x_state[..., 12 : 12 + 3]
 
     @property
     def y_accx(self) -> jax.Array:
@@ -228,6 +162,14 @@ class VState:
             return VState(x_state, self.y_state[0])
         else:
             return self
+
+    @property
+    def size(self) -> int:
+        """Get number of time steps that control represents."""
+        if len(self.y_state.shape) == 2:
+            return self.y_state.shape[0]
+        else:
+            return 1  # 1 time step
 
 
 @jax.tree_util.register_dataclass
@@ -663,8 +605,8 @@ def get_rstate(
 
 
 def get_vstate(
-    vspec_acc: const.VSpec,
-    vspec_omega: const.VSpec,
+    vspec_acc: vest.VSpec,
+    vspec_omega: vest.VSpec,
     acc_ctrl: jax.Array,
     omega_ctrl: jax.Array,
     vstate0: jax.Array,
@@ -732,8 +674,8 @@ def _head_acc(rstate: RState, acc: jax.Array) -> jax.Array:
 
 
 def get_vstate_irl(
-    vspec_acc: const.VSpec,
-    vspec_omega: const.VSpec,
+    vspec_acc: vest.VSpec,
+    vspec_omega: vest.VSpec,
     rstate: RState,
     control: Control,
     control0: jax.Array,
@@ -777,8 +719,8 @@ def get_vstate_irl(
 
 def get_states_with_eigen(
     dt: jax.Array,
-    vspec_acc: const.VSpec,
-    vspec_omega: const.VSpec,
+    vspec_acc: vest.VSpec,
+    vspec_omega: vest.VSpec,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     rstate0: jax.Array,
