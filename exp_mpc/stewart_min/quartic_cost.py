@@ -17,6 +17,7 @@ optimization routines to work.
 from __future__ import annotations
 
 import dataclasses
+import typing as tp
 
 import numpy as np
 import jax
@@ -200,6 +201,7 @@ class QuarticCost:
     knots: jax.Array
     low: jax.Array
     high: jax.Array
+    center: jax.Array
 
     @classmethod
     def from_bounds(
@@ -208,9 +210,10 @@ class QuarticCost:
         sizes: list[float],
         low: float,
         high: float,
+        center: tp.Optional[float] = None,
     ) -> "QuarticCost":
         """Create a quartic cost function from bounds.
-        
+
         Parameters
         ----------
         margins :
@@ -229,11 +232,22 @@ class QuarticCost:
             Lower bound of the (evaluation) interval.
         high :
             Upper bound of the (evaluation) interval.
+        center :
+            Center of the cost function.
+            Determines a linear scale that may break the symmetry of the cost
+            function.
+            If center is given, the function is still twice continuously
+            differentiable everywhere.
         """
         assert len(margins) + 1 == len(sizes)
         assert sorted(sizes) == sizes
         assert sum(margins) <= 1.0
         assert low < high
+
+        if center is not None:
+            assert low < center and center < high
+        else:
+            center = (high + low) / 2.0
 
         unity_knots = [1.0]
         for m in reversed(margins):
@@ -254,6 +268,7 @@ class QuarticCost:
             knots=jnp.array(unity_knots, dtype=float),
             low=jnp.array(low, dtype=float),
             high=jnp.array(high, dtype=float),
+            center=jnp.array(center, dtype=float),
         )
 
     @jax.jit
@@ -266,9 +281,13 @@ class QuarticCost:
         x = jnp.ravel(x).reshape()
 
         # scale x to [0, 1], where the coefficients are defined
-        mid = (self.high + self.low) / 2.0
-        width = (self.high - self.low) / 2.0
-        x = jnp.abs(x - mid) / width
+
+        width = jax.lax.cond(
+            x <= self.center,
+            lambda: self.center - self.low,
+            lambda: self.high - self.center,
+        )
+        x = jnp.abs(x - self.center) / width
 
         index = jnp.searchsorted(self.knots, x) - 1
         index = jnp.clip(index, 0, self.knots.size - 2)
