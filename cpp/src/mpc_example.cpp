@@ -23,13 +23,13 @@ int main() {
   std::vector<double> vstate0_irl(15, 0.0);
   std::vector<double> vstate0_sim(15, 0.0);
   std::vector<double> control0(6, 0.0);
-  std::vector<double> last_control(200 * 6, 0.0);
+  std::vector<double> control_horizon(200 * 6, 0.0);
   std::vector<std::vector<double>> control_hist;
 
-  vstate0_irl[4] = 9.18440318e-06;  // earth
-  vstate0_irl[5] = 3.78252396e01;   // earth
-  vstate0_sim[4] = 9.18440318e-06;  // earth
-  vstate0_sim[5] = 3.78252396e01;   // earth
+  vstate0_irl[4] = 2.71766997e-14;  // earth
+  vstate0_irl[5] = 6.26566416e+00;  // earth
+  vstate0_sim[4] = 2.71766997e-14;  // earth
+  vstate0_sim[5] = 6.26566416e+00;  // earth
 
   // pjrt setup
   auto client = std::make_shared<pjrt::Client>();
@@ -41,6 +41,17 @@ int main() {
   // without sleeping, the BUFFER::to_device call sometimes segfaults
   // I do not now what the optimal sleep time is, but 1ms is sufficient
   std::this_thread::sleep_for(std::chrono::microseconds(1000));
+
+  // pjrt resuse
+  std::shared_ptr<pjrt::Buffer> last_control_buff =
+      pjrt::Buffer::to_device_blocking(control_horizon.data(),
+                                       control_horizon.size(), client, device);
+  std::shared_ptr<pjrt::Buffer> vstate0_irl_buff =
+      pjrt::Buffer::to_device_blocking(vstate0_irl.data(), vstate0_irl.size(),
+                                       client, device);
+  std::shared_ptr<pjrt::Buffer> vstate0_sim_buff =
+      pjrt::Buffer::to_device_blocking(vstate0_sim.data(), vstate0_sim.size(),
+                                       client, device);
 
   // random input timing
   std::vector<double> timings(num_samples);
@@ -56,20 +67,18 @@ int main() {
                                          client, device),
         pjrt::Buffer::to_device_blocking(rstate0.data(), rstate0.size(), client,
                                          device),
-        pjrt::Buffer::to_device_blocking(vstate0_irl.data(), vstate0_irl.size(),
-                                         client, device),
-        pjrt::Buffer::to_device_blocking(vstate0_sim.data(), vstate0_sim.size(),
-                                         client, device),
+        vstate0_irl_buff,
+        vstate0_sim_buff,
         pjrt::Buffer::to_device_blocking(control0.data(), control0.size(),
                                          client, device),
-        pjrt::Buffer::to_device_blocking(last_control.data(),
-                                         last_control.size(), client, device),
+        last_control_buff,
     };
     auto output_buffers = aot_comp.execute_blocking(input_buffers);
-    output_buffers[0]->to_host_blocking(last_control.data(),
-                                        last_control.size());
-    output_buffers[1]->to_host_blocking(vstate0_irl.data(), vstate0_irl.size());
-    output_buffers[2]->to_host_blocking(vstate0_sim.data(), vstate0_sim.size());
+    output_buffers[0]->to_host_blocking(control_horizon.data(),
+                                        control_horizon.size());
+    last_control_buff = output_buffers[1];
+    vstate0_irl_buff = output_buffers[2];
+    vstate0_sim_buff = output_buffers[3];
 
     // end timing
     auto end = std::chrono::high_resolution_clock::now();
@@ -78,12 +87,12 @@ int main() {
             .count();
 
     // update history
-    control_hist.push_back(last_control);
+    control_hist.push_back(control_horizon);
     for (std::size_t i = 0; i < 6; i++) {
-      control0[i] = last_control[i];
+      control0[i] = control_horizon[i];
       rstate0[i] =
-          rstate0[i] + dt * rstate0[i + 6] + 0.5 * dt * dt * last_control[i];
-      rstate0[i + 6] = rstate0[i + 6] + dt * last_control[i];
+          rstate0[i] + dt * rstate0[i + 6] + 0.5 * dt * dt * control_horizon[i];
+      rstate0[i + 6] = rstate0[i + 6] + dt * control_horizon[i];
     }
   }
 
@@ -121,8 +130,8 @@ int main() {
   std::cout << "Max timing index: " << max_index << std::endl;
 
   // not setinels?
-  std::cout << "Output data: " << last_control[0] << ", " << last_control[1]
-            << std::endl;
+  std::cout << "Output data: " << control_horizon[0] << ", "
+            << control_horizon[1] << std::endl;
 
   // save interesting data to file (and use scoping for implicit file closing)
   {

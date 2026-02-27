@@ -66,26 +66,29 @@ def control_refinement(
     Notes
     -----
     Suppose that we have a sequence of controls
-    $u_0, u_1, \ldots, u_{n - 1}$, where $u_k$ is supposed to be applied on
-    $[t_k, t_{k + 1}]$, where $t_k = t_0 + k \, \Delta t$.
+    :math:`u_0, u_1, \ldots, u_{n - 1}`, where :math:`u_k` is supposed to be
+    applied on :math:`[t_k, t_{k + 1}]`, where
+    :math:`t_k = t_0 + k \, \Delta t`.
     Define the (continuous-time, but not continuous) indicator function
-    $u(t) = u_k$ when $t \in [t_k, t_{k + 1}]$.
+    :math:`u(t) = u_k` when :math:`t \in [t_k, t_{k + 1}]`.
     Now suppose that a corresponding sequence
-    $\tilde{u}_0, \tilde{u}_1, \ldots, \tilde{u}_{m - 1}$ at times
-    $\tilde{t}_k = t_0 + k \, \widetilde{\Delta t}$ such that
-    $$
+    :math:`\tilde{u}_0, \tilde{u}_1, \ldots, \tilde{u}_{m - 1}` at times
+    :math:`\tilde{t}_k = t_0 + k \, \widetilde{\Delta t}` such that
+
+    .. math::
+
     \tilde{u}_k = \frac{1}{\widetilde{\Delta t}}
     \int_{\tilde{t}_k}^{\tilde{t}_{k + 1}} u(t) \operatorname*{d}\!t.
-    $$
-    Here, $m := \lfloor t_n / \widetilde{\Delta t} \rfloor$.
-    We assume that $\widetilde{\Delta t} < \Delta t$, because that
+
+    Here, :math:`m := \lfloor t_n / \widetilde{\Delta t} \rfloor`.
+    We assume that :math:`\widetilde{\Delta t} < \Delta t`, because that
     is what we use in practice and it simplifies the logic somewhat.
-    For the problem statement `dt` == $\Delta t$ and
-    `dtp` == $\widehat{\Delta t}$.
+    For the problem statement `dt` == :math:`\Delta t` and
+    `dtp` == :math:`\widehat{\Delta t}`.
 
     The outer vmap works with each control axis, and the inner vmap refines each
     of these control axes.
-    Note that given the assumption that dtp < dt, there can be at most two
+    Note that given the assumption that `dtp < dt`, there can be at most two
     overlapping intervals, which to code makes judicious use of.
     """
     # for correct shapes, we need to tranpose the outputs

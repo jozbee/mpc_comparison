@@ -9,7 +9,8 @@ method, which is noticeably more efficient for back-propogation algorithms.
 
 ## Fast integration scheme
 
-Compute the matrix exponential for a small-time step $\Delta t$, and then iteratively solve the corresponding initial value problem.
+Compute the matrix exponential for a small-time step :math:`\Delta t`, and then
+iteratively solve the corresponding initial value problem.
 We explicitly spell this out.
 Given an LTI system
 
@@ -21,7 +22,8 @@ the solution is
 
 .. math::
 
-  x(t) = e^{A t} x_0 + \int_0^t e^{A \, (t - \tau)} \, B u(\tau) \operatorname{d}\!\tau.
+  x(t) = e^{A t} x_0 + \int_0^t e^{A \, (t - \tau)} \, B u(\tau)
+  \operatorname{d}\!\tau.
 
 Let :math:`0 = t_0 < t_1 < \ldots < t_N = T` be a partition with each difference
 :math:`t_k - t_{k - 1} = \Delta t` constant.
@@ -31,7 +33,8 @@ Define the (constant) matrices
 
 .. math::
 
-  E_0 = e^{A \, \Delta t} \quad\text{and}\quad E_1 = \int_0^{\Delta t} e^{A \, (\Delta t - \tau)} B \operatorname{d}\!\tau.
+  E_0 = e^{A \, \Delta t} \quad\text{and}\quad E_1 = \int_0^{\Delta t}
+  e^{A \, (\Delta t - \tau)} B \operatorname{d}\!\tau.
 
 (Note that multiplication of :math:`B` in :math:`E_1`.)
 Then
@@ -65,7 +68,8 @@ If we introduce the notation :math:`\tilde{x}_k = P^{-1} x_k` and
 
 .. math::
 
-  \tilde{x}_k = D \tilde{x}_{k - 1} + \tilde{u}_{k - 1}, \quad \tilde{x}_0 = P^{-1} x_0.
+  \tilde{x}_k = D \tilde{x}_{k - 1} + \tilde{u}_{k - 1}, \quad
+  \tilde{x}_0 = P^{-1} x_0.
 
 again, with :math:`D` diagonal.
 So, these update rules can be applied componentwise.
