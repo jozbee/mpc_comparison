@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 .PHONY: \
 	all clean \
 	mpc_example_clean pjrt_clean mpc_export_clean \
@@ -33,8 +35,8 @@ mpc_example_clean: pjrt_clean mpc_export_clean
 
 artifacts/pjrt_exec.o: third_party/call_jax_from_cpp/Makefile
 	mkdir -p artifacts && mkdir -p third_party/call_jax_from_cpp/artifacts
-	cd third_party/call_jax_from_cpp/ && make pjrt_exec
-	cp third_party/call_jax_from_cpp/artifacts/pjrt_exec.o artifacts/.
+	cd third_party/call_jax_from_cpp/ && make artifacts/pjrt_exec.o
+	mv third_party/call_jax_from_cpp/artifacts/pjrt_exec.o artifacts/.
 
 pjrt_clean:
 	rm -f artifacts/pjrt_exec.o

@@ -110,7 +110,7 @@ def mpc_solver(
         x0=last_control,
         fun_params=(rstate0, vstate0_irl, vstate0_sim, control0),
     )
-    control_irl = (
+    control_horizon = (
         utils.Control.from_flat(new_last_control)
         .refine_control(dt_mpc, dt)
         .flatten()
@@ -118,7 +118,7 @@ def mpc_solver(
 
     # only grab the specified horizon
     # (the entire horizon is meaningful, but probably will confuse user...)
-    control_irl = control_irl[: 6 * n]
+    control_horizon = control_horizon[: 6 * n]
 
     ##################
     # update vstates #
@@ -155,7 +155,7 @@ def mpc_solver(
     # res
     v0_irl = jnp.concatenate([v0_irl_a, v0_irl_w])
     v0_sim = jnp.concatenate([v0_sim_a, v0_sim_w])
-    return control_irl, new_last_control, v0_irl, v0_sim
+    return control_horizon, new_last_control, v0_irl, v0_sim
 
 
 if __name__ == "__main__":

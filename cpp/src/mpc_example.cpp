@@ -5,7 +5,6 @@
 
 #include <filesystem>
 #include <iostream>
-#include <thread>
 
 #include "third_party/call_jax_from_cpp/src/pjrt_exec/pjrt_exec.hpp"
 #include "third_party/highfive/include/highfive/highfive.hpp"
@@ -36,11 +35,6 @@ int main() {
   auto devices = client->get_devices();
   auto device = devices[0];
   pjrt::AOTComputation aot_comp(base_name, client);
-
-  // WARNING: sleep to avoid segfault
-  // without sleeping, the BUFFER::to_device call sometimes segfaults
-  // I do not now what the optimal sleep time is, but 1ms is sufficient
-  std::this_thread::sleep_for(std::chrono::microseconds(1000));
 
   // pjrt resuse
   std::shared_ptr<pjrt::Buffer> last_control_buff =
