@@ -94,3 +94,11 @@ bot_normals = np.array(
     ]
 )
 bot_normals /= np.linalg.norm(bot_normals, axis=1)[:, np.newaxis]
+
+#################
+# home geometry #
+#################
+
+cart_home = np.array([0.0, 0.0, 0.1])  # home cartesian translation
+tops_home = np.array([top + cart_home for top in tops])
+lengths_home = float(np.mean(np.linalg.norm(tops_home - bots, axis=1)))

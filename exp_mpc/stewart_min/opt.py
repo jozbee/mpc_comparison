@@ -605,7 +605,9 @@ def _terminal_cost(
     )
 
     scales = scale0 * scale1 * weights.terminal_rt_scale
-    rt_cost = jnp.sum(jnp.square(rstate.state[-1]) * scales)
+    last_state = rstate.state[-1]
+    last_state = last_state.at[:3].subtract(const.cart_home)
+    rt_cost = jnp.sum(jnp.square(last_state) * scales)
     rt_cost += jnp.square(rstate.state[-1][5]) * (
         scale(x_omegaz0) * scale(x_omegaz1) * weights.terminal_rt_scale * 10.0
     )
@@ -820,8 +822,11 @@ class TrainState:
                 g_map[vstate0_mode[1]]
             )
 
+        rstate0 = zeros(r_num)
+        rstate0 = rstate0.at[:3].add(const.cart_home)
+
         return cls(
-            rstate0=zeros(r_num),
+            rstate0=rstate0,
             vstate0_irl=vstate0_irl,
             vstate0_sim=vstate0_sim,
             control0=zeros(u_num),

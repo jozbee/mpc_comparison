@@ -160,6 +160,7 @@ def mpc_solver(
 
 if __name__ == "__main__":
     # mpc params
+    use_terminal = True
     n = 200
     margins = [0.2, 0.1]
     sizes = [1.0, 2**3, 2**8]
@@ -178,6 +179,7 @@ if __name__ == "__main__":
         sizes=[1.0, 2**3, 2**5, 2**10],
         low=const.leg_min,
         high=const.leg_max,
+        center=const.lengths_home,
     )
     leg_vel_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
@@ -261,7 +263,7 @@ if __name__ == "__main__":
         vspec_omega_mpc,
         weights,
         cost_terms,
-        True,  # use terminal
+        use_terminal,
         # acc_ref,
         # omega_ref,
         # state0,

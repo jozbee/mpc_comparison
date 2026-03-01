@@ -19,6 +19,7 @@ int main() {
   const std::vector<double> acc_ref = {1.0, 0.0, 9.81};
   const std::vector<double> omega_ref = {0.0, 0.0, 0.1};
   std::vector<double> rstate0(2 * 6, 0.0);
+  rstate0[2] = 0.1;  // home z-coordinate
   std::vector<double> vstate0_irl(15, 0.0);
   std::vector<double> vstate0_sim(15, 0.0);
   std::vector<double> control0(6, 0.0);
