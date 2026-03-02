@@ -167,11 +167,22 @@ if __name__ == "__main__":
     euler_margins = [0.2 / 3.0, 0.1 / 3.0]
     euler_sizes = [2**0, 2**3, 2**8]
 
+    # # slow earth
+    # weights = opt.ExpWeights(
+    #     acc=jnp.array([1e1, 1e1, 1e0]),
+    #     omega=jnp.array([1e1, 1e1, 1e1]),
+    #     alpha_acc=jnp.array([0.0]),
+    #     alpha_omega=jnp.array([0.0]),
+    # )
+
+    # fast moon
     weights = opt.ExpWeights(
-        acc=jnp.array([1e1, 1e1, 1e0]),
-        omega=jnp.array([1e1, 1e1, 1e1]),
+        acc=jnp.array([1e2, 1e2, 1e0]),
+        omega=jnp.array([3e2, 3e2, 3e2]),
         alpha_acc=jnp.array([0.0]),
-        alpha_omega=jnp.array([0.0]),
+        alpha_omega=jnp.array([1.0]),
+        terminal_vt_scale=jnp.array(4.0 * 1e3),
+        terminal_rt_scale=jnp.array(0.2 * 1e3),
     )
 
     leg_cost = quartic_cost.QuarticCost.from_bounds(

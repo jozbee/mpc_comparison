@@ -609,7 +609,7 @@ def _terminal_cost(
     last_state = last_state.at[:3].subtract(const.cart_home)
     rt_cost = jnp.sum(jnp.square(last_state) * scales)
     rt_cost += jnp.square(rstate.state[-1][5]) * (
-        scale(x_omegaz0) * scale(x_omegaz1) * weights.terminal_rt_scale * 10.0
+        scale(x_omegaz0) * scale(x_omegaz1) * weights.terminal_rt_scale * 1e1
     )
 
     return rt_cost + vt_cost
