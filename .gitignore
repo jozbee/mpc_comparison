@@ -9,3 +9,4 @@ ltex*
 artifacts
 mpc_example
 settings.json
+docs/_build

@@ -26,6 +26,19 @@ classifiers = [
 dependencies = [
 ]
 
+[project.optional-dependencies]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-book-theme",
+    "myst-parser",
+    "sphinx-autodoc-typehints",
+    "jax",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pandas",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
