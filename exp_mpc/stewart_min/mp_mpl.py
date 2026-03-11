@@ -19,8 +19,7 @@ import dataclasses
 
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.viz as viz
-import exp_mpc.stewart_min.const as const
-import exp_mpc.stewart_min.opt as opt
+import exp_mpc.stewart_min.robo as robo
 
 
 ###########
@@ -35,9 +34,12 @@ cpus //= 2  # jax threading, ram, and efficiency cpu considerations
 
 
 def get_frame_range_iter(
-    trajectory: list[utils.TableSol], fps: int = 30, sim_rate: float = 1.0
+    trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
+    fps: int = 30,
+    sim_rate: float = 1.0,
 ):
-    num_frames = int(len(trajectory) * const.dt * fps / sim_rate)
+    num_frames = int(len(trajectory) * robo_params.dt * fps / sim_rate)
     frame_endpoints = [i * (num_frames // cpus) for i in range(cpus + 1)]
     frame_range_iter = zip(
         frame_endpoints[:-1],
@@ -72,6 +74,7 @@ def single_animate_human_trajectory(
     trajectory: list[utils.TableSol],
     references: dict[str, np.ndarray],
     frame_range: tuple[int, int],
+    robo_params: robo.RoboParams,
 ) -> str:
     """Return file name for matplotlib animation."""
     anim, fig = viz.animate_human_trajectory(
@@ -80,6 +83,7 @@ def single_animate_human_trajectory(
         fps=30,
         references=references,
         frame_range=frame_range,
+        robo_params=robo_params,
     )
     const_str = str(count)
     if len(const_str) == 1:
@@ -94,6 +98,7 @@ class AnimateHumanTrajectoryArgs:
     file_name: str
     trajectory: list[utils.TableSol]
     references: dict[str, jax.Array]
+    robo_params: robo.RoboParams
 
 
 def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
@@ -104,7 +109,8 @@ def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
         range(cpus),  # count_iter
         itertools.repeat(args.trajectory),
         itertools.repeat(args.references),
-        get_frame_range_iter(args.trajectory),
+        get_frame_range_iter(args.trajectory, robo_params=args.robo_params),
+        itertools.repeat(args.robo_params),
     )
 
     # main
@@ -120,11 +126,13 @@ def call_mp_animate_human_trajectory(
     file_name: str,
     trajectory: list[utils.TableSol],
     references: dict[str, jax.Array],
+    robo_params: robo.RoboParams,
 ):
     args = AnimateHumanTrajectoryArgs(
         file_name=file_name,
         trajectory=trajectory,
         references=references,
+        robo_params=robo_params,
     )
     temp_dir = tempfile.TemporaryDirectory()
     temp_pickle = f"{temp_dir.name}/mp_animate_human_trajectory_args.pickle"
@@ -148,6 +156,8 @@ def single_animate_trajectory(
     count: int,
     trajectory: list[utils.TableSol],
     frame_range: tuple[int, int],
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
 ) -> str:
     """Return file name for matplotlib animation."""
     anim, fig = viz.animate_trajectory(
@@ -155,6 +165,8 @@ def single_animate_trajectory(
         sim_rate=1.0,
         fps=30,
         frame_range=frame_range,
+        robo_params=robo_params,
+        robo_geom=robo_geom,
     )
     const_str = str(count)
     if len(const_str) == 1:
@@ -168,6 +180,8 @@ def single_animate_trajectory(
 class AnimateTrajectoryArgs:
     file_name: str
     trajectory: list[utils.TableSol]
+    robo_params: robo.RoboParams
+    robo_geom: robo.RoboGeom
 
 
 def mp_animate_trajectory(args: AnimateTrajectoryArgs):
@@ -177,7 +191,9 @@ def mp_animate_trajectory(args: AnimateTrajectoryArgs):
         itertools.repeat(temp_dir.name),
         range(cpus),  # count_iter
         itertools.repeat(args.trajectory),
-        get_frame_range_iter(args.trajectory),
+        get_frame_range_iter(args.trajectory, robo_params=args.robo_params),
+        itertools.repeat(args.robo_params),
+        itertools.repeat(args.robo_geom),
     )
 
     # main
@@ -192,10 +208,14 @@ def mp_animate_trajectory(args: AnimateTrajectoryArgs):
 def call_mp_animate_trajectory(
     file_name: str,
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
 ):
     args = AnimateTrajectoryArgs(
         file_name=file_name,
         trajectory=trajectory,
+        robo_params=robo_params,
+        robo_geom=robo_geom,
     )
     temp_dir = tempfile.TemporaryDirectory()
     temp_pickle = f"{temp_dir.name}/mp_animate_trajectory_args.pickle"
@@ -226,6 +246,8 @@ def single_animate_cost_trajectory(
     weights,
     cost_terms,
     frame_range: tuple[int, int],
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
 ) -> str:
     """Return file name for matplotlib animation."""
     anim, fig = viz.animate_cost_trajectory(
@@ -237,6 +259,8 @@ def single_animate_cost_trajectory(
         sim_rate=1.0,
         fps=30,
         frame_range=frame_range,
+        robo_params=robo_params,
+        robo_geom=robo_geom,
     )
     const_str = str(count)
     if len(const_str) == 1:

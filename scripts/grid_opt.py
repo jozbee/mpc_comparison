@@ -13,6 +13,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.vest as vest
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.quartic_cost as quartic_cost
@@ -233,16 +234,27 @@ def single_sms(args: tuple) -> None:
     #########
 
     trajectory = sol_list
+    robo_params = robo.RoboParams()
+    robo_geom = robo.RoboGeom()
     references = {
         "xyz-acceleration": jnp.array(acc_ref[begin : begin + num_steps]),
         "angular-velocity": jnp.array(omega_ref[begin : begin + num_steps]),
     }
 
     mpc_human_fig = viz.plot_human_trajectory(
-        trajectory=trajectory, references=references
+        trajectory=trajectory,
+        references=references,
+        robo_params=robo_params,
     )
-    mpc_vestibular_fig = viz.plot_vestibular_trajectory(trajectory=trajectory)
-    mpc_actuator_fig = viz.plot_actuator_trajectory(trajectory=trajectory)
+    mpc_vestibular_fig = viz.plot_vestibular_trajectory(
+        trajectory=trajectory,
+        robo_params=robo_params,
+    )
+    mpc_actuator_fig = viz.plot_actuator_trajectory(
+        trajectory=trajectory,
+        robo_params=robo_params,
+        robo_geom=robo_geom,
+    )
 
     mpc_human_fig.savefig(f"{path}/{index}_human.png", dpi=300)
     mpc_vestibular_fig.savefig(f"{path}/{index}_vestibular.png", dpi=300)

@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 
 
 ############
@@ -114,33 +114,44 @@ def rot_dot2(
     return res0[1] + res1[1]
 
 
-@jax.jit
-def leg_pos(R: jax.Array, t: jax.Array) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["geom"])
+def leg_pos(geom: robo.RoboGeom, R: jax.Array, t: jax.Array) -> jax.Array:
     lengths = []
-    delta = const.human_displacement
+    delta = geom.human_displacement
     for i in range(6):  # unroll
-        top_i = R @ (const.tops[i] - delta) + delta + t
-        diff = top_i - const.bots[i]
+        top_i = R @ (geom.tops[i] - delta) + delta + t
+        diff = top_i - geom.bots[i]
         lengths.append(jnp.linalg.norm(diff))
     return jnp.array(lengths)
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["geom"])
 def leg_vel(
-    R: jax.Array, t: jax.Array, R_dot: jax.Array, t_dot: jax.Array
+    geom: robo.RoboGeom,
+    R: jax.Array,
+    t: jax.Array,
+    R_dot: jax.Array,
+    t_dot: jax.Array,
 ) -> jax.Array:
-    return jax.jvp(leg_pos, (R, t), (R_dot, t_dot))[1]
+    leg_pos_geom = functools.partial(leg_pos, geom)
+    return jax.jvp(leg_pos_geom, (R, t), (R_dot, t_dot))[1]
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["geom"])
 def leg_pos_vel(
-    R: jax.Array, t: jax.Array, R_dot: jax.Array, t_dot: jax.Array
+    geom: robo.RoboGeom,
+    R: jax.Array,
+    t: jax.Array,
+    R_dot: jax.Array,
+    t_dot: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    return jax.jvp(leg_pos, (R, t), (R_dot, t_dot))
+    leg_pos_geom = functools.partial(leg_pos, geom)
+    return jax.jvp(leg_pos_geom, (R, t), (R_dot, t_dot))
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["geom"])
 def leg_acc(
+    geom: robo.RoboGeom,
     R: jax.Array,
     t: jax.Array,
     R_dot: jax.Array,
@@ -148,14 +159,16 @@ def leg_acc(
     R_dot2: jax.Array,
     t_dot2: jax.Array,
 ) -> jax.Array:
-    def _leg_pos_0(R_: jax.Array, t_: jax.Array) -> jax.Array:
-        return jax.jvp(leg_pos, (R_, t_), (R_dot, t_dot))[1]
+    leg_pos_geom = functools.partial(leg_pos, geom)
 
-    def _leg_pos_1(R_dot_: jax.Array, t_dot_: jax.Array) -> jax.Array:
-        return jax.jvp(leg_pos, (R, t), (R_dot_, t_dot_))[1]
+    def leg_pos_0(R_: jax.Array, t_: jax.Array) -> jax.Array:
+        return jax.jvp(leg_pos_geom, (R_, t_), (R_dot, t_dot))[1]
 
-    res0 = jax.jvp(_leg_pos_0, (R, t), (R_dot, t_dot))[1]
-    res1 = jax.jvp(_leg_pos_1, (R_dot, t_dot), (R_dot2, t_dot2))[1]
+    def leg_pos_1(R_dot_: jax.Array, t_dot_: jax.Array) -> jax.Array:
+        return jax.jvp(leg_pos_geom, (R, t), (R_dot_, t_dot_))[1]
+
+    res0 = jax.jvp(leg_pos_0, (R, t), (R_dot, t_dot))[1]
+    res1 = jax.jvp(leg_pos_1, (R_dot, t_dot), (R_dot2, t_dot2))[1]
     return res0 + res1
 
 
@@ -223,8 +236,9 @@ def angle_acc(
     )[1]
 
 
-@functools.partial(jax.jit, static_argnames=["use_xy"])
+@functools.partial(jax.jit, static_argnames=["geom", "use_xy"])
 def angle_joint(
+    geom: robo.RoboGeom,
     x: jax.Array,
     y: jax.Array,
     z: jax.Array,
@@ -238,16 +252,16 @@ def angle_joint(
     t = jnp.array([x, y, z])
     top_angles = []
     bot_angles = []
-    delta = const.human_displacement
+    delta = geom.human_displacement
     for i in range(6):
-        top_i = R @ (const.tops[i] - delta) + delta + t
-        diff = top_i - const.bots[i]
+        top_i = R @ (geom.tops[i] - delta) + delta + t
+        diff = top_i - geom.bots[i]
         leg_dir = diff / jnp.linalg.norm(diff)
 
-        top_mag = jnp.linalg.norm(jnp.cross(const.top_normals[i], leg_dir))
+        top_mag = jnp.linalg.norm(jnp.cross(geom.top_normals[i], leg_dir))
         top_angles.append(jnp.asin(top_mag))
 
-        bot_mag = jnp.linalg.norm(jnp.cross(const.bot_normals[i], leg_dir))
+        bot_mag = jnp.linalg.norm(jnp.cross(geom.bot_normals[i], leg_dir))
         bot_angles.append(jnp.asin(bot_mag))
 
     return jnp.array(top_angles), jnp.array(bot_angles)

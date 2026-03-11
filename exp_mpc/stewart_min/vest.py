@@ -97,10 +97,9 @@ import typing as tp
 import numpy as np
 import scipy.linalg as sci_lin
 import scipy.integrate as sci_int
-import jax
 import control as ct
 
-import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 
 
 ###########
@@ -205,7 +204,6 @@ def get_V(
 ###############
 
 
-@jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class VSpec:
     """Vestibular specification.
@@ -236,18 +234,18 @@ class VSpec:
         Initial hidden state corresponding to steady-state moon gravity.
     """
 
-    C: np.ndarray = _static_field()
-    D: np.ndarray = _static_field()
-    E0: np.ndarray = _static_field()
-    E1: np.ndarray = _static_field()
-    eig: np.ndarray = _static_field()
-    P: np.ndarray = _static_field()
-    P_inv: np.ndarray = _static_field()
-    EP1: np.ndarray = _static_field()
-    CP: np.ndarray = _static_field()
-    V: np.ndarray = _static_field()
-    v0_earth: tp.Optional[np.ndarray] = _static_field()
-    v0_moon: tp.Optional[np.ndarray] = _static_field()
+    C: np.ndarray
+    D: np.ndarray
+    E0: np.ndarray
+    E1: np.ndarray
+    eig: np.ndarray
+    P: np.ndarray
+    P_inv: np.ndarray
+    EP1: np.ndarray
+    CP: np.ndarray
+    V: np.ndarray
+    v0_earth: tp.Optional[np.ndarray]
+    v0_moon: tp.Optional[np.ndarray]
 
     @classmethod
     def transfer2vspec(
@@ -266,8 +264,8 @@ class VSpec:
         V = get_V(ss, terminal_weight_state, terminal_weight_control)
 
         if earth_moon_v0:
-            earth_gravity = const.gravity[2]
-            moon_gravity = const.moon_gravity[2]
+            earth_gravity = robo.gravity[2]
+            moon_gravity = robo.moon_gravity[2]
             fac = transfer(0.0).real
             n = E0.shape[0]
             y0 = np.ones(n) * fac
@@ -299,21 +297,23 @@ class VSpec:
 
 s = ct.tf("s")
 
+params = robo.RoboParams()
+
 acc_transfer0 = 0.911 * (s + 0.0988)
 acc_transfer0 /= (s + 0.133) * (s + 1.95)
-acc_vspec0 = VSpec.transfer2vspec(acc_transfer0, const.dt, earth_moon_v0=True)
+acc_vspec0 = VSpec.transfer2vspec(acc_transfer0, params.dt, earth_moon_v0=True)
 
 omega_transfer0 = 10.3 * s * 30 * s
 omega_transfer0 /= (10.2 * s + 1) * (0.1 * s + 1) * (30 * s + 1)
-omega_vspec0 = VSpec.transfer2vspec(omega_transfer0, const.dt)
+omega_vspec0 = VSpec.transfer2vspec(omega_transfer0, params.dt)
 
 omega_transfer1 = 5.73 * 80 * s**2 * (1 + 0.06 * s)
 omega_transfer1 /= (1 + 80 * s) * (1 + 5.73 * s) * (1 + 0.005 * s)
-omega_vspec1 = VSpec.transfer2vspec(omega_transfer1, const.dt)
+omega_vspec1 = VSpec.transfer2vspec(omega_transfer1, params.dt)
 
 omega_transfer2 = 5.73 * 80 * s**2
 omega_transfer2 /= (1 + 80 * s) * (1 + 5.73 * s)
-omega_vspec2 = VSpec.transfer2vspec(omega_transfer2, const.dt)
+omega_vspec2 = VSpec.transfer2vspec(omega_transfer2, params.dt)
 
 spec_refs: dict[str, tuple[ct.TransferFunction, VSpec]] = {
     "acc0": (acc_transfer0, acc_vspec0),

@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import exp_mpc.stewart_min.spec as const
+import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.viz as viz
 
 
@@ -74,11 +75,26 @@ if __name__ == "__main__":
         "xyz-acceleration": np.tile(a_ref, reps=(len(solutions), 1)),
         "angular-velocity": np.tile(omega_ref, reps=(len(solutions), 1)),
     }
-    fig_table = viz.plot_cartesian_table_trajectory(solutions)
-    fig_head = viz.plot_human_trajectory(solutions, references)
+    robo_params = robo.RoboParams()
+    robo_geom = robo.RoboGeom()
+    fig_table = viz.plot_cartesian_table_trajectory(
+        solutions,
+        robo_params=robo_params,
+    )
+    fig_head = viz.plot_human_trajectory(
+        solutions,
+        references,
+        robo_params=robo_params,
+    )
 
     # visualize the platform motion using the 3D visualizer
-    anim, fig_viz = viz.animate_trajectory(solutions, sim_rate=1.0, fps=30)
+    anim, fig_viz = viz.animate_trajectory(
+        solutions,
+        sim_rate=1.0,
+        fps=30,
+        robo_params=robo_params,
+        robo_geom=robo_geom,
+    )
 
     # plot everything
     plt.show()

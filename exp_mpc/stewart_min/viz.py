@@ -7,10 +7,9 @@ import matplotlib as mpl
 import matplotlib.figure as mpl_fig
 import matplotlib.axes as mpl_ax
 import matplotlib.animation as mpl_anim
-import matplotlib.lines as mpl_lines
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.comp as comp
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.opt as opt
@@ -33,6 +32,8 @@ def waypoints_from_solutions(
 
 def animate_trajectory(
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
     sim_rate: float = 1.0,
     fps: float = 30.0,
     frame_range: tp.Optional[tuple[int, int]] = None,
@@ -59,7 +60,6 @@ def animate_trajectory(
     """
     assert type(trajectory) is list
     assert len(trajectory) > 0
-
     # possible conversion needed
     waypoints: list[np.ndarray]
     if type(trajectory[0]) is utils.TableSol:
@@ -118,17 +118,20 @@ def animate_trajectory(
 
     # Create a margin around the workspace
     x_lims = np.array(
-        [point[0] for point in const.bots] + [point[0] for point in const.tops]
+        [point[0] for point in robo_geom.bots]
+        + [point[0] for point in robo_geom.tops]
     )
     x_min = np.min(x_lims) - 0.5
     x_max = np.max(x_lims) + 0.5
     y_lims = np.array(
-        [point[1] for point in const.bots] + [point[1] for point in const.tops]
+        [point[1] for point in robo_geom.bots]
+        + [point[1] for point in robo_geom.tops]
     )
     y_min = np.min(y_lims) - 0.5
     y_max = np.max(y_lims) + 0.5
     z_lims = np.array(
-        [point[2] for point in const.bots] + [point[2] for point in const.tops]
+        [point[2] for point in robo_geom.bots]
+        + [point[2] for point in robo_geom.tops]
     )
     z_min = np.min(z_lims) - 0.5
     z_max = np.max(z_lims) + 1.0  # for extra height
@@ -157,12 +160,20 @@ def animate_trajectory(
     # ax_legs.set_title('Leg Lengths')
     ax_legs.set_xlim(0.5, 6.5)
     ax_legs.set_xticks(range(1, 7))
-    ax_legs.set_ylim(const.leg_min * 0.9, const.leg_max * 1.1)
+    ax_legs.set_ylim(robo_params.leg_min * 0.9, robo_params.leg_max * 1.1)
     ax_legs.axhline(
-        y=const.leg_min, color="r", linestyle="-", alpha=0.5, label="Min Length"
+        y=robo_params.leg_min,
+        color="r",
+        linestyle="-",
+        alpha=0.5,
+        label="Min Length",
     )
     ax_legs.axhline(
-        y=const.leg_max, color="r", linestyle="-", alpha=0.5, label="Max Length"
+        y=robo_params.leg_max,
+        color="r",
+        linestyle="-",
+        alpha=0.5,
+        label="Max Length",
     )
 
     # Initialize visualization elements
@@ -183,9 +194,9 @@ def animate_trajectory(
     )
 
     # Connect base points to form a polygon
-    base_x = [const.bots[i][0] for i in range(6)] + [const.bots[0][0]]
-    base_y = [const.bots[i][1] for i in range(6)] + [const.bots[0][1]]
-    base_z = [const.bots[i][2] for i in range(6)] + [const.bots[0][2]]
+    base_x = [robo_geom.bots[i][0] for i in range(6)] + [robo_geom.bots[0][0]]
+    base_y = [robo_geom.bots[i][1] for i in range(6)] + [robo_geom.bots[0][1]]
+    base_z = [robo_geom.bots[i][2] for i in range(6)] + [robo_geom.bots[0][2]]
     base_polygon.set_data(base_x, base_y)
     base_polygon.set_3d_properties(base_z)  # type: ignore
 
@@ -193,8 +204,12 @@ def animate_trajectory(
 
     # Interpolate trajectory for smoother animation
     num_points = len(trajectory)
-    t_values = np.arange(0, const.dt * num_points, const.dt)
-    t_interp = np.arange(0, const.dt * num_points, 1.0 / fps * sim_rate)
+    t_values = np.arange(0, robo_params.dt * num_points, robo_params.dt)
+    t_interp = np.arange(
+        0,
+        robo_params.dt * num_points,
+        1.0 / fps * sim_rate,
+    )
 
     # Interpolate positions (x, y, z)
     positions = np.array([point[:3] for point in waypoints])
@@ -232,8 +247,10 @@ def animate_trajectory(
         R_head = np.array(comp.rot(roll, pitch, yaw, use_xy=False))
 
         # Update platform position
-        delta = const.human_displacement
-        tops_world = [R @ (p - delta) + delta + position for p in const.tops]
+        delta = robo_geom.human_displacement
+        tops_world = [
+            R @ (p - delta) + delta + position for p in robo_geom.tops
+        ]
         platform_x = [p[0] for p in tops_world] + [tops_world[0][0]]
         platform_y = [p[1] for p in tops_world] + [tops_world[0][1]]
         platform_z = [p[2] for p in tops_world] + [tops_world[0][2]]
@@ -241,7 +258,7 @@ def animate_trajectory(
         platform_polygon.set_3d_properties(platform_z)  # type: ignore
 
         # Update head reference frame
-        head_pos = const.human_displacement + position
+        head_pos = robo_geom.human_displacement + position
         axis_dirs = R_head @ np.eye(3)
         for axis_line, axis_dir in zip(head_axes, axis_dirs.T):
             end_pos = head_pos + axis_length * axis_dir
@@ -253,7 +270,7 @@ def animate_trajectory(
         # Update legs
         leg_lengths = []
         for j in range(6):
-            start_point = const.bots[j]
+            start_point = robo_geom.bots[j]
             end_point = tops_world[j]
             legs[j].set_data(
                 [start_point[0], end_point[0]], [start_point[1], end_point[1]]
@@ -270,7 +287,10 @@ def animate_trajectory(
             bar.set_height(leg_lengths[j])
 
             # Color the bar based on how close it is to limits
-            if leg_lengths[j] < const.leg_min or leg_lengths[j] > const.leg_max:
+            if (
+                leg_lengths[j] < robo_params.leg_min
+                or leg_lengths[j] > robo_params.leg_max
+            ):
                 bar.set_color("red")
             else:
                 bar.set_color("black")
@@ -286,8 +306,8 @@ def animate_trajectory(
         # Update progress bar
         progress = i / (len(interp_trajectory) - 1)
         progress_bar[0].set_width(progress)
-        sim_time = i * len(trajectory) / len(interp_trajectory) * const.dt
-        sim_time_tot = (len(trajectory) - 1) * const.dt
+        sim_time = i * len(trajectory) / len(interp_trajectory) * robo_params.dt
+        sim_time_tot = (len(trajectory) - 1) * robo_params.dt
         time_text.set_text(f"Time: {sim_time:.1f}s / {sim_time_tot:.1f}s")
 
         return (
@@ -323,6 +343,7 @@ def animate_trajectory(
 
 def animate_human_trajectory(
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
     sim_rate: float = 1.0,
     fps: float = 30.0,
     references: dict[str, np.ndarray] = {},
@@ -354,7 +375,6 @@ def animate_human_trajectory(
     """
     assert type(trajectory) is list and len(trajectory) > 0
     assert all(isinstance(sol, utils.TableSol) for sol in trajectory)
-
     # Setup figure and axes, similar to plot_human_trajectory
     gridspec_kw = {
         "wspace": 0.35,
@@ -391,88 +411,88 @@ def animate_human_trajectory(
             axes[0, 0],
             "X Velocity",
             "[m/s]",
-            -const.max_cart_vel,
-            const.max_cart_vel,
+            -robo_params.max_cart_vel,
+            robo_params.max_cart_vel,
         ),
         (
             axes[0, 1],
             "Y Velocity",
             "[m/s]",
-            -const.max_cart_vel,
-            const.max_cart_vel,
+            -robo_params.max_cart_vel,
+            robo_params.max_cart_vel,
         ),
         (
             axes[0, 2],
             "Z Velocity",
             "[m/s]",
-            -const.max_cart_vel,
-            const.max_cart_vel,
+            -robo_params.max_cart_vel,
+            robo_params.max_cart_vel,
         ),
         # Row 1: angular velocity
         (
             axes[1, 0],
             "X Angular Velocity",
             "[rad/s]",
-            -const.max_angle_vel,
-            const.max_angle_vel,
+            -robo_params.max_angle_vel,
+            robo_params.max_angle_vel,
         ),
         (
             axes[1, 1],
             "Y Angular Velocity",
             "[rad/s]",
-            -const.max_angle_vel,
-            const.max_angle_vel,
+            -robo_params.max_angle_vel,
+            robo_params.max_angle_vel,
         ),
         (
             axes[1, 2],
             "Z Angular Velocity",
             "[rad/s]",
-            -const.max_angle_vel,
-            const.max_angle_vel,
+            -robo_params.max_angle_vel,
+            robo_params.max_angle_vel,
         ),
         # Row 2: xyz acceleration
         (
             axes[2, 0],
             "X Acceleration",
             "[m/s^2]",
-            -const.max_cart_acc,
-            const.max_cart_acc,
+            -robo_params.max_cart_acc,
+            robo_params.max_cart_acc,
         ),
         (
             axes[2, 1],
             "Y Acceleration",
             "[m/s^2]",
-            -const.max_cart_acc,
-            const.max_cart_acc,
+            -robo_params.max_cart_acc,
+            robo_params.max_cart_acc,
         ),
         (
             axes[2, 2],
             "Z Acceleration",
             "[m/s^2]",
-            -const.max_cart_acc,
-            const.max_cart_acc,
+            -robo_params.max_cart_acc,
+            robo_params.max_cart_acc,
         ),
         # Row 3: angular acceleration
         (
             axes[3, 0],
             "X Angular Acceleration",
             "[rad/s^2]",
-            -const.max_angle_acc,
-            const.max_angle_acc,
+            -robo_params.max_angle_acc,
+            robo_params.max_angle_acc,
         ),
         (
             axes[3, 1],
             "Y Angular Acceleration",
             "[rad/s^2]",
-            -const.max_angle_acc,
-            const.max_angle_acc,
+            -robo_params.max_angle_acc,
+            robo_params.max_angle_acc,
         ),
         (
             axes[3, 2],
             "Z Angular Acceleration",
             "[rad/s^2]",
-            -const.max_angle_acc,
-            const.max_angle_acc,
+            -robo_params.max_angle_acc,
+            robo_params.max_angle_acc,
         ),
     ]
 
@@ -505,7 +525,7 @@ def animate_human_trajectory(
             max_val = np.max(ylim_data[i][:, :, j])
             ax.set_ylim(*_get_limits(jnp.array([min_val, max_val])))
 
-    num_frames = int(len(trajectory) * const.dt * fps / sim_rate)
+    num_frames = int(len(trajectory) * robo_params.dt * fps / sim_rate)
 
     def update(frame_num):
         # Map frame number to trajectory index
@@ -634,14 +654,14 @@ def _reference_helper(
 def _plot_cartesian_trajectory(
     axes: np.ndarray,
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
     xyz_fun: tp.Callable,
     angle_fun: tp.Callable,
 ):
     """Common cartesian trajectory routines, for positions."""
     assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
     assert len(trajectory) > 0
-
-    times = jnp.arange(0, len(trajectory), dtype=float) * const.dt
+    times = jnp.arange(0, len(trajectory), dtype=float) * robo_params.dt
 
     ################
     # xyz position #
@@ -697,8 +717,8 @@ def _plot_cartesian_trajectory(
         data=angles[:, 0],
         title="Roll Angle",
         data_label="[deg]",
-        min_limit=-np.degrees(const.max_roll),
-        max_limit=np.degrees(const.max_roll),
+        min_limit=-np.degrees(robo_params.max_roll),
+        max_limit=np.degrees(robo_params.max_roll),
     )
     simple_plot(
         axis=ax_pitch,
@@ -706,8 +726,8 @@ def _plot_cartesian_trajectory(
         data=angles[:, 1],
         title="Pitch Angle",
         data_label="[deg]",
-        min_limit=-np.degrees(const.max_pitch),
-        max_limit=np.degrees(const.max_pitch),
+        min_limit=-np.degrees(robo_params.max_pitch),
+        max_limit=np.degrees(robo_params.max_pitch),
     )
     simple_plot(
         axis=ax_yaw,
@@ -715,14 +735,15 @@ def _plot_cartesian_trajectory(
         data=angles[:, 2],
         title="Yaw Angle",
         data_label="[deg]",
-        min_limit=-np.degrees(const.max_yaw),
-        max_limit=np.degrees(const.max_yaw),
+        min_limit=-np.degrees(robo_params.max_yaw),
+        max_limit=np.degrees(robo_params.max_yaw),
     )
 
 
 def _plot_cartesian_trajectory_p(
     axes: np.ndarray,
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
     xyz_vel_fun: tp.Callable,
     angle_vel_fun: tp.Callable,
     xyz_acc_fun: tp.Callable,
@@ -732,7 +753,7 @@ def _plot_cartesian_trajectory_p(
     """Common cartesian trajectory routines, for derivatives."""
     assert all(type(ax) is mpl_ax.Axes for ax in axes.flatten())
 
-    times = jnp.arange(0, len(trajectory), dtype=float) * const.dt
+    times = jnp.arange(0, len(trajectory), dtype=float) * robo_params.dt
 
     ################
     # xyz velocity #
@@ -753,8 +774,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_vels[:, 0],
         title="X Velocity",
         data_label="[m/s]",
-        min_limit=-const.max_cart_vel,
-        max_limit=const.max_cart_vel,
+        min_limit=-robo_params.max_cart_vel,
+        max_limit=robo_params.max_cart_vel,
     )
     simple_plot(
         axis=ax_y_vel,
@@ -762,8 +783,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_vels[:, 1],
         title="Y Velocity",
         data_label="[m/s]",
-        min_limit=-const.max_cart_vel,
-        max_limit=const.max_cart_vel,
+        min_limit=-robo_params.max_cart_vel,
+        max_limit=robo_params.max_cart_vel,
     )
     simple_plot(
         axis=ax_z_vel,
@@ -771,8 +792,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_vels[:, 2],
         title="Z Velocity",
         data_label="[m/s]",
-        min_limit=-const.max_cart_vel,
-        max_limit=const.max_cart_vel,
+        min_limit=-robo_params.max_cart_vel,
+        max_limit=robo_params.max_cart_vel,
     )
 
     ####################
@@ -799,8 +820,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_vels[:, 0],
         title="X Angular Velocity",
         data_label="[rad/s]",
-        min_limit=-const.max_angle_vel,
-        max_limit=const.max_angle_vel,
+        min_limit=-robo_params.max_angle_vel,
+        max_limit=robo_params.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 0),
     )
     simple_plot(
@@ -809,8 +830,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_vels[:, 1],
         title="Y Angular Velocity",
         data_label="[rad/s]",
-        min_limit=-const.max_angle_vel,
-        max_limit=const.max_angle_vel,
+        min_limit=-robo_params.max_angle_vel,
+        max_limit=robo_params.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 1),
     )
     simple_plot(
@@ -819,8 +840,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_vels[:, 2],
         title="Z Angular Velocity",
         data_label="[rad/s]",
-        min_limit=-const.max_angle_vel,
-        max_limit=const.max_angle_vel,
+        min_limit=-robo_params.max_angle_vel,
+        max_limit=robo_params.max_angle_vel,
         reference=_reference_helper(angle_vel_ref, 2),
     )
 
@@ -848,8 +869,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_accs[:, 0],
         title="X Acceleration",
         data_label="[m/s^2]",
-        min_limit=-const.max_cart_acc,
-        max_limit=const.max_cart_acc,
+        min_limit=-robo_params.max_cart_acc,
+        max_limit=robo_params.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 0),
     )
     simple_plot(
@@ -858,8 +879,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_accs[:, 1],
         title="Y Acceleration",
         data_label="[m/s^2]",
-        min_limit=-const.max_cart_acc,
-        max_limit=const.max_cart_acc,
+        min_limit=-robo_params.max_cart_acc,
+        max_limit=robo_params.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 1),
     )
     simple_plot(
@@ -868,8 +889,8 @@ def _plot_cartesian_trajectory_p(
         data=xyz_accs[:, 2],
         title="Z Acceleration",
         data_label="[m/s^2]",
-        min_limit=-const.max_cart_acc,
-        max_limit=const.max_cart_acc,
+        min_limit=-robo_params.max_cart_acc,
+        max_limit=robo_params.max_cart_acc,
         reference=_reference_helper(xyz_acc_ref, 2),
     )
 
@@ -892,8 +913,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_accs[:, 0],
         title="X Angular Acceleration",
         data_label="[rad/s^2]",
-        min_limit=-const.max_angle_acc,
-        max_limit=const.max_angle_acc,
+        min_limit=-robo_params.max_angle_acc,
+        max_limit=robo_params.max_angle_acc,
     )
     simple_plot(
         axis=ax_omega_y_acc,
@@ -901,8 +922,8 @@ def _plot_cartesian_trajectory_p(
         data=angle_accs[:, 1],
         title="Y Angular Acceleration",
         data_label="[rad/s^2]",
-        min_limit=-const.max_angle_acc,
-        max_limit=const.max_angle_acc,
+        min_limit=-robo_params.max_angle_acc,
+        max_limit=robo_params.max_angle_acc,
     )
     simple_plot(
         axis=ax_omega_z_acc,
@@ -910,13 +931,14 @@ def _plot_cartesian_trajectory_p(
         data=angle_accs[:, 2],
         title="Z Angular Acceleration",
         data_label="[rad/s^2]",
-        min_limit=-const.max_angle_acc,
-        max_limit=const.max_angle_acc,
+        min_limit=-robo_params.max_angle_acc,
+        max_limit=robo_params.max_angle_acc,
     )
 
 
 def plot_human_trajectory(
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
     references: dict[str, jax.Array] = {},
     fig_title: str = "Head Trajectory",
     fig_kwds: dict = {},
@@ -960,12 +982,14 @@ def plot_human_trajectory(
         xyz_acc_fun=utils.human_acc,
         angle_acc_fun=utils.human_angle_acc,
         references=references,
+        robo_params=robo_params,
     )
     return fig
 
 
 def plot_vestibular_trajectory(
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
     fig_title: str = "Vestibular Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
@@ -984,7 +1008,7 @@ def plot_vestibular_trajectory(
     )
     fig.suptitle(fig_title, fontsize=16)
 
-    times = jnp.arange(0, len(trajectory), dtype=float) * const.dt
+    times = jnp.arange(0, len(trajectory), dtype=float) * robo_params.dt
 
     ####################
     # angular velocity #
@@ -1009,8 +1033,8 @@ def plot_vestibular_trajectory(
         data=omegas[:, 0],
         title="X Angular Velocity",
         data_label="[rad/s]",
-        min_limit=-const.max_angle_vel,
-        max_limit=const.max_angle_vel,
+        min_limit=-robo_params.max_angle_vel,
+        max_limit=robo_params.max_angle_vel,
         reference=omegas_ref[:, 0],
     )
     simple_plot(
@@ -1019,8 +1043,8 @@ def plot_vestibular_trajectory(
         data=omegas[:, 1],
         title="Y Angular Velocity",
         data_label="[rad/s]",
-        min_limit=-const.max_angle_vel,
-        max_limit=const.max_angle_vel,
+        min_limit=-robo_params.max_angle_vel,
+        max_limit=robo_params.max_angle_vel,
         reference=omegas_ref[:, 1],
     )
     simple_plot(
@@ -1029,8 +1053,8 @@ def plot_vestibular_trajectory(
         data=omegas[:, 2],
         title="Z Angular Velocity",
         data_label="[rad/s]",
-        min_limit=-const.max_angle_vel,
-        max_limit=const.max_angle_vel,
+        min_limit=-robo_params.max_angle_vel,
+        max_limit=robo_params.max_angle_vel,
         reference=omegas_ref[:, 2],
     )
 
@@ -1057,8 +1081,8 @@ def plot_vestibular_trajectory(
         data=accs[:, 0],
         title="X Linear Acceleration",
         data_label="[m/s^2]",
-        min_limit=-const.max_cart_acc,
-        max_limit=const.max_cart_acc,
+        min_limit=-robo_params.max_cart_acc,
+        max_limit=robo_params.max_cart_acc,
         reference=accs_ref[:, 0],
     )
     simple_plot(
@@ -1067,8 +1091,8 @@ def plot_vestibular_trajectory(
         data=accs[:, 1],
         title="Y Linear Acceleration",
         data_label="[m/s^2]",
-        min_limit=-const.max_cart_acc,
-        max_limit=const.max_cart_acc,
+        min_limit=-robo_params.max_cart_acc,
+        max_limit=robo_params.max_cart_acc,
         reference=accs_ref[:, 1],
     )
     simple_plot(
@@ -1077,8 +1101,8 @@ def plot_vestibular_trajectory(
         data=accs[:, 2],
         title="Z Linear Acceleration",
         data_label="[m/s^2]",
-        min_limit=-const.max_cart_acc,
-        max_limit=const.max_cart_acc,
+        min_limit=-robo_params.max_cart_acc,
+        max_limit=robo_params.max_cart_acc,
         reference=accs_ref[:, 2],
     )
 
@@ -1087,6 +1111,7 @@ def plot_vestibular_trajectory(
 
 def plot_cartesian_table_trajectory(
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
     fig_title: str = "Table Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
@@ -1125,6 +1150,7 @@ def plot_cartesian_table_trajectory(
         trajectory=trajectory,
         xyz_fun=utils.table_pos,
         angle_fun=utils.table_angle,
+        robo_params=robo_params,
     )
     _plot_cartesian_trajectory_p(
         axes=axes[2:, :],
@@ -1133,12 +1159,15 @@ def plot_cartesian_table_trajectory(
         angle_vel_fun=utils.table_angle_vel,
         xyz_acc_fun=utils.table_acc,
         angle_acc_fun=utils.table_angle_acc,
+        robo_params=robo_params,
     )
     return fig
 
 
 def plot_actuator_trajectory(
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
     fig_title: str = "Actuator Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
@@ -1169,7 +1198,7 @@ def plot_actuator_trajectory(
     )
     fig.suptitle(fig_title, fontsize=16)
 
-    times = np.arange(0, len(trajectory), dtype=float) * const.dt
+    times = np.arange(0, len(trajectory), dtype=float) * robo_params.dt
 
     colors = [mpl.colormaps["viridis"](c) for c in np.linspace(0, 1, 6)]
 
@@ -1180,7 +1209,7 @@ def plot_actuator_trajectory(
     # leg lengths #
     ###############
 
-    leg_pos = [utils.leg_pos(x0) for x0 in x0s]
+    leg_pos = [utils.leg_pos(x0, robo_geom=robo_geom) for x0 in x0s]
     leg_pos = jnp.array(leg_pos)
 
     ax_pos = axes[0, 0]
@@ -1199,14 +1228,14 @@ def plot_actuator_trajectory(
             label=f"Leg {leg_num + 1}",
         )
     ax_pos.axhline(
-        y=const.leg_min,
+        y=robo_params.leg_min,
         linestyle="-",
         alpha=0.5,
         color="red",
         label="Min Length",
     )
     ax_pos.axhline(
-        y=const.leg_max,
+        y=robo_params.leg_max,
         linestyle="-",
         alpha=0.5,
         color="red",
@@ -1218,7 +1247,7 @@ def plot_actuator_trajectory(
     # leg velocities #
     ##################
 
-    leg_vel = [utils.leg_vel(x0) for x0 in x0s]
+    leg_vel = [utils.leg_vel(x0, robo_geom=robo_geom) for x0 in x0s]
     leg_vel = jnp.array(leg_vel)
 
     ax_vel = axes[0, 1]
@@ -1237,14 +1266,14 @@ def plot_actuator_trajectory(
             label=f"Leg {leg_num + 1}",
         )
     ax_vel.axhline(
-        y=-const.max_leg_vel,
+        y=-robo_params.max_leg_vel,
         linestyle="-",
         alpha=0.5,
         color="red",
         label="Min Velocity",
     )
     ax_vel.axhline(
-        y=const.max_leg_vel,
+        y=robo_params.max_leg_vel,
         linestyle="-",
         alpha=0.5,
         color="red",
@@ -1256,7 +1285,9 @@ def plot_actuator_trajectory(
     # leg accelerations #
     #####################
 
-    leg_acc = [utils.leg_acc(x0, u0) for x0, u0 in zip(x0s, u0s)]
+    leg_acc = [
+        utils.leg_acc(x0, u0, robo_geom=robo_geom) for x0, u0 in zip(x0s, u0s)
+    ]
     leg_acc = jnp.array(leg_acc)
 
     ax_acc = axes[1, 0]
@@ -1280,11 +1311,15 @@ def plot_actuator_trajectory(
     # joint angles #
     ################
 
-    top_joint_angles = [utils.angle_joint_top(x0) for x0 in x0s]
+    top_joint_angles = [
+        utils.angle_joint_top(x0, robo_geom=robo_geom) for x0 in x0s
+    ]
     top_joint_angles = np.array(top_joint_angles)
     top_joint_angles = np.degrees(top_joint_angles)
 
-    bot_joint_angles = [utils.angle_joint_bot(x0) for x0 in x0s]
+    bot_joint_angles = [
+        utils.angle_joint_bot(x0, robo_geom=robo_geom) for x0 in x0s
+    ]
     bot_joint_angles = np.array(bot_joint_angles)
     bot_joint_angles = np.degrees(bot_joint_angles)
 
@@ -1320,7 +1355,7 @@ def plot_actuator_trajectory(
             label=f"Bottom Joint {leg_num + 1}",
         )
     ax_angles.axhline(
-        y=np.degrees(const.joint_max_angle),
+        y=np.degrees(robo_params.joint_max_angle),
         linestyle="-",
         alpha=0.5,
         color="red",
@@ -1337,6 +1372,8 @@ def plot_cost_trajectory(
     weights: opt.Weights,
     cost_terms: opt.CostTerms,
     trajectory: list[utils.TableSol],
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
     fig_title: str = "Cost Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
@@ -1376,7 +1413,7 @@ def plot_cost_trajectory(
         **fig_kwds,
     )
     fig.suptitle(fig_title, fontsize=16)
-    times = np.arange(0, len(trajectory), dtype=float) * const.dt
+    times = np.arange(0, len(trajectory), dtype=float) * robo_params.dt
     legend_kwargs = dict(
         bbox_to_anchor=(1, 1), loc="upper left", borderaxespad=0.0
     )
@@ -1411,7 +1448,6 @@ def plot_cost_trajectory(
                 weights=weights,
                 vstate_irl=sol.vstate_irl.pop0(),
                 vstate_sim=sol.vstate_sim.pop0(),
-                control=sol.u,
             )
         )
 
@@ -1449,15 +1485,11 @@ def plot_cost_trajectory(
                 weights=weights,
                 vstate_irl=sol.vstate_irl.pop0(),
                 vstate_sim=sol.vstate_sim.pop0(),
-                control=sol.u,
             )
         )
 
     def weight2omega(weights: opt.Weights) -> jax.Array:
-        vals = [
-            omega_fun(weights, sol, ref)
-            for sol, ref in zip(trajectory, omega_refs)
-        ]
+        vals = [omega_fun(weights, sol) for sol in trajectory]
         return jnp.array(vals)
 
     id_omega = weight2omega(id_weights)
@@ -1486,11 +1518,10 @@ def plot_cost_trajectory(
     @jax.jit
     def leg_vel_fun(sol: utils.TableSol) -> tuple[jax.Array, jax.Array]:
         length_cost_arr, vel_cost_arr = opt.leg_boundary_cost_arr(
+            robo_geom=robo_geom,
             weights=weights,
-            length_cost=cost_terms.leg_cost,
-            vel_cost=cost_terms.leg_vel_cost,
-            state=sol.x,
-            control=sol.u,
+            cost_terms=cost_terms,
+            rstate=sol.x,
         )
         length_cost_val = jnp.mean(length_cost_arr, axis=0)
         vel_cost_val = jnp.mean(vel_cost_arr, axis=0)
@@ -1544,10 +1575,10 @@ def plot_cost_trajectory(
     @jax.jit
     def joint_angle_fun(sol: utils.TableSol) -> jax.Array:
         angle_cost_arr = opt.joint_angle_boundary_cost_arr(
+            robo_geom=robo_geom,
             weights=weights,
-            cost=cost_terms.joint_angle_cost,
-            state=sol.x,
-            control=sol.u,
+            costs=cost_terms,
+            rstate=sol.x,
         )
         angle_cost_val = jnp.mean(angle_cost_arr, axis=0)
         return angle_cost_val
@@ -1576,9 +1607,8 @@ def plot_cost_trajectory(
     def yaw_fun(sol: utils.TableSol) -> jax.Array:
         yaw_cost_arr = opt.yaw_boundary_cost_arr(
             weights=weights,
-            cost=cost_terms.yaw_cost,
-            state=sol.x,
-            control=sol.u,
+            costs=cost_terms,
+            rstate=sol.x,
         )
         yaw_cost_val = jnp.mean(yaw_cost_arr, axis=0)
         return yaw_cost_val

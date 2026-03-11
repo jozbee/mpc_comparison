@@ -31,7 +31,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.vest as vest
 import exp_mpc.stewart_min.utils as utils
 import exp_mpc.stewart_min.quartic_cost as quartic_cost
@@ -342,6 +342,7 @@ def _omega_cost(
 
 
 def leg_boundary_cost_arr(
+    robo_geom: robo.RoboGeom,
     weights: Weights,
     cost_terms: CostTerms,
     rstate: utils.RState,
@@ -352,7 +353,11 @@ def leg_boundary_cost_arr(
     By using automatic differentiation, we can compute the lengths and the
     velocities cheaper than computing them separately, which is productive.
     """
-    leg_pos_vel = functools.partial(utils.leg_pos_vel, use_rotary=use_rotary)
+    leg_pos_vel = functools.partial(
+        utils.leg_pos_vel,
+        robo_geom=robo_geom,
+        use_rotary=use_rotary,
+    )
     rstate = rstate.pop0()
     lengths, vels = jax.vmap(leg_pos_vel)(rstate)
     lengths = jnp.ravel(lengths)
@@ -367,6 +372,7 @@ def leg_boundary_cost_arr(
 
 
 def _leg_boundary_cost(
+    robo_geom: robo.RoboGeom,
     weights: Weights,
     cost_terms: CostTerms,
     rstate: utils.RState,
@@ -378,18 +384,25 @@ def _leg_boundary_cost(
     velocities cheaper than computing them separately, which is productive.
     """
     length_cost_arr, vel_cost_arr = leg_boundary_cost_arr(
-        weights, cost_terms, rstate, use_rotary
+        robo_geom, weights, cost_terms, rstate, use_rotary
     )
     length_cost_val = jnp.sum(jnp.mean(length_cost_arr, axis=0))
     vel_cost_val = jnp.sum(jnp.mean(vel_cost_arr, axis=0))
     return length_cost_val + vel_cost_val
 
 
-def joint_angles(rstate: utils.RState, use_rotary: bool) -> jax.Array:
-    return jnp.concatenate(utils.angle_joint(rstate, use_rotary))
+def joint_angles(
+    robo_geom: robo.RoboGeom,
+    rstate: utils.RState,
+    use_rotary: bool,
+) -> jax.Array:
+    return jnp.concatenate(
+        utils.angle_joint(rstate, robo_geom=robo_geom, use_xy=use_rotary)
+    )
 
 
 def joint_angle_boundary_cost_arr(
+    robo_geom: robo.RoboGeom,
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
@@ -400,7 +413,11 @@ def joint_angle_boundary_cost_arr(
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    joint_angles_part = functools.partial(joint_angles, use_rotary=use_rotary)
+    joint_angles_part = functools.partial(
+        joint_angles,
+        robo_geom,
+        use_rotary=use_rotary,
+    )
     rstate = rstate.pop0()
     angles = jnp.ravel(jax.vmap(joint_angles_part)(rstate))
     costs = jax.vmap(costs.joint_angle_cost)(angles)
@@ -409,6 +426,7 @@ def joint_angle_boundary_cost_arr(
 
 
 def _joint_angle_boundary_cost(
+    robo_geom: robo.RoboGeom,
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
@@ -419,7 +437,13 @@ def _joint_angle_boundary_cost(
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    cost_arr = joint_angle_boundary_cost_arr(weights, costs, rstate, use_rotary)
+    cost_arr = joint_angle_boundary_cost_arr(
+        robo_geom,
+        weights,
+        costs,
+        rstate,
+        use_rotary,
+    )
     return jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
@@ -526,6 +550,7 @@ def _control_cost(
 
 
 def _terminal_cost(
+    robo_geom: robo.RoboGeom,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     weights: Weights,
@@ -606,7 +631,7 @@ def _terminal_cost(
 
     scales = scale0 * scale1 * weights.terminal_rt_scale
     last_state = rstate.state[-1]
-    last_state = last_state.at[:3].subtract(const.cart_home)
+    last_state = last_state.at[:3].subtract(robo_geom.cart_home)
     rt_cost = jnp.sum(jnp.square(last_state) * scales)
     rt_cost += jnp.square(rstate.state[-1][5]) * (
         scale(x_omegaz0) * scale(x_omegaz1) * weights.terminal_rt_scale * 1e1
@@ -616,20 +641,21 @@ def _terminal_cost(
 
 
 def _cost(
-    weights: Weights,
-    cost_terms: CostTerms,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
+    control: utils.Control,
     rstate0: jax.Array,
+    control0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
-    control0: jax.Array,
-    control: utils.Control,
-    dt: float,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    weights: Weights,
+    cost_terms: CostTerms,
+    dt: jax.Array,
+    robo_geom: robo.RoboGeom,  # static
+    vspec_acc: vest.VSpec,  # static
+    vspec_omega: vest.VSpec,  # static
     use_rotary: bool = True,  # static
-    use_terminal: bool = True,
+    use_terminal: bool = True,  # static
 ) -> jax.Array:
     # precompute states
     rstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
@@ -650,12 +676,19 @@ def _cost(
     cost += _acc_cost(weights, vstate_irl, vstate_sim)
     cost += _omega_cost(weights, vstate_irl, vstate_sim)
     cost += _leg_boundary_cost(
+        robo_geom,
         weights,
         cost_terms,
         rstate,
         use_rotary,
     )
-    cost += _joint_angle_boundary_cost(weights, cost_terms, rstate, use_rotary)
+    cost += _joint_angle_boundary_cost(
+        robo_geom,
+        weights,
+        cost_terms,
+        rstate,
+        use_rotary,
+    )
     cost += _roll_boundary_cost(weights, cost_terms, rstate)
     cost += _pitch_boundary_cost(weights, cost_terms, rstate)
     cost += _yaw_boundary_cost(weights, cost_terms, rstate)
@@ -663,7 +696,13 @@ def _cost(
     cost += _control_cost(weights, control)
     if use_terminal:
         cost += _terminal_cost(
-            vspec_acc, vspec_omega, weights, rstate, vstate_irl, vstate_sim
+            robo_geom,
+            vspec_acc,
+            vspec_omega,
+            weights,
+            rstate,
+            vstate_irl,
+            vstate_sim,
         )
     return cost
 
@@ -672,22 +711,30 @@ def _cost(
 # scipy cost wrappers #
 #######################
 
+cost_static_argnames = [
+    "robo_geom",
+    "vspec_acc",
+    "vspec_omega",
+    "use_rotary",
+    "use_terminal",
+]
 
 @functools.partial(
     jax.jit,
-    static_argnames=["vspec_acc", "vspec_omega", "use_rotary", "use_terminal"],
+    static_argnames=cost_static_argnames,
 )
 def cost_flat_jax(
-    weights: Weights,
-    cost_terms: CostTerms,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
+    control_flat: jax.Array,
     rstate0: jax.Array,
+    control0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
-    control0: jax.Array,
-    control_flat: jax.Array,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    weights: Weights,
+    cost_terms: CostTerms,
     dt: jax.Array,
+    robo_geom: robo.RoboGeom,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     use_rotary: bool = True,
@@ -695,18 +742,19 @@ def cost_flat_jax(
 ) -> jax.Array:
     control = utils.Control.from_flat(control_flat)
     return _cost(
-        weights=weights,
-        cost_terms=cost_terms,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
+        control=control,
         rstate0=rstate0,
+        control0=control0,
         vstate0_irl=vstate0_irl,
         vstate0_sim=vstate0_sim,
-        control0=control0,
-        control=control,
-        dt=dt,
+        acc_ref=acc_ref,
+        omega_ref=omega_ref,
+        weights=weights,
+        cost_terms=cost_terms,
         vspec_acc=vspec_acc,
         vspec_omega=vspec_omega,
+        dt=dt,
+        robo_geom=robo_geom,
         use_rotary=use_rotary,
         use_terminal=use_terminal,
     )
@@ -714,42 +762,43 @@ def cost_flat_jax(
 
 @functools.partial(
     jax.jit,
-    static_argnames=["vspec_acc", "vspec_omega", "use_rotary", "use_terminal"],
+    static_argnames=cost_static_argnames,
 )
 def cost_and_grad_flat_jax(
-    weights: Weights,
-    cost_terms: CostTerms,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
+    control_flat: jax.Array,
     rstate0: jax.Array,
+    control0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
-    control0: jax.Array,
-    control_flat: jax.Array,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    weights: Weights,
+    cost_terms: CostTerms,
     dt: jax.Array,
+    robo_geom: robo.RoboGeom,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     use_rotary: bool = True,
     use_terminal: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
-    cost = functools.partial(
-        cost_flat_jax,
-        weights,
-        cost_terms,
-        acc_ref,
-        omega_ref,
-        rstate0,
-        vstate0_irl,
-        vstate0_sim,
-        control0,
-        dt=dt,
+    cost_and_grad = jax.value_and_grad(cost_flat_jax, argnums=0)
+    return cost_and_grad(
+        control_flat=control_flat,
+        rstate0=rstate0,
+        control0=control0,
+        vstate0_irl=vstate0_irl,
+        vstate0_sim=vstate0_sim,
+        acc_ref=acc_ref,
+        omega_ref=omega_ref,
+        weights=weights,
+        cost_terms=cost_terms,
         vspec_acc=vspec_acc,
         vspec_omega=vspec_omega,
+        dt=dt,
+        robo_geom=robo_geom,
         use_rotary=use_rotary,
         use_terminal=use_terminal,
     )
-    cost_and_grad = jax.value_and_grad(cost)
-    return cost_and_grad(control_flat)
 
 
 ################
@@ -771,6 +820,7 @@ class TrainState:
     @classmethod
     def zero_init(
         cls,
+        robo_geom: robo.RoboGeom,
         horizon_num: int,
         vspec_acc: vest.VSpec,
         vspec_omega: vest.VSpec,
@@ -823,7 +873,7 @@ class TrainState:
             )
 
         rstate0 = zeros(r_num)
-        rstate0 = rstate0.at[:3].add(const.cart_home)
+        rstate0 = rstate0.at[:3].add(robo_geom.cart_home)
 
         return cls(
             rstate0=rstate0,
@@ -840,24 +890,26 @@ def lbfgs_cost(
     dt: jax.Array,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
+    robo_geom: robo.RoboGeom,
     use_terminal: bool,
     args: tuple[TrainState, jax.Array, jax.Array],
     control_flat: jax.Array,
 ) -> jax.Array:
     train_state, acc_ref, omega_ref = args
     return cost_flat_jax(
-        weights=weights,
-        cost_terms=cost_terms,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
+        control_flat=control_flat,
         rstate0=train_state.rstate0,
+        control0=train_state.control0,
         vstate0_irl=train_state.vstate0_irl,
         vstate0_sim=train_state.vstate0_sim,
-        control0=train_state.control0,
-        control_flat=control_flat,
-        dt=dt,
+        acc_ref=acc_ref,
+        omega_ref=omega_ref,
+        weights=weights,
+        cost_terms=cost_terms,
         vspec_acc=vspec_acc,
         vspec_omega=vspec_omega,
+        dt=dt,
+        robo_geom=robo_geom,
         use_rotary=True,
         use_terminal=use_terminal,
     )
@@ -865,22 +917,23 @@ def lbfgs_cost(
 
 lbfgs_cost_and_grad = jax.jit(
     jax.value_and_grad(lbfgs_cost, argnums=-1),
-    static_argnames=["vspec_acc", "vspec_omega", "use_terminal"],
+    static_argnames=["vspec_acc", "vspec_omega", "robo_geom", "use_terminal"],
 )
 
 
 def train_step_with_cost_jax(
-    weights: Weights,
-    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     train_state: TrainState,
+    weights: Weights,
+    cost_terms: CostTerms,
     dt: jax.Array,
     dt_mpc: jax.Array,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     vspec_acc_mpc: vest.VSpec,
     vspec_omega_mpc: vest.VSpec,
+    robo_geom: robo.RoboGeom,
     max_iter: int = 16,
     max_ls: int = 8,
     unroll: bool = False,
@@ -896,6 +949,7 @@ def train_step_with_cost_jax(
         dt_mpc,
         vspec_acc_mpc,
         vspec_omega_mpc,
+        robo_geom,
         use_terminal,
     )
     opt_params = lbfgs.OptParamsLBFGS(
@@ -965,6 +1019,7 @@ train_step_with_cost_jit = jax.jit(
         "vspec_omega",
         "vspec_acc_mpc",
         "vspec_omega_mpc",
+        "robo_geom",
         "max_iter",
         "max_ls",
         "unroll",
@@ -974,18 +1029,20 @@ train_step_with_cost_jit = jax.jit(
 
 
 def train_step_with_cost(
-    weights: Weights,
-    cost_terms: CostTerms,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     train_state: TrainState,
-    dt: float = const.dt,
-    dt_mpc: float = const.dt * 2.0,
-    opt_options: dict[str, int] = {"maxiter": 16, "maxls": 8},
+    weights: Weights,
+    cost_terms: CostTerms,
+    dt: jax.Array,
+    dt_mpc: jax.Array,
+    robo_geom: robo.RoboGeom,
     vspec_acc: vest.VSpec = vest.spec_refs["acc0"],
     vspec_omega: vest.VSpec = vest.spec_refs["omega0"],
     vspec_acc_mpc: vest.VSpec = vest.spec_refs["acc0"],
     vspec_omega_mpc: vest.VSpec = vest.spec_refs["omega0"],
+    max_iter=16,
+    max_ls=8,
     unroll: bool = False,
     use_terminal: bool = True,
 ) -> tuple[TrainState, utils.TableSol, lbfgs_result, float]:
@@ -1002,8 +1059,9 @@ def train_step_with_cost(
         vspec_omega=vspec_omega,
         vspec_acc_mpc=vspec_acc_mpc,
         vspec_omega_mpc=vspec_omega_mpc,
-        max_iter=opt_options["maxiter"],
-        max_ls=opt_options["maxls"],
+        robo_geom=robo_geom,
+        max_iter=max_iter,
+        max_ls=max_ls,
         unroll=unroll,
         use_terminal=use_terminal,
     )

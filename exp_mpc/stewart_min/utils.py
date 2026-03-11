@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.comp as comp
 import exp_mpc.stewart_min.vest as vest
 
@@ -50,7 +50,7 @@ def control_refinement(
 ) -> jax.Array:
     r"""Average the controls `u` to get a refinement.
 
-    Usually `dt == const.dt_sim` and `dtp == const.dt`.
+    Usually `dt == dt_mpc` and `dtp == dt`.
 
     Parameters
     ----------
@@ -460,40 +460,53 @@ def rot_dot2(state: RState, control: Control, use_xy: bool = True) -> jax.Array:
     )
 
 
-@functools.partial(jax.jit, static_argnames=["use_rotary"])
-def leg_pos(state: RState, use_rotary: bool = True) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_rotary"])
+def leg_pos(
+    state: RState,
+    robo_geom: robo.RoboGeom,
+    use_rotary: bool = True,
+) -> jax.Array:
     """All leg lengths."""
     assert state.size == 1
     R = rot(state, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
-    return comp.leg_pos(R, t)
+    return comp.leg_pos(robo_geom, R, t)
 
 
-@functools.partial(jax.jit, static_argnames=["use_rotary"])
-def leg_vel(state: RState, use_rotary: bool = True) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_rotary"])
+def leg_vel(
+    state: RState,
+    robo_geom: robo.RoboGeom,
+    use_rotary: bool = True,
+) -> jax.Array:
     """All leg velocities."""
     assert state.size == 1
     R, R_dot = rot_and_dot(state, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
     t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
-    return comp.leg_vel(R, t, R_dot, t_dot)
+    return comp.leg_vel(robo_geom, R, t, R_dot, t_dot)
 
 
-@functools.partial(jax.jit, static_argnames=["use_rotary"])
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_rotary"])
 def leg_pos_vel(
-    state: RState, use_rotary: bool = True
+    state: RState,
+    robo_geom: robo.RoboGeom,
+    use_rotary: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     """All leg lengths and velocities."""
     assert state.size == 1
     R, R_dot = rot_and_dot(state, use_rotary)
     t = jnp.array([state.x, state.y, state.z])
     t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
-    return comp.leg_pos_vel(R, t, R_dot, t_dot)
+    return comp.leg_pos_vel(robo_geom, R, t, R_dot, t_dot)
 
 
-@functools.partial(jax.jit, static_argnames=["use_rotary"])
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_rotary"])
 def leg_acc(
-    state: RState, control: Control, use_rotary: bool = True
+    state: RState,
+    control: Control,
+    robo_geom: robo.RoboGeom,
+    use_rotary: bool = True,
 ) -> jax.Array:
     """All leg accelerations."""
     assert state.size == 1
@@ -503,7 +516,7 @@ def leg_acc(
     t = jnp.array([state.x, state.y, state.z])
     t_dot = jnp.array([state.x_dot, state.y_dot, state.z_dot])
     t_dot2 = jnp.array([control.x, control.y, control.z])
-    return comp.leg_acc(R, t, R_dot, t_dot, R_dot2, t_dot2)
+    return comp.leg_acc(robo_geom, R, t, R_dot, t_dot, R_dot2, t_dot2)
 
 
 @functools.partial(jax.jit, static_argnames=("world",))
@@ -537,29 +550,48 @@ def angle_acc(
     return comp.angle_acc(*inputs)
 
 
-@functools.partial(jax.jit, static_argnames=["use_xy"])
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_xy"])
 def angle_joint(
-    state: RState, use_xy: bool = True
+    state: RState,
+    robo_geom: robo.RoboGeom = robo.RoboGeom(),
+    use_xy: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     """Angles at joints."""
     assert state.size == 1
     s = state
-    return comp.angle_joint(s.x, s.y, s.z, s.roll, s.pitch, s.yaw, use_xy)
+    return comp.angle_joint(
+        robo_geom,
+        s.x,
+        s.y,
+        s.z,
+        s.roll,
+        s.pitch,
+        s.yaw,
+        use_xy,
+    )
 
 
-@functools.partial(jax.jit, static_argnames=["use_xy"])
-def angle_joint_top(state: RState, use_xy: bool = True) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_xy"])
+def angle_joint_top(
+    state: RState,
+    robo_geom: robo.RoboGeom = robo.RoboGeom(),
+    use_xy: bool = True,
+) -> jax.Array:
     """Angles at top joints."""
     assert state.size == 1
-    joint_top, _ = angle_joint(state, use_xy)
+    joint_top, _ = angle_joint(state, robo_geom, use_xy)
     return joint_top
 
 
-@functools.partial(jax.jit, static_argnames=["use_xy"])
-def angle_joint_bot(state: RState, use_xy: bool = True) -> jax.Array:
+@functools.partial(jax.jit, static_argnames=["robo_geom", "use_xy"])
+def angle_joint_bot(
+    state: RState,
+    robo_geom: robo.RoboGeom = robo.RoboGeom(),
+    use_xy: bool = True,
+) -> jax.Array:
     """Agnles at bottom joints."""
     assert state.size == 1
-    _, joint_bot = angle_joint(state, use_xy)
+    _, joint_bot = angle_joint(state, robo_geom, use_xy)
     return joint_bot
 
 
@@ -673,7 +705,7 @@ def _head_acc(rstate: RState, acc: jax.Array) -> jax.Array:
     assert len(acc.shape) == 1
     assert acc.size == 3
     R = rot(rstate, use_xy=False)
-    return R.T @ (acc + const.gravity)
+    return R.T @ (acc + robo.gravity)
 
 
 def get_vstate_irl(
@@ -864,7 +896,7 @@ def human_acc(sol: TableSol) -> jax.Array:
     control0 = sol.u.get0()
     acc = jnp.array([control0.x, control0.y, control0.z])
     R = rot(state0)
-    return R.T @ (acc + const.gravity)
+    return R.T @ (acc + robo.gravity)
 
 
 @functools.partial(jax.jit, static_argnames=["fun"])
