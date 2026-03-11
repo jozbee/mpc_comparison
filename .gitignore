@@ -10,3 +10,4 @@ artifacts
 mpc_example
 settings.json
 docs/_build
+docs/api/generated

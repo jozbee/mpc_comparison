@@ -1,0 +1,69 @@
+/* ─── Autosummary table ────────────────────────────────────────────────────── */
+
+/* Make the first column (name + short sig) wider so signatures don't wrap */
+table.autosummary td:first-child {
+    min-width: 22em;
+}
+
+/* Keep the one-line description from wrapping awkwardly */
+table.autosummary td:last-child {
+    width: 100%;
+}
+
+/* ─── Article header: align hamburger with breadcrumbs ────────────────────── */
+
+/* The flex container that holds the toggle + breadcrumbs needs centered
+   vertical alignment so the hamburger icon sits level with the home icon. */
+
+.header-article-items__start {
+    display: flex;
+    flex-direction: row;
+    gap: 0.5em;
+}
+
+.bd-breadcrumbs {
+    margin-bottom: 0;
+}
+
+.primary-toggle {
+    align-self: center;
+    display: flex;
+    align-items: center;
+}
+
+/* ─── Function / class signature block ────────────────────────────────────── */
+
+/* Slightly tighten the gap between the signature and the description */
+dl.py dt {
+    margin-bottom: 0.3em;
+}
+
+/* Right-align the [source] link to match JAX */
+dl.py dt .viewcode-link {
+    float: right;
+    font-size: 0.85em;
+    font-weight: normal;
+}
+
+/* ─── Code blocks ─────────────────────────────────────────────────────────── */
+
+/* Light-mode: muted orange for comments, matching JAX */
+html[data-theme="light"] .highlight span.c1,
+html[data-theme="light"] .highlight span.c {
+    color: #b46a35;
+    font-style: italic;
+}
+
+/* ─── Right-hand TOC (on-this-page) ───────────────────────────────────────── */
+
+/* Show parameter/returns/examples headings in the right-sidebar TOC */
+.bd-toc .nav a {
+    font-size: 0.82rem;
+}
+
+/* ─── Parameter list ──────────────────────────────────────────────────────── */
+
+/* Indent param type info so it aligns with the description */
+dl.field-list dt {
+    font-weight: 600;
+}

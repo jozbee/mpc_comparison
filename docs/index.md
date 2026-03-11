@@ -1,4 +1,4 @@
-# exp_mpc
+# Experimental MPC
 
 Experimental MPC (Model Predictive Control) implementations for a 6-DOF Stewart
 platform robot.
@@ -22,7 +22,7 @@ XLA/GPU-compatibility and automatic differentiation. A C++ integration layer
 ## Installation
 
 ```bash
-pip install .
+pip install -e .
 ```
 
 ## Package Layout
@@ -42,7 +42,6 @@ The public API lives in `exp_mpc.stewart_min`:
 
 ```{toctree}
 :maxdepth: 2
-:caption: API Reference
 :hidden:
 
 api/index

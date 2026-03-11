@@ -2,6 +2,17 @@ Robot Parameters
 ================
 
 .. automodule:: exp_mpc.stewart_min.robo
-   :members:
-   :undoc-members: False
-   :show-inheritance:
+   :no-members:
+
+.. currentmodule:: exp_mpc.stewart_min.robo
+
+Classes
+-------
+
+.. autosummary::
+   :toctree: generated/
+   :template: base.rst
+   :nosignatures:
+
+   RoboParams
+   RoboGeom
