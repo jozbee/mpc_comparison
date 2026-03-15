@@ -1,15 +1,16 @@
-r"""Vestibular model implementation.
-
+r"""
 Our vestibular models are specified componentwise in terms of SISO transfer
 functions.
 These are used via an integration matrix trick.
-First, we specify interation matrices --- :math:`E_0,E_1` --- for accurate
+First, we specify iteration matrices --- :math:`E_0,E_1` --- for accurate
 time-integration, and then we specify a more efficient eigen-value decomposition
-method, which is noticeably more efficient for back-propogation algorithms.
+method (i.e., specify the diagonal canonical form), which is noticeably more
+efficient for gradient back-propogation algorithms.
 
-## Fast integration scheme
+Fast integration scheme
+=======================
 
-Compute the matrix exponential for a small-time step :math:`\Delta t`, and then
+We compute the matrix exponential for a small-time step :math:`\Delta t`, and then
 iteratively solve the corresponding initial value problem.
 We explicitly spell this out.
 Given an LTI system
@@ -25,10 +26,10 @@ the solution is
   x(t) = e^{A t} x_0 + \int_0^t e^{A \, (t - \tau)} \, B u(\tau)
   \operatorname{d}\!\tau.
 
-Let :math:`0 = t_0 < t_1 < \ldots < t_N = T` be a partition with each difference
-:math:`t_k - t_{k - 1} = \Delta t` constant.
+Let :math:`0 = t_0 < t_1 < \ldots < t_N = T` be a uniform partition with each
+:math:`\Delta t := t_k - t_{k - 1}` constant.
 Suppose that :math:`u(t) \equiv u_k` is a constant on :math:`[t_{k - 1}, t_k]`.
-Define :math:`x_k := x(t_k)`, where :math:`x_0` is given.
+Define :math:`x_k := x(t_k)`, with :math:`x_0` given.
 Define the (constant) matrices
 
 .. math::
@@ -43,9 +44,14 @@ Then
 
   x_k = E_0 x_{k - 1} + E_1 u_k, \quad k = 1, \ldots, n.
 
-## Faster integration scheme (eigen)
+Faster integration scheme (eigen)
+=================================
 
-We introduce fancy linear-algebraic update scheme.
+After implementing vestibular systems in the MPC algorithm, we found a large
+increase in computation time for our cost functions.
+The back-propogation of gradients was found to be the main culprit.
+This was solved by using the diagonal canonical form to improve the efficiency
+of the integration scheme.
 Consider the recursive problem
 
 .. math::
@@ -63,7 +69,7 @@ Suppose that :math:`E_0` is diagonalizable, say
   E_0 = P D P^{-1},
 
 with :math:`D` diagonal and with :math:`P` the corresponding eigenvectors.
-If we introduce the notation :math:`\tilde{x}_k = P^{-1} x_k` and
+If we introduce the change of basis :math:`\tilde{x}_k = P^{-1} x_k` and
 :math:`\tilde{u}_k = P^{-1} E_1 u_k`, then we have the update rules
 
 .. math::
@@ -83,7 +89,7 @@ To get our desired observed variables, we have the conversion
 
   y_k = C P \tilde{x}_k.
 
-Numerical experiments (done in a temporary notebook) show that this update
+Numerical experiments (not committed to git) show that this update
 scheme is very stable (for typical horizon lengths).
 Numerical experiments also show that this scheme backpropagates gradients about
 4 times faster.
@@ -107,15 +113,23 @@ import exp_mpc.stewart_min.robo as robo
 ###########
 
 
-def _static_field() -> tp.Any:
-    return dataclasses.field(metadata=dict(static=True))
-
-
-# def _dyn_field() -> tp.Any:
-#     return dataclasses.field()
-
-
 def get_E0_E1(ss: ct.StateSpace, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """Get E0 and E1 integration matrices for VSpec.
+
+    Parameters
+    ----------
+    ss :
+        State space representation.
+    dt :
+        Integration time step (uniform constant).
+
+    Returns
+    -------
+    E0 :
+        Internal state integration matrix.
+    E1 :
+        Control integration matrix.
+    """
     Z = np.zeros_like(ss.A)
     I = np.eye(*ss.A.shape)  # noqa: E741
     dyn_mat = np.block([[ss.A, Z], [I, Z]])
@@ -207,7 +221,11 @@ def get_V(
 @dataclasses.dataclass
 class VSpec:
     """Vestibular specification.
-    
+
+    See the module docs for their mathematical interpretation.
+
+    Parameters
+    ----------
     C :
         `y = C @ x + D @ u`
     D :
@@ -245,7 +263,7 @@ class VSpec:
     CP: np.ndarray
     V: np.ndarray
     v0_earth: tp.Optional[np.ndarray]
-    v0_moon: tp.Optional[np.ndarray]
+    v0_moon: tp.Optional[np.ndarray] = None
 
     @classmethod
     def transfer2vspec(
@@ -256,6 +274,30 @@ class VSpec:
         terminal_weight_control: float = 1.0,
         earth_moon_v0: bool = False,
     ) -> "VSpec":
+        """Compute a VSpec from a SISO transfer function.
+
+        Parameters
+        ----------
+        transfer :
+            A SISO transfer function.
+        dt :
+            Time step for integration matrices.
+        terminal_weight_state :
+            Tuning for terminal state weighting matrices.
+            (Somewhat redundant, cf. :py:func:`exp_mpc.stewart_min.opt.Weights`.
+        terminal_weight_control :
+            Tuning for terminal control weighting matrices.
+            (Somewhat redundant, cf. :py:func:`exp_mpc.stewart_min.opt.Weights`.
+        earth_moon_v0 :
+            True to compute the internal states at steady-state eart and moon
+            gravity.
+            Should only be true for SISO transfer functions for specific forces.
+
+        Returns
+        -------
+        vspec :
+            Vestibular specification from a given SISO transfer function.
+        """
         ss = transfer.to_ss()
         C = ss.C
         D = ss.D
@@ -281,6 +323,7 @@ class VSpec:
 
     @property
     def n_state(self) -> int:
+        """Number of internal states."""
         return self.E0.shape[0]
 
     def __hash__(self) -> int:

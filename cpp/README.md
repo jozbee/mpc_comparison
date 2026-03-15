@@ -13,8 +13,6 @@ After initializing the [PJRT runtime](https://openxla.org/xla/pjrt/pjrt_integrat
 * `Makefile`: specifies how to manually compile `mpc_example.cpp`.
 Note that it calls the `Makefile` from `call_jax_from_cpp` in order to compile the PJRT wrappers.
 
-Before calling `make all`, make sure that `libpjrt_c_api_cpu_plugin.so` (or `libpjrt_c_api_cpu_plugin.dylib` on Linux) is in the `cpp/artifacts/` directory.
-There's a separate make command for this: `make pjrt_runtime`.
 To run the program, call `make` in the `cpp` directory, and then call the built executable `mpc_example`.
 To visualize the results, see `notebooks/cpp_analysis.ipynb`.
 
@@ -27,8 +25,7 @@ $ docker-compose build mpc_x86
 $ docker-compose up -d mpc_x86
 $ docker-compose exec -w /root/mpc_comparison mpc_x86 /bin/bash  # enter the container
 # cd cpp
-# make pjrt_runtime
-# make  # compile mpc_example
+# make
 # ./mpc_example
 ```
 

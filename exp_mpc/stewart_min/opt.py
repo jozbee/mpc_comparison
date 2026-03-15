@@ -783,7 +783,7 @@ def cost_and_grad_flat_jax(
 ) -> tuple[jax.Array, jax.Array]:
     cost_and_grad = jax.value_and_grad(cost_flat_jax, argnums=0)
     return cost_and_grad(
-        control_flat=control_flat,
+        control_flat,
         rstate0=rstate0,
         control0=control0,
         vstate0_irl=vstate0_irl,

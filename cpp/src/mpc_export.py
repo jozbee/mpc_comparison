@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 
-import exp_mpc.stewart_min.const as const
+import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.vest as vest
 import exp_mpc.stewart_min.comp as comp
 import exp_mpc.stewart_min.utils as utils
@@ -31,8 +31,8 @@ def mpc_solver(
     c2: float,
     # mpc options
     n: int,  # horizon
-    dt: float,
-    dt_mpc: float,
+    robo_params: robo.RoboParams,
+    robo_geom: robo.RoboGeom,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     vspec_acc_mpc: vest.VSpec,
@@ -76,18 +76,19 @@ def mpc_solver(
         rstate0, vstate0_irl, vstate0_sim, control0 = args
         control_flat = x
         return opt.cost_and_grad_flat_jax(
-            weights=weights,
-            cost_terms=cost_terms,
-            acc_ref=acc_ref,
-            omega_ref=omega_ref,
+            control_flat=control_flat,
             rstate0=rstate0,
+            control0=control0,
             vstate0_irl=vstate0_irl,
             vstate0_sim=vstate0_sim,
-            control0=control0,
-            control_flat=control_flat,
-            dt=dt_mpc,
-            vspec_acc=vspec_acc_mpc,
-            vspec_omega=vspec_omega_mpc,
+            acc_ref=acc_ref,
+            omega_ref=omega_ref,
+            weights=weights,
+            cost_terms=cost_terms,
+            dt=robo_params.dt_mpc,
+            robo_geom=robo_geom,
+            vspec_acc=vspec_acc,
+            vspec_omega=vspec_omega,
             use_rotary=True,
             use_terminal=use_terminal,
         )
@@ -112,7 +113,7 @@ def mpc_solver(
     )
     control_horizon = (
         utils.Control.from_flat(new_last_control)
-        .refine_control(dt_mpc, dt)
+        .refine_control(robo_params.dt_mpc, robo_params.dt)
         .flatten()
     )
 
@@ -128,7 +129,7 @@ def mpc_solver(
 
     # get irl controls
     rstate = utils.RState(rstate0)
-    acc_irl = utils.rot(rstate, use_xy=False).T @ (control0[:3] + const.gravity)
+    acc_irl = utils.rot(rstate, use_xy=False).T @ (control0[:3] + robo.gravity)
     omega_irl = utils.angle_vel(rstate)
 
     # partition
@@ -160,6 +161,8 @@ def mpc_solver(
 
 if __name__ == "__main__":
     # mpc params
+    robo_params = robo.RoboParams()
+    robo_geom = robo.RoboGeom()
     use_terminal = True
     n = 200
     margins = [0.2, 0.1]
@@ -188,45 +191,45 @@ if __name__ == "__main__":
     leg_cost = quartic_cost.QuarticCost.from_bounds(
         margins=[0.3, 0.2, 0.1],
         sizes=[1.0, 2**3, 2**5, 2**10],
-        low=const.leg_min,
-        high=const.leg_max,
-        center=const.lengths_home,
+        low=robo_params.leg_min,
+        high=robo_params.leg_max,
+        center=robo_geom.lengths_home,
     )
     leg_vel_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
         sizes=sizes,
-        low=-const.max_leg_vel,
-        high=const.max_leg_vel,
+        low=-robo_params.max_leg_vel,
+        high=robo_params.max_leg_vel,
     )
     joint_angle_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
         sizes=sizes,
-        low=-const.joint_max_angle,
-        high=const.joint_max_angle,
+        low=-robo_params.joint_max_angle,
+        high=robo_params.joint_max_angle,
     )
     roll_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_roll,
-        high=const.max_roll,
+        low=-robo_params.max_roll,
+        high=robo_params.max_roll,
     )
     pitch_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_pitch,
-        high=const.max_pitch,
+        low=-robo_params.max_pitch,
+        high=robo_params.max_pitch,
     )
     yaw_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_rotary_yaw,
-        high=const.max_rotary_yaw,
+        low=-robo_params.max_rotary_yaw,
+        high=robo_params.max_rotary_yaw,
     )
     yaw_dot_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_rotary_vel,
-        high=const.max_rotary_vel,
+        low=-robo_params.max_rotary_vel,
+        high=robo_params.max_rotary_vel,
     )
     cost_terms = opt.CostTerms(
         leg_cost=leg_cost,
@@ -239,16 +242,16 @@ if __name__ == "__main__":
     )
 
     # vestibular
-    dt = const.dt
-    dt_mpc = const.dt * 2.0
     tf_acc = vest.spec_refs["acc0"][0]
     tf_omega = vest.spec_refs["omega0"][0]
-    vspec_acc = vest.VSpec.transfer2vspec(tf_acc, dt=dt, earth_moon_v0=True)
-    vspec_omega = vest.VSpec.transfer2vspec(tf_omega, dt=dt)
-    vspec_acc_mpc = vest.VSpec.transfer2vspec(
-        tf_acc, dt=dt_mpc, earth_moon_v0=True
+    vspec_acc = vest.VSpec.transfer2vspec(
+        tf_acc, dt=robo_params.dt, earth_moon_v0=True
     )
-    vspec_omega_mpc = vest.VSpec.transfer2vspec(tf_omega, dt=dt_mpc)
+    vspec_omega = vest.VSpec.transfer2vspec(tf_omega, dt=robo_params.dt)
+    vspec_acc_mpc = vest.VSpec.transfer2vspec(
+        tf_acc, dt=robo_params.dt_mpc, earth_moon_v0=True
+    )
+    vspec_omega_mpc = vest.VSpec.transfer2vspec(tf_omega, dt=robo_params.dt_mpc)
 
     # lbfgs params
     max_iter = 3
@@ -266,8 +269,8 @@ if __name__ == "__main__":
         c1,
         c2,
         n,
-        dt,
-        dt_mpc,
+        robo_params,
+        robo_geom,
         vspec_acc,
         vspec_omega,
         vspec_acc_mpc,

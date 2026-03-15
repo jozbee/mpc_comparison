@@ -59,13 +59,22 @@ html_theme_options = {
     "navigation_with_keys": False,
     "article_header_start": ["toggle-primary-sidebar.html", "breadcrumbs"],
 }
-# "article_header_start": ["toggle-primary-sidebar.html", "breadcrumbs"],
-# }
 
 html_static_path = ["_static"]
 html_css_files = ["style.css"]
 
-suppress_warnings = ["autosummary.import_cycle", "app.add_node"]
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3/", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "control": ("https://python-control.readthedocs.io/en/latest/", None),
+}
+
+suppress_warnings = [
+    "autosummary.import_cycle",
+    "app.add_node",
+    "myst.xref_missing",
+]
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
