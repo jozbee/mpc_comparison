@@ -1,23 +1,18 @@
-"""Scipy optimization for the Stewart platform MPC control.
+"""
+We provide optimization components for Stewart platform MPC control.
 
-Idea:
- * All computations are done in jax.
-  * TODO(jozbee): use an optimizer that is compatible with jax.
- * We use scipy.optimize to do the optimization.
-  * SciPy requires flat arrays, so we build jax-pytree compatible dataclasses
-    for convenient bookkeeping.
- * We use the L-BFGS-B optimizer from scipy.optimize.
-  * This was determined to be the best SciPy optimizer, after extensive testing
-    with a fixed point tracking problem.
-    (The other solvers would hang and require several seconds per mpc step.)
- * We use a single shooting method, because our double integrator model is so
-   implistic.
+* Tuning classes: :class:`Weights`, :class:`ExpWeights`, and :class:`CostTerms`.
+* The cost function implementation: :func:`cost_flat_jax`.
+* A feedback loop for python simulations: :func:`train_step_with_cost`.
 
-Numpy array conventions:
-We control acceleration.
-For scipy, the accelerations are in the Cartesian coordinate order
-    [x, y, z, roll, pitch, yaw],
-for one giant flat array.
+The general philosophy is as follows.
+
+* Functions are jax compatible.
+* Implementations are hacky (for easy experimentation).
+* The number of abstractions should be minimized.
+
+See the :doc:`C++ docs <../cpp>` to see how to integrate the MPC feedback
+into a C++ program.
 """
 
 from __future__ import annotations
@@ -64,8 +59,37 @@ def _init_field(arr: jax.Array) -> jax.Array:
 class Weights:
     """Cost function weights.
 
-    Look through the code to find their explicit interpretation.
-    Usually, they simply weight a corresponding cost term.
+    Parameters
+    ----------
+    acc :
+        Per-axis weights for linear acceleration: ``[x, y, z]``.
+    omega :
+        Per-axis weights for angular velocity:
+        ``[roll_dot, pitch_dot, yaw_dot]``.
+    leg :
+        Per-leg weights for leg lengths.
+    leg_vel :
+        Per-leg weights for leg velocities.
+    joint_angle :
+        Per-joint weights for top and bottom joint angles.
+        Ordering is ``[top_0..top_5, bot_0..bot_5]``.
+    roll :
+        Roll weight.
+    pitch :
+        Pitch weight.
+    yaw :
+        Yaw weight.
+    yaw_dot :
+        Yaw velocity weight.
+    control :
+        Per-axis weights for control effort:
+        ``[x_dot2, y_dot2, z_dot2, roll_dot2, pitch_dot2, yaw_dot2]``.
+    terminal_exp_scale :
+        Exponential scaling factor for terminal-state attenuation.
+    terminal_vt_scale :
+        Global scale for terminal vestibular mismatch term.
+    terminal_rt_scale :
+        Global scale for terminal robot state mismatch term.
     """
 
     acc: jax.Array = _init_field(jnp.ones(3))
@@ -83,6 +107,7 @@ class Weights:
     terminal_rt_scale: jax.Array = _init_field(jnp.array(0.2))
 
     def __post_init__(self) -> None:
+        """Validate expected weight-array shapes."""
         assert self.acc.ndim == 1
         assert self.acc.shape[0] == 3
         assert self.omega.ndim == 1
@@ -116,35 +141,90 @@ class Weights:
         return jnp.ones(n, dtype=float)
 
     def scale_acc(self, n: int) -> jax.Array:
-        """Get scale weights for flat acceleration array."""
+        """Get time expanded weights for acceleration cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            2D array of shape ``(n, 3)`` with per-step and per-axis weights.
+        """
         time_scale = self._time_scale(n, "acc")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.acc.size))
         val_scale = jnp.tile(self.acc, (n, 1))
         return time_scale * val_scale
 
     def scale_omega(self, n: int) -> jax.Array:
-        """Get scale weights for flat angular velocity array."""
+        """Get time expanded weights for angular velocity cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            2D array of shape ``(n, 3)`` with per-step and per-axis weights.
+        """
         time_scale = self._time_scale(n, "omega")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.omega.size))
         val_scale = jnp.tile(self.omega, (n, 1))
         return time_scale * val_scale
 
     def scale_leg(self, n: int) -> jax.Array:
-        """Get scale weights for flat leg length array."""
+        """Get time expanded weights for leg length cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n * 6,)``.
+        """
         time_scale = self._time_scale(n, "leg")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg.size))
         val_scale = jnp.tile(self.leg, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_leg_vel(self, n: int) -> jax.Array:
-        """Get scale weights for flat leg length array."""
+        """Get time expanded weights for leg velocity cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n * 6,)``.
+        """
         time_scale = self._time_scale(n, "leg_vel")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg_vel.size))
         val_scale = jnp.tile(self.leg_vel, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_joint_angle(self, n: int) -> jax.Array:
-        """Get scale weights for flat joint angle array."""
+        """Get time expanded weights for joint angle cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n * 12,)``.
+        """
         time_scale = self._time_scale(n, "joint_angle")
         time_scale = jnp.tile(
             time_scale.reshape(-1, 1), (1, self.joint_angle.size)
@@ -153,35 +233,90 @@ class Weights:
         return jnp.ravel(time_scale * val_scale)
 
     def scale_roll(self, n: int) -> jax.Array:
-        """Get scale weights for flat roll angle array."""
+        """Get time expanded weights for roll boundary cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n,)``.
+        """
         time_scale = self._time_scale(n, "roll")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.roll.size))
         val_scale = jnp.tile(self.roll, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_pitch(self, n: int) -> jax.Array:
-        """Get scale weights for flat pitch angle array."""
+        """Get time expanded weights for pitch boundary cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n,)``.
+        """
         time_scale = self._time_scale(n, "pitch")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.pitch.size))
         val_scale = jnp.tile(self.pitch, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_yaw(self, n: int) -> jax.Array:
-        """Get scale weights for flat yaw angle array."""
+        """Get time expanded weights for yaw boundary cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n,)``.
+        """
         time_scale = self._time_scale(n, "yaw")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw.size))
         val_scale = jnp.tile(self.yaw, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_yaw_dot(self, n: int) -> jax.Array:
-        """Get scale weights for flat yaw angle array."""
+        """Get time expanded weights for yaw velocity boundary cost.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n,)``.
+        """
         time_scale = self._time_scale(n, "yaw_dot")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw_dot.size))
         val_scale = jnp.tile(self.yaw_dot, (n, 1))
         return jnp.ravel(time_scale * val_scale)
 
     def scale_control(self, n: int) -> jax.Array:
-        """Get scale weights for flat control array."""
+        """Get time expanded weights for control effort.
+
+        Parameters
+        ----------
+        n :
+            Number of horizon samples.
+
+        Returns
+        -------
+        scale :
+            Flattened weight array of shape ``(n * 6,)``.
+        """
         time_scale = self._time_scale(n, "control")
         time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.control.size))
         val_scale = jnp.tile(self.control, (n, 1))
@@ -191,6 +326,38 @@ class Weights:
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class ExpWeights(Weights):
+    """Exponential time decaying extension of :class:`Weights`.
+
+    Parameters
+    ----------
+    alpha_acc :
+        Decay rate for accelerations.
+    alpha_omega :
+        Decay rate for angular velocities.
+    alpha_leg :
+        Decay rate for leg lengths.
+    alpha_leg_vel :
+        Decay rate for leg velocities.
+    alpha_joint_angle :
+        Decay rate for joint angles.
+    alpha_roll :
+        Decay rate for roll.
+    alpha_pitch :
+        Decay rate for pitch.
+    alpha_yaw :
+        Decay rate for yaw.
+    alpha_yaw_dot :
+        Decay rate for yaw velocities.
+    alpha_control :
+        Decay rate for control effort.
+
+    Notes
+    -----
+    The time profile is ``exp(-k / n * alpha)`` where ``k`` is the
+    discrete horizon index and ``n`` is horizon length.
+    Namely, ``alpha`` is the maximum exponential decrease factor, or
+    alternatively, ``alpha`` is the decay rate when time is normalized to unity.
+    """
     alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
     alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
     alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
@@ -223,6 +390,25 @@ class ExpWeights(Weights):
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class CostTerms:
+    """Container for the boundary penalties used by the MPC objective.
+
+    Parameters
+    ----------
+    leg_cost :
+        Quartic cost for leg length boundary.
+    leg_vel_cost :
+        Quartic cost for leg velocity boundary.
+    joint_angle_cost :
+        Quartic cost for joint angle boundary.
+    roll_cost :
+        Quartic cost for roll boundary.
+    pitch_cost :
+        Quartic cost for pitch boundary.
+    yaw_cost :
+        Quartic cost for yaw boundary.
+    yaw_dot_cost :
+        Quartic cost for yaw rate boundary.
+    """
     leg_cost: quartic_cost.QuarticCost
     leg_vel_cost: quartic_cost.QuarticCost
     joint_angle_cost: quartic_cost.QuarticCost
@@ -275,7 +461,7 @@ def _hyper(x: jax.Array) -> jax.Array:
 ########
 
 
-def acc_cost_arr(
+def _acc_cost_arr(
     weights: Weights,
     vstate_irl: utils.VState,
     vstate_sim: utils.VState,
@@ -302,11 +488,11 @@ def _acc_cost(
     vstate_sim: utils.VState,
 ) -> jax.Array:
     """Head acceleration cost."""
-    cost_arr = acc_cost_arr(weights, vstate_irl, vstate_sim)
+    cost_arr = _acc_cost_arr(weights, vstate_irl, vstate_sim)
     return 0.5 * jnp.mean(cost_arr)
 
 
-def omega_cost_arr(
+def _omega_cost_arr(
     weights: Weights,
     vstate_irl: utils.VState,
     vstate_sim: utils.VState,
@@ -337,11 +523,11 @@ def _omega_cost(
     vstate_sim: utils.VState,
 ) -> jax.Array:
     """Angular velocity cost."""
-    cost_arr = omega_cost_arr(weights, vstate_irl, vstate_sim)
+    cost_arr = _omega_cost_arr(weights, vstate_irl, vstate_sim)
     return 0.5 * jnp.mean(cost_arr)
 
 
-def leg_boundary_cost_arr(
+def _leg_boundary_cost_arr(
     robo_geom: robo.RoboGeom,
     weights: Weights,
     cost_terms: CostTerms,
@@ -383,7 +569,7 @@ def _leg_boundary_cost(
     By using automatic differentiation, we can compute the lengths and the
     velocities cheaper than computing them separately, which is productive.
     """
-    length_cost_arr, vel_cost_arr = leg_boundary_cost_arr(
+    length_cost_arr, vel_cost_arr = _leg_boundary_cost_arr(
         robo_geom, weights, cost_terms, rstate, use_rotary
     )
     length_cost_val = jnp.sum(jnp.mean(length_cost_arr, axis=0))
@@ -391,7 +577,7 @@ def _leg_boundary_cost(
     return length_cost_val + vel_cost_val
 
 
-def joint_angles(
+def _joint_angles(
     robo_geom: robo.RoboGeom,
     rstate: utils.RState,
     use_rotary: bool,
@@ -401,20 +587,16 @@ def joint_angles(
     )
 
 
-def joint_angle_boundary_cost_arr(
+def _joint_angle_boundary_cost_arr(
     robo_geom: robo.RoboGeom,
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
     use_rotary: bool = True,
 ) -> jax.Array:
-    """Joint angle cost.
-
-    This is about 3 times more expensive to compute than the other
-    cost functions (including boundary cost functions).
-    """
+    """Joint angle cost."""
     joint_angles_part = functools.partial(
-        joint_angles,
+        _joint_angles,
         robo_geom,
         use_rotary=use_rotary,
     )
@@ -437,7 +619,7 @@ def _joint_angle_boundary_cost(
     This is about 3 times more expensive to compute than the other
     cost functions (including boundary cost functions).
     """
-    cost_arr = joint_angle_boundary_cost_arr(
+    cost_arr = _joint_angle_boundary_cost_arr(
         robo_geom,
         weights,
         costs,
@@ -447,7 +629,7 @@ def _joint_angle_boundary_cost(
     return jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
-def roll_boundary_cost_arr(
+def _roll_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
@@ -464,11 +646,11 @@ def _roll_boundary_cost(
     costs: CostTerms,
     rstate: utils.RState,
 ) -> jax.Array:
-    cost_arr = roll_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _roll_boundary_cost_arr(weights, costs, rstate)
     return jnp.mean(cost_arr)
 
 
-def pitch_boundary_cost_arr(
+def _pitch_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
@@ -485,11 +667,11 @@ def _pitch_boundary_cost(
     costs: CostTerms,
     rstate: utils.RState,
 ) -> jax.Array:
-    cost_arr = pitch_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _pitch_boundary_cost_arr(weights, costs, rstate)
     return jnp.mean(cost_arr)
 
 
-def yaw_boundary_cost_arr(
+def _yaw_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
@@ -506,11 +688,11 @@ def _yaw_boundary_cost(
     costs: CostTerms,
     rstate: utils.RState,
 ) -> jax.Array:
-    cost_arr = yaw_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _yaw_boundary_cost_arr(weights, costs, rstate)
     return jnp.mean(cost_arr)
 
 
-def yaw_dot_boundary_cost_arr(
+def _yaw_dot_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
     rstate: utils.RState,
@@ -528,11 +710,11 @@ def _yaw_dot_boundary_cost(
     costs: CostTerms,
     rstate: utils.RState,
 ) -> jax.Array:
-    cost_arr = yaw_dot_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _yaw_dot_boundary_cost_arr(weights, costs, rstate)
     return jnp.mean(cost_arr)
 
 
-def control_cost_arr(
+def _control_cost_arr(
     weights: Weights,
     control: utils.Control,
 ) -> jax.Array:
@@ -545,7 +727,7 @@ def _control_cost(
     weights: Weights,
     control: utils.Control,
 ) -> jax.Array:
-    cost_arr = control_cost_arr(weights, control)
+    cost_arr = _control_cost_arr(weights, control)
     return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
 
 
@@ -711,7 +893,7 @@ def _cost(
 # scipy cost wrappers #
 #######################
 
-cost_static_argnames = [
+_cost_static_argnames = [
     "robo_geom",
     "vspec_acc",
     "vspec_omega",
@@ -721,7 +903,7 @@ cost_static_argnames = [
 
 @functools.partial(
     jax.jit,
-    static_argnames=cost_static_argnames,
+    static_argnames=_cost_static_argnames,
 )
 def cost_flat_jax(
     control_flat: jax.Array,
@@ -740,6 +922,54 @@ def cost_flat_jax(
     use_rotary: bool = True,
     use_terminal: bool = True,
 ) -> jax.Array:
+    """Evaluate MPC objective from a flattened control trajectory.
+
+    This flattening wrapper is easily motivated.
+    Optimization algorithms prefer that the optimization variables are
+    represented as a vector, i.e., a flat array.
+
+    Parameters
+    ----------
+    control_flat :
+        Flattened control sequence with ordering
+        ``[x, y, z, roll, pitch, yaw]`` per time step.
+    rstate0 :
+        Current robot state.
+    control0 :
+        Current robot accelerations.
+        (Last robot control.)
+    vstate0_irl :
+        Initial vestibular state for the in-real-life person.
+    vstate0_sim :
+        Initial vestibular state for the simulated/reference person.
+    acc_ref :
+        Reference linear acceleration trajectory in the head frame.
+    omega_ref :
+        Reference angular velocity trajectory in the head frame.
+    weights :
+        Cost weights.
+    cost_terms :
+        Quartic boundary penalties.
+    dt :
+        Time step.
+    robo_geom :
+        Stewart platform geometry.
+    vspec_acc :
+        Vestibular acceleration model specification.
+    vspec_omega :
+        Vestibular angular velocity model specification.
+    use_rotary :
+        ``True`` to simulate a rotary platform on top of the Stewart platform.
+        ``False`` for no rotary platform.
+    use_terminal :
+        ``True`` to include the terminal cost.
+        The terminal cost is mainly used for smooth tracking to home.
+
+    Returns
+    -------
+    cost :
+        Scalar MPC objective value.
+    """
     control = utils.Control.from_flat(control_flat)
     return _cost(
         control=control,
@@ -762,7 +992,7 @@ def cost_flat_jax(
 
 @functools.partial(
     jax.jit,
-    static_argnames=cost_static_argnames,
+    static_argnames=_cost_static_argnames,
 )
 def cost_and_grad_flat_jax(
     control_flat: jax.Array,
@@ -781,6 +1011,52 @@ def cost_and_grad_flat_jax(
     use_rotary: bool = True,
     use_terminal: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
+    """Evaluate MPC objective and gradient for flattened controls.
+
+    Parameters
+    ----------
+    control_flat :
+        Flattened control sequence with ordering
+        ``[x, y, z, roll, pitch, yaw]`` per time step.
+    rstate0 :
+        Current robot state.
+    control0 :
+        Current robot accelerations.
+        (Last robot control.)
+    vstate0_irl :
+        Initial vestibular state for the in-real-life person.
+    vstate0_sim :
+        Initial vestibular state for the simulated/reference person.
+    acc_ref :
+        Reference linear acceleration trajectory in the head frame.
+    omega_ref :
+        Reference angular velocity trajectory in the head frame.
+    weights :
+        Cost weights.
+    cost_terms :
+        Quartic boundary penalties.
+    dt :
+        Time step.
+    robo_geom :
+        Stewart platform geometry.
+    vspec_acc :
+        Vestibular acceleration model specification.
+    vspec_omega :
+        Vestibular angular velocity model specification.
+    use_rotary :
+        ``True`` to simulate a rotary platform on top of the Stewart platform.
+        ``False`` for no rotary platform.
+    use_terminal :
+        ``True`` to include the terminal cost.
+        The terminal cost is mainly used for smooth tracking to home.
+
+    Returns
+    -------
+    cost :
+        Scalar MPC cost.
+    grad :
+        Control (flat) gradient of MPC cost.
+    """
     cost_and_grad = jax.value_and_grad(cost_flat_jax, argnums=0)
     return cost_and_grad(
         control_flat,
@@ -809,7 +1085,27 @@ def cost_and_grad_flat_jax(
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class TrainState:
-    """State (aux info) for training routine."""
+    """State for training.
+
+    The name was motivated by the machine learning community.
+    See :class:`flax.training.train_state.TrainState`.
+    Essentially, the container includes the updated parameters after each MPC
+    optimization iteration.
+
+    Parameters
+    ----------
+    rstate0 :
+        Current robot state.
+    vstate0_irl :
+        Current vestibular state for the in-real-life person.
+    vstate0_sim :
+        Current vestibular state for the simulated/reference person.
+    control0 :
+        Current robot acceleration.
+    control_flat :
+        Flattened control sequence for the MPC horizon.
+        (Last optimization solution.)
+    """
 
     rstate0: jax.Array
     vstate0_irl: jax.Array
@@ -830,8 +1126,11 @@ class TrainState:
 
         Parameters
         ----------
+        robo_geom :
+            Stewart platform geometry.
+            Used for home positioning.
         horizon_num :
-            Number of time steps in horizon length.
+            Horizon length.
         vspec_acc :
             Vestibular specification for acceleration.
         vspec_omega :
@@ -841,11 +1140,12 @@ class TrainState:
             to respect gravity.
             The first and second entries represent the irl and sim conditions,
             respectively.
-            If not `None`, the options are "earth" or "moon"
+            If not ``None``, the options are ``"earth"`` or ``"moon"``.
 
         Returns
         -------
-        Zeroed train state.
+        train_state :
+            Zeroed train state.
         """
         acc_num = vspec_acc.E0.shape[0]
         omega_num = vspec_omega.E0.shape[0]
@@ -895,6 +1195,35 @@ def lbfgs_cost(
     args: tuple[TrainState, jax.Array, jax.Array],
     control_flat: jax.Array,
 ) -> jax.Array:
+    """L-BFGS wrapper of :func:`cost_flat_jax`.
+
+    Parameters
+    ----------
+    weights :
+        Cost weights.
+    cost_terms :
+        Quartic boundary penalties.
+    dt :
+        Time step used by the MPC horizon.
+    vspec_acc :
+        Vestibular acceleration model specification.
+    vspec_omega :
+        Vestibular angular velocity model specification.
+    robo_geom :
+        Stewart platform geometry.
+    use_terminal :
+        Whether terminal costs are enabled.
+    args :
+        Tuple ``(train_state, acc_ref, omega_ref)`` passed through L-BFGS.
+        These are the arguments that change during each MPC control cycle.
+    control_flat :
+        Flattened control sequence being optimized.
+
+    Returns
+    -------
+    cost :
+        Scalar MPC objective value.
+    """
     train_state, acc_ref, omega_ref = args
     return cost_flat_jax(
         control_flat=control_flat,
@@ -929,16 +1258,66 @@ def train_step_with_cost_jax(
     cost_terms: CostTerms,
     dt: jax.Array,
     dt_mpc: jax.Array,
+    robo_geom: robo.RoboGeom,
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     vspec_acc_mpc: vest.VSpec,
     vspec_omega_mpc: vest.VSpec,
-    robo_geom: robo.RoboGeom,
     max_iter: int = 16,
     max_ls: int = 8,
     unroll: bool = False,
     use_terminal: bool = True,
 ) -> tuple[TrainState, utils.TableSol, lbfgs_result]:
+    """Run one MPC control cycle with JAX L-BFGS.
+
+    Parameters
+    ----------
+    acc_ref :
+        Reference linear acceleration trajectory.
+        Shape: ``(horizon_num, 3)``.
+    omega_ref :
+        Reference angular velocity trajectory.
+        Shape: ``(horizon_num, 3)``.
+    train_state :
+        Current MPC state.
+    weights :
+        Cost weights.
+    cost_terms :
+        Quartic boundary penalties.
+    dt :
+        Robot control cycle.
+    dt_mpc :
+        Optimization horizon integration step.
+        We require ``dt_mpc >= dt``.
+    robo_geom :
+        Stewart platform geometry.
+    vspec_acc :
+        Vestibular acceleration model, with integration time step ``dt``.
+    vspec_omega :
+        Vestibular angular velocity model, with integration time step ``dt``.
+    vspec_acc_mpc :
+        Vestibular acceleration model, with integration time step ``dt_mpc``.
+    vspec_omega_mpc :
+        Vestibular angular velocity model, with integration time step
+        ``dt_mpc``.
+    max_iter :
+        Maximum L-BFGS iterations.
+    max_ls :
+        Maximum line search iterations per L-BFGS step.
+    unroll :
+        Whether to unroll L-BFGS loop (JAX control-flow choice).
+    use_terminal :
+        Whether to include terminal penalties.
+
+    Returns
+    -------
+    next_state :
+        Updated MPC state.
+    table_sol :
+        MPC solution trajectory and statistics.
+    lbfgs_res :
+        L-BFGS optimizer tuple ``(minimizer, value, gradient)``.
+    """
     ts = train_state
 
     # compute
@@ -1037,15 +1416,68 @@ def train_step_with_cost(
     dt: jax.Array,
     dt_mpc: jax.Array,
     robo_geom: robo.RoboGeom,
-    vspec_acc: vest.VSpec = vest.spec_refs["acc0"],
-    vspec_omega: vest.VSpec = vest.spec_refs["omega0"],
-    vspec_acc_mpc: vest.VSpec = vest.spec_refs["acc0"],
-    vspec_omega_mpc: vest.VSpec = vest.spec_refs["omega0"],
+    vspec_acc: vest.VSpec,
+    vspec_omega: vest.VSpec,
+    vspec_acc_mpc: vest.VSpec,
+    vspec_omega_mpc: vest.VSpec,
     max_iter=16,
     max_ls=8,
     unroll: bool = False,
     use_terminal: bool = True,
 ) -> tuple[TrainState, utils.TableSol, lbfgs_result, float]:
+    """Run one MPC control cycle with JAX L-BFGS, and measure wall time.
+
+    Parameters
+    ----------
+    acc_ref :
+        Reference linear acceleration trajectory.
+        Shape: ``(horizon_num, 3)``.
+    omega_ref :
+        Reference angular velocity trajectory.
+        Shape: ``(horizon_num, 3)``.
+    train_state :
+        Current MPC state.
+    weights :
+        Cost weights.
+    cost_terms :
+        Quartic boundary penalties.
+    dt :
+        Robot control cycle.
+    dt_mpc :
+        Optimization horizon integration step.
+        We require ``dt_mpc >= dt``.
+    robo_geom :
+        Stewart platform geometry.
+    vspec_acc :
+        Vestibular acceleration model, with integration time step ``dt``.
+    vspec_omega :
+        Vestibular angular velocity model, with integration time step ``dt``.
+    vspec_acc_mpc :
+        Vestibular acceleration model, with integration time step ``dt_mpc``.
+    vspec_omega_mpc :
+        Vestibular angular velocity model, with integration time step
+        ``dt_mpc``.
+    max_iter :
+        Maximum L-BFGS iterations.
+    max_ls :
+        Maximum line search iterations per L-BFGS step.
+    unroll :
+        Whether to unroll L-BFGS loop (JAX control-flow choice).
+    use_terminal :
+        Whether to include terminal penalties.
+
+    Returns
+    -------
+    next_state :
+        Updated MPC state.
+    table_sol :
+        MPC solution trajectory and statistics.
+    lbfgs_res :
+        L-BFGS optimizer tuple ``(minimizer, value, gradient)``.
+    elapsed_time :
+        Wall-time in seconds for calling the jit-ed
+        :func:`train_step_with_cost_jax`.
+    """
     t0 = time.time()
     res = train_step_with_cost_jit(
         weights=weights,

@@ -1,5 +1,5 @@
-Robot Parameters
-================
+Robot Description
+=================
 
 .. automodule:: exp_mpc.stewart_min.robo
    :no-members:

@@ -1,17 +1,27 @@
-"""We implement a custom quartic cost function.
+r"""
+We implement a piecewise defined cost function.
+We use quartic polynomials in our cost.
+Let :math:`[-a, a] \subseteq \mathbb{R}` be a symmetric interval, let
+:math:`x_0 = 0 < x_1 < \ldots < x_n = a` denote a partition of :math:`[0, a]`,
+and let :math:`y_0 < y_1 < \ldots < y_n` denote corresponding outputs.
+Define :math:`p: [-a, a] \to \mathbb{R}` to be a polynomial such that the
+following hold.
 
-Given an interval [a, b], we define a symmetric piecewise quartic polynomial
-that has the properties:
+1. :math:`p(x)` is a quartic polynomial on each interval
+2. :math:`p(x) = p(-x)` is symmetric
+3. :math:`p(x_k) = y_k` for all :math:`0 \leq k \leq n`
+4. :math:`p(x)` is :math:`\mathcal{C}^2([-a, a])`
+5. :math:`p'(0) = 0` and :math:`p''(x) \geq 0`
+6. the quantity :math:`\int_{-a}^a |p''(x)|^2 \operatorname{d} x` is minimized
+   over all polynomials satisfying properties 5--6.
 
-1. C^2,
-2. p''(x) >= 0,
-3. \\int_a^b |p(x)|^2 dx = is minimizeed.
-4. p(x_k) = y_k where the x_k partition the interval.
-
-Technically, we restrict our attention to $y_k$ that are particularly nice,
-e.g., y_{k + 1} >> y_k.
-This is a useful cost function that essentially "blows up", while still allowing
-optimization routines to work.
+"Of course", such a polynomial should be computed via a minimization routine in
+SciPy.
+However, the "Of course" was apparently not obvious.
+SciPy handled the approximation quite poorly, and it wasn't obvious that
+solutions would always exist.
+A naive solution is adopted in :class:`QuarticCost`.
+This JAX implementation is jit-able and auto-differentiable.
 """
 
 from __future__ import annotations
@@ -46,11 +56,11 @@ def _analytic_a1(a4, a3, a2, y, t0, t1):
 
 def _analytic_a0(a4, a3, a2, a1, y, t0, t1):
     """Enforce endpoint matching."""
-    a0 = y - a4 - a3 * (t1 - t0) - 1.0 / 2.0 * a2 * (t1 - t0)**2
+    a0 = y - a4 - a3 * (t1 - t0) - 1.0 / 2.0 * a2 * (t1 - t0) ** 2
     # we should include
     #   `a0 -= 1.0 / 6.0 * a1 * (t1 - t0)**3`
     #  but `a1 == 0` by our construction...
-    a0 /= (t1 - t0)**4 / 12.0
+    a0 /= (t1 - t0) ** 4 / 12.0
     return a0
 
 
@@ -91,7 +101,7 @@ def _quartic_cost(
     knots: np.ndarray,
     y: np.ndarray,
 ) -> np.ndarray:
-    """Quartic cost function.
+    r"""Quartic cost function.
 
     Parameters
     ----------
@@ -101,33 +111,34 @@ def _quartic_cost(
         Function values at the knots, starting at zero and strictly increasing.
         These need to increase quickly enough.
         (This can be difficult to check apriori, but it is checked at runtime.)
-    
+
     Notes
     -----
     We follow som hacky conventions here.
     We define polynomials as a list of coefficients, where
-        `coeffs[k] = [a_0, a_1, a_2, a_3, a_4]`
+        ``coeffs[k] = [a_0, a_1, a_2, a_3, a_4]``
     which corresponds to the polynomial
-        `p_k(x) = (1/12) a_0 (x - t_k)^4 + (1/6) a_1 (x - t_k)^3 + (1/2) a_2 (x - t_k)^2 + a_3 (x - t_k) + a_4`
-    where `t_k` is the knot at index `k`.
+        ``p_k(x) = (1/12) a_0 (x - t_k)^4 + (1/6) a_1 (x - t_k)^3 + (1/2) a_2
+        (x - t_k)^2 + a_3 (x - t_k) + a_4``
+    where ``t_k`` is the knot at index ``k``.
     Namely, we have second derivative
-        `p_k''(x) = a_0 (x - t_k)^2 + a_1 (x - t_k) + a_2`.
+        ``p_k''(x) = a_0 (x - t_k)^2 + a_1 (x - t_k) + a_2``.
     This allows us to associate individual coefficients with continuity
     conditions at the knots.
     The downside is that we have some specialize polyval helper functions
     defined above.
 
     We also have the following properties:
-        1. C^2,
-        2. p''(x) >= 0,
-        3. \\int_a^b |p''(x)|^2 dx = is minimizeed.
-        4. p(x_k) = y_k where the x_k partition the interval.
-    The most interesting condition is p''(x) >= 0, which is not differentiable
-    when we consider the knot intervals.
+        1. :math:`C^2`,
+        2. :math:`p''(x) >= 0`,
+        3. :math:`\int_a^b |p''(x)|^2 dx = is minimizeed.`,
+        4. :math:`p(x_k) = y_k` where the :math:`x_k` partition the interval.
+    The most interesting condition is :math:`p''(x) >= 0`, which is not
+    differentiable when we consider the knot intervals.
     After some thought, this is particularly dangerous when naively coupled with
     curvature minimization requirement.
-    We avoid this by requiring p''''(x) >= 0 everywhere, and we require
-    p'''(x) == 0 at the knots.
+    We avoid this by requiring :math:`p''''(x) >= 0` everywhere, and we require
+    :math:`p'''(x) == 0` at the knots.
     This has a nice visual interpretation.
     It also means that our cost functions have to rapidly increase.
     """
@@ -139,7 +150,8 @@ def _quartic_cost(
     assert np.all(np.diff(y) > 0.0)
 
     # coeffs[k] = [a_0, a_1, a_2, a_3, a_4]
-    # p_k(x) = (1/12) a_0 (x - t_k)^4 + (1/6) a_1 (x - t_k)^3 + (1/2) a_2 (x - t_k)^2 + a_3 (x - t_k) + a_4
+    # p_k(x) = (1/12) a_0 (x - t_k)^4 + (1/6) a_1 (x - t_k)^3 + (1/2) a_2
+    #  (x - t_k)^2 + a_3 (x - t_k) + a_4
     a4 = 0.0
     a3 = 0.0
     a2 = 0.0
@@ -179,23 +191,35 @@ def _quartic_cost(
 class QuarticCost:
     """(Jit-able) Quartic cost function.
 
-    The internal coefficient representation is scaled to the interval [0, 1],
-    and we apply a symmetric definition to extend to [-1, 0].
-    When calling, we linearly the input x in the interval [low, high] to the
-    interval [0, 1], and we apply the quartic cost function.
-    The calling function is differentiable and jit-able from jax.
-    Use the `from_bounds` method for initialization.
-
-    Attributes
+    Parameters
     ----------
     coeffs :
         Coefficients of the quartic polynomial.
     knots :
-        Knot values for the interval [0, 1].
+        Knot values for the interval :math:`[0, 1]`.
     low :
         Lower bound of the interval.
     high :
         Upper bound of the interval.
+    center :
+        Center of the cost function.
+        Determines a linear scale that may break the symmetry (but not the
+        differentiability) of the cost.
+
+    Notes
+    -----
+    The internal coefficient representation is scaled to the interval
+    :math:`[0, 1]`, and we apply a symmetric definition to extend to
+    :math:`[-1, 0]`.
+    Symmetry is broken by the ``center`` parameter, which is useful if, e.g.,
+    the home position of the Stewart platform is not at the center.
+    When calling, we linearly the input ``x`` in the interval
+    :math:`[\mathrm{low}, \mathrm{high}]` to the interval :math:`[0, 1]`, and
+    then we apply the quartic cost function.
+    The calling function is jax compatible, i.e., it is differentiable and
+    jit-able.
+
+    We recommend using the ``from_bounds`` method for initialization.
     """
     coeffs: jax.Array
     knots: jax.Array
@@ -218,16 +242,17 @@ class QuarticCost:
         ----------
         margins :
             Margins for the quartic cost function.
-            These are the distances between the knots in the interval [0, 1],
-            starting from the right.
-            (Idea: [0.2, 0.1] means we have knots at [0.0, 0.7, 0.9, 1.0].)
+            These are the distances between the knots in the interval
+            :math:`[0, 1]`, starting from the right.
+            (Idea: ``[0.2, 0.1]`` means we have knots at
+            ``[0.0, 0.7, 0.9, 1.0]``.)
         sizes :
             Sizes for the quartic cost function.
             These are the values of the quartic cost function at the nonzero
             knots.
-            (Idea: for knots [0.0, 0.7, 0.9, 1.0] and sizes [1.0, 2**3, 2**8],
-            we match the quartic cost function at the knots to the values
-            [0.0, 1.0, 2**3, 2**8].)
+            (Idea: for knots ``[0.0, 0.7, 0.9, 1.0]`` and sizes
+            ``[1.0, 2**3, 2**8]``, we match the quartic cost function at the
+            knots to the values ``[0.0, 1.0, 2**3, 2**8]``.)
         low :
             Lower bound of the (evaluation) interval.
         high :
@@ -236,8 +261,9 @@ class QuarticCost:
             Center of the cost function.
             Determines a linear scale that may break the symmetry of the cost
             function.
-            If center is given, the function is still twice continuously
+            If ``center`` is given, the function is still twice continuously
             differentiable everywhere.
+            If ``None``, the center is set to the midpoint of ``[low, high]``.
         """
         assert len(margins) + 1 == len(sizes)
         assert sorted(sizes) == sizes
@@ -273,9 +299,9 @@ class QuarticCost:
 
     @jax.jit
     def __call__(self, x: jax.Array) -> jax.Array:
-        """Evaluate the quartic cost function at x.
-        
-        To parallelize, use `jax.vmap`.
+        """Evaluate the quartic cost function at ``x``.
+
+        To parallelize, use :func:`jax.vmap`.
         """
         assert x.size == 1
         x = jnp.ravel(x).reshape()

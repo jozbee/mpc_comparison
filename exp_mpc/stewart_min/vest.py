@@ -151,6 +151,28 @@ def get_E0_E1(ss: ct.StateSpace, dt: float) -> tuple[np.ndarray, np.ndarray]:
 def get_eigen_matrices(
     E0: np.ndarray, E1: np.ndarray, C: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Get diagonal canonical form integration matrices.
+
+    Parameters
+    ----------
+    E0 :
+        State integration matrix (non-diagonal).
+    E1 :
+        Control integration matrix (non-diagonal).
+    C :
+        `y = C @ x + D @ u`.
+
+    Returns
+    -------
+    D :
+        Eigenvalues of `E0`.
+    P :
+        Eigenvectors (as columns) of `E0`.
+    P_inv :
+        Inverse of `P`.
+    CP :
+        `C @ P`.
+    """
     res = sci_lin.eig(E0)
     D, P = res[0], res[1]
     D = D.real
@@ -167,7 +189,34 @@ def obs_x1(
     y: np.ndarray,
     u: np.ndarray,
 ) -> np.ndarray:
-    """Returns initial hidden state x1 corresponding to y1."""
+    """Returns initial hidden state x1 corresponding to y1.
+
+    Parameters
+    ----------
+    E0 :
+        State integration matrix.
+    E1 :
+        Control integration matrix.
+    C :
+        `y = C @ x + D @ u`.
+    y :
+        Consecutively observed states.
+        Assumed to be sampled at constant frequency.
+    u :
+        Consecutive controls applied.
+        We assume that the constant control `u[k]` was applied over the interval
+        between `y[k]` and `y[k + 1]`.
+
+    Returns
+    -------
+    x0 :
+        Initial state corresponding to data `y` and `u`.
+
+    Warnings
+    --------
+    Apparently the current code assumes that `D == 0`, from
+    `y = C @ x + D @ u`.
+    """
     n = E0.shape[0]
     mpow = np.linalg.matrix_power
     squee = np.squeeze
@@ -204,7 +253,83 @@ def get_V(
     state_weight: float,
     control_weight: float,
 ) -> np.ndarray:
-    """Returns an LQR cost matrix V."""
+    r"""Returns an LQR terminal cost matrix V.
+
+    Parameters
+    ----------
+    ss :
+        State space.
+    state_weight :
+        Additional weight to be applied to states.
+        See :math:`Q` in the Notes section.
+    control_weight :
+        Additional weight to be applied to controls.
+        See :math:`R` in the Notes section.
+
+    Returns
+    -------
+    V :
+        Quadratic terminal cost matrix.
+
+    Notes
+    -----
+    Suppose that we have two simultaneous systems:
+
+    .. math::
+
+        \dot{x}(t) &= A \, x(t) + B \, u(t), \quad x(0) = x_0 \\
+        y(t) &= C \, x(t) + D \, u(t)
+
+    and
+    
+    .. math::
+
+        \dot{x_r}(t) &= A \, x_r(t) + B\,  u_r(t), \quad x_r(0) = x_{r, 0} \\
+        y_r(t) &= C \, x_r(t) + D \, u_r(t).
+
+    Define the error vectors :math:`x_e(t) := x(t) - x_r(t)` and
+    :math:`e(t) := y(t) - y_r(t)`.
+    We consider the LQR problem, for
+    :math:`Q, R \in \mathbb{R}^{1 \times 1} = \mathbb{R}`:
+
+    .. math::
+
+        J(u) &= \int_0^\infty [e^\top \, Q \, e + u^\top \, R \, u]
+        \operatorname*{d}\!t \\
+        &= \int_0^\infty [x_e^\top \, C^\top \, Q \, C \, x_e + 2 \, x_e^\top \,
+        C^\top \, Q \, D \, u_e + u_e^\top \, D^\top \, Q \, D \, u_e \\
+        &\hspace{15em} \mathop{+} u_e^\top \, R \, u_e + 2 \, u_e^\top \, R \,
+        u_r + u_r^\top \, R \, u_r] \operatorname*{d}\!t.
+
+    Suppose that :math:`0 < u_r \ll 1` is negligible in the time-to-go value
+    function cost (and :math:`u_e` uniformly bounded).
+    Then
+
+    .. math::
+
+        J(u) \approx \int_0^\infty [x_e^\top \, Q_e \, x_e + 2 \, x_e^\top \, N_e \,
+        u_e + u_e^\top \, R_e \, u_e] \operatorname*{d}\!t
+
+    for
+
+    .. math::
+
+        Q_e = C^\top \, Q \, C, \quad N_e = C^\top \, Q \, D, \quad R_e = D^\top
+        \, Q \, D + R.
+
+    Define the value function
+
+    .. math::
+
+        V(x_0) = \min_u J(u).
+
+    Then we define :math:`V` to be the solution to the (generalized) algebraic
+    riccati equation to get
+
+    .. math::
+
+        V(x_0) \approx (x_0 - x_{r, 0})^\top \, V (x_0 - x_{r, 0}).
+    """
     Q = state_weight * ss.C.T @ ss.C
     Q = (Q + Q.T) / 2.0
     R = state_weight * ss.D.T @ ss.D + control_weight
@@ -222,28 +347,29 @@ def get_V(
 class VSpec:
     """Vestibular specification.
 
-    See the module docs for their mathematical interpretation.
+    See the module docs :mod:`exp_mpc.stewart_min.vest` for their mathematical
+    interpretation.
 
     Parameters
     ----------
     C :
-        `y = C @ x + D @ u`
+        ``y = C @ x + D @ u``.
     D :
-        `y = C @ x + D @ u`
+        ``y = C @ x + D @ u``.
     E0 :
-        `x_k = E0 @ x_{k - 1} + E1 @ u_k`
+        ``x_k = E0 @ x_{k - 1} + E1 @ u_k``.
     E1 :
-        `x_k = E0 @ x_{k - 1} + E1 @ u_k`
+        ``x_k = E0 @ x_{k - 1} + E1 @ u_k``.
     eig :
-        Eigenvalues of E0.
+        Eigenvalues of ``E0``.
     P :
-        Eigenvectors of E0.
+        Eigenvectors of ``E0``.
     P_inv :
-        Inverse of P.
+        Inverse of ``P``.
     EP1 :
-        P_inv @ E1.
+        ``P_inv @ E1``.
     CP :
-        C @ P.
+        ``C @ P``.
     V :
         LQR cost matrix (terminal).
     v0_earth :

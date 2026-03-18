@@ -1,8 +1,11 @@
-"""Multi-processed matplotlib helpers.
+"""
+Multi-processed matplotlib helpers.
+We use the python ``multiprocessing`` library to call our animation routines in
+parallel in several python processes.
+Each python process only computes a portion of the animation, and then these
+videos are stitched together with ``ffmpeg``.
 
-Namely, we multiprocess matplotlib animation writers.
-Basically, we run several of these on different threads, and then we stich the
-videos together after-the fact with matplotlib.
+**Warning**: This can use A LOT of RAM.
 """
 
 import os
@@ -33,7 +36,7 @@ assert isinstance(cpus, int)
 cpus //= 2  # jax threading, ram, and efficiency cpu considerations
 
 
-def get_frame_range_iter(
+def _get_frame_range_iter(
     trajectory: list[utils.TableSol],
     robo_params: robo.RoboParams,
     fps: int = 30,
@@ -48,7 +51,7 @@ def get_frame_range_iter(
     return frame_range_iter
 
 
-def concat_mp4(temp_dir: str, file_name: str, mp4_names: list[str]):
+def _concat_mp4(temp_dir: str, file_name: str, mp4_names: list[str]):
     temp_file_names = "".join([f"file '{name}'\n" for name in mp4_names])
     with open(f"{temp_dir}/temp_list.txt", "wt") as f:
         f.write(temp_file_names)
@@ -68,7 +71,7 @@ def concat_mp4(temp_dir: str, file_name: str, mp4_names: list[str]):
 ############################
 
 
-def single_animate_human_trajectory(
+def _single_animate_human_trajectory(
     temp_dir: str,
     count: int,
     trajectory: list[utils.TableSol],
@@ -95,6 +98,21 @@ def single_animate_human_trajectory(
 
 @dataclasses.dataclass
 class AnimateHumanTrajectoryArgs:
+    """Arguments for :func:`mp_animate_human_trajectory`.
+
+    Parameters
+    ----------
+    file_name :
+        Destination mp4 file name.
+    trajectory :
+        Sequence of MPC solutions.
+    references :
+        Optional reference signals for the head plots.
+        See :func:`exp_mpc.stewart_min.viz.animate_human_trajectory`.
+    robo_params :
+        Robot configuration.
+    """
+
     file_name: str
     trajectory: list[utils.TableSol]
     references: dict[str, jax.Array]
@@ -102,6 +120,29 @@ class AnimateHumanTrajectoryArgs:
 
 
 def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
+    """Render human trajectory animation in parallel and merge video chunks.
+
+    Parameters
+    ----------
+    args :
+        Bundle of inputs for the animation job.
+        Includes output file name, MPC trajectory, optional references,
+        and robot parameters.
+
+    Notes
+    -----
+    The trajectory is split into frame ranges across worker processes.
+    Each worker writes one temporary mp4 file.
+    Final output is produced by concatenating those files with ``ffmpeg``.
+
+    See Also
+    --------
+    :func:`exp_mpc.stewart_min.viz.animate_human_trajectory` :
+        The underlying animation function, which is called in parallel across
+        several processes.
+    :func:`exp_mpc.stewart_min.mp_mpl.call_mp_animate_human_trajectory` :
+        To call :func:`mp_animate_human_trajectory` in a jupyter notebook.
+    """
     # setup
     temp_dir = tempfile.TemporaryDirectory()
     pool_inputs = zip(
@@ -109,15 +150,15 @@ def mp_animate_human_trajectory(args: AnimateHumanTrajectoryArgs):
         range(cpus),  # count_iter
         itertools.repeat(args.trajectory),
         itertools.repeat(args.references),
-        get_frame_range_iter(args.trajectory, robo_params=args.robo_params),
+        _get_frame_range_iter(args.trajectory, robo_params=args.robo_params),
         itertools.repeat(args.robo_params),
     )
 
     # main
     with mp.Pool(cpus) as pool:
-        names = pool.starmap(single_animate_human_trajectory, pool_inputs)
+        names = pool.starmap(_single_animate_human_trajectory, pool_inputs)
     names = sorted(names)  # multiprocessing can mix things up
-    concat_mp4(
+    _concat_mp4(
         temp_dir=temp_dir.name, file_name=args.file_name, mp4_names=names
     )
 
@@ -128,6 +169,39 @@ def call_mp_animate_human_trajectory(
     references: dict[str, jax.Array],
     robo_params: robo.RoboParams,
 ):
+    """Run :func:`mp_animate_human_trajectory` in a subprocess.
+
+    To call :func:`mp_animate_human_trajectory` in a jupyter notebook, we need
+    the extra level of indirection provided by this helper function.
+
+    Parameters
+    ----------
+    file_name :
+        Destination mp4 file name.
+    trajectory :
+        Sequence of MPC solutions.
+    references :
+        Optional reference signals for the head plots.
+        Supported keys are ``"xyz-acceleration"`` and
+        ``"angular-velocity"``.
+    robo_params :
+        Robot configuration.
+
+    Notes
+    -----
+    Inputs are serialized to a temporary pickle file.
+    This module is then invoked as a script with the corresponding CLI flag.
+    The function blocks until subprocess completion.
+
+    See Also
+    --------
+    :func:`exp_mpc.stewart_min.viz.animate_human_trajectory` :
+        The underlying animation function, which is called in parallel across
+        several processes.
+    :func:`exp_mpc.stewart_min.mp_mpl.mp_animate_human_trajectory` :
+        The main multi-processing function, which is called in a subprocess by
+        this helper function.
+    """
     args = AnimateHumanTrajectoryArgs(
         file_name=file_name,
         trajectory=trajectory,
@@ -151,7 +225,7 @@ def call_mp_animate_human_trajectory(
 ######################
 
 
-def single_animate_trajectory(
+def _single_animate_trajectory(
     temp_dir: str,
     count: int,
     trajectory: list[utils.TableSol],
@@ -178,6 +252,20 @@ def single_animate_trajectory(
 
 @dataclasses.dataclass
 class AnimateTrajectoryArgs:
+    """Arguments for :func:`mp_animate_trajectory`.
+
+    Parameters
+    ----------
+    file_name :
+        Destination mp4 file name.
+    trajectory :
+        Sequence of MPC solutions.
+    robo_params :
+        Robot configuration.
+    robo_geom :
+        Stewart platform geometry.
+    """
+
     file_name: str
     trajectory: list[utils.TableSol]
     robo_params: robo.RoboParams
@@ -185,22 +273,45 @@ class AnimateTrajectoryArgs:
 
 
 def mp_animate_trajectory(args: AnimateTrajectoryArgs):
+    """Render table trajectory animation in parallel and merge video chunks.
+
+    Parameters
+    ----------
+    args :
+        Bundle of inputs for the animation job.
+        Includes output file name, MPC trajectory, robot parameters,
+        and robot geometry.
+
+    Notes
+    -----
+    The trajectory is split into frame ranges across worker processes.
+    Each worker writes one temporary mp4 file.
+    Final output is produced by concatenating those files with ``ffmpeg``.
+
+    See Also
+    --------
+    :func:`exp_mpc.stewart_min.viz.animate_trajectory` :
+        The underlying animation function, which is called in parallel across
+        several processes.
+    :func:`exp_mpc.stewart_min.mp_mpl.call_mp_animate_trajectory` :
+        To call :func:`mp_animate_trajectory` in a jupyter notebook.
+    """
     # setup
     temp_dir = tempfile.TemporaryDirectory()
     pool_inputs = zip(
         itertools.repeat(temp_dir.name),
         range(cpus),  # count_iter
         itertools.repeat(args.trajectory),
-        get_frame_range_iter(args.trajectory, robo_params=args.robo_params),
+        _get_frame_range_iter(args.trajectory, robo_params=args.robo_params),
         itertools.repeat(args.robo_params),
         itertools.repeat(args.robo_geom),
     )
 
     # main
     with mp.Pool(cpus) as pool:
-        names = pool.starmap(single_animate_trajectory, pool_inputs)
+        names = pool.starmap(_single_animate_trajectory, pool_inputs)
     names = sorted(names)  # multiprocessing can mix things up
-    concat_mp4(
+    _concat_mp4(
         temp_dir=temp_dir.name, file_name=args.file_name, mp4_names=names
     )
 
@@ -211,6 +322,34 @@ def call_mp_animate_trajectory(
     robo_params: robo.RoboParams,
     robo_geom: robo.RoboGeom,
 ):
+    """Run :func:`mp_animate_trajectory` in a subprocess.
+
+    Parameters
+    ----------
+    file_name :
+        Destination mp4 file name.
+    trajectory :
+        Sequence of MPC solutions.
+    robo_params :
+        Robot configuration.
+    robo_geom :
+        Stewart platform geometry.
+
+    Notes
+    -----
+    Inputs are serialized to a temporary pickle file.
+    This module is then invoked as a script with the corresponding CLI flag.
+    The function blocks until subprocess completion.
+
+    See Also
+    --------
+    :func:`exp_mpc.stewart_min.viz.animate_trajectory` :
+        The underlying animation function, which is called in parallel across
+        several processes.
+    :func:`exp_mpc.stewart_min.mp_mpl.mp_animate_trajectory` :
+        The main multi-processing function, which is called in a subprocess by
+        this helper function.
+    """
     args = AnimateTrajectoryArgs(
         file_name=file_name,
         trajectory=trajectory,
@@ -230,44 +369,6 @@ def call_mp_animate_trajectory(
         stderr=subprocess.DEVNULL,
     )
     process.wait()  # need to wait; otherwise the temp dir kills itself
-
-
-###########################
-# animate cost trajectory #
-###########################
-
-
-def single_animate_cost_trajectory(
-    temp_dir: str,
-    count: int,
-    trajectory: list[utils.TableSol],
-    acc_refs,
-    omega_refs,
-    weights,
-    cost_terms,
-    frame_range: tuple[int, int],
-    robo_params: robo.RoboParams,
-    robo_geom: robo.RoboGeom,
-) -> str:
-    """Return file name for matplotlib animation."""
-    anim, fig = viz.animate_cost_trajectory(
-        trajectory=trajectory,
-        acc_refs=acc_refs,
-        omega_refs=omega_refs,
-        weights=weights,
-        cost_terms=cost_terms,
-        sim_rate=1.0,
-        fps=30,
-        frame_range=frame_range,
-        robo_params=robo_params,
-        robo_geom=robo_geom,
-    )
-    const_str = str(count)
-    if len(const_str) == 1:
-        const_str = f"0{const_str}"  # prepend an extra zero, for later sorting
-    anim.save(f"{temp_dir}/{const_str}_temp.mp4", writer="ffmpeg", dpi=250)
-    plt.close(fig)
-    return f"{const_str}_temp.mp4"
 
 
 if __name__ == "__main__":

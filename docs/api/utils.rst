@@ -58,7 +58,6 @@ Functions
    table_acc
    human_vel
    human_acc
-   sol_vmap
    human_vel_horizon
    human_angle_vel_horizon
    human_acc_horizon

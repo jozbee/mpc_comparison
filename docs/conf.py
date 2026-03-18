@@ -24,6 +24,8 @@ extensions = [
     # "sphinxcontrib.mermaid",
 ]
 
+myst_enable_extensions = ["dollarmath", "amsmath"]
+
 autosummary_generate = True
 napolean_use_rtype = False
 
@@ -67,6 +69,9 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
+    "jax": ("https://docs.jax.dev/en/latest/", None),
+    "flax": ("https://flax.readthedocs.io/en/stable/", None),
     "control": ("https://python-control.readthedocs.io/en/latest/", None),
 }
 

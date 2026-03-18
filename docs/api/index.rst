@@ -5,10 +5,10 @@ API Reference
    :maxdepth: 1
 
    robo
-   comp
-   opt
-   utils
    vest
    quartic_cost
+   comp
+   utils
    viz
    mp_mpl
+   opt

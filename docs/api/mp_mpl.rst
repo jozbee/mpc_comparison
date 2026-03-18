@@ -25,12 +25,7 @@ Functions
    :template: base.rst
    :nosignatures:
 
-   get_frame_range_iter
-   concat_mp4
-   single_animate_human_trajectory
    mp_animate_human_trajectory
    call_mp_animate_human_trajectory
-   single_animate_trajectory
    mp_animate_trajectory
    call_mp_animate_trajectory
-   single_animate_cost_trajectory

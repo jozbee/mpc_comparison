@@ -1,4 +1,8 @@
+{% if module and objname and fullname != module %}
+{{ objname | underline }}
+{% else %}
 {{ fullname | underline }}
+{% endif %}
 
 .. currentmodule:: {{ module }}
 
