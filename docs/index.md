@@ -30,10 +30,11 @@ pip install -e ".[docs]"
 To build the docs, in the root git directory, run
 
 ```bash
-sphinx-build -b html docs docs/_build/html
+sphinx-build -j auto -b html docs docs/_build/html
 ```
 
-To access the docs locally, in your web browser, open `docs/_build/html/index.html`.
+To access the docs locally, in your web browser, open
+`docs/_build/html/index.html`.
 
 ## Package Layout
 

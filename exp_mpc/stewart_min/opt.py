@@ -1,4 +1,4 @@
-"""
+r"""
 We provide optimization components for Stewart platform MPC control.
 
 * Tuning classes: :class:`Weights`, :class:`ExpWeights`, and :class:`CostTerms`.
@@ -13,6 +13,57 @@ The general philosophy is as follows.
 
 See the :doc:`C++ docs <../cpp>` to see how to integrate the MPC feedback
 into a C++ program.
+
+MPC Formulation
+===============
+
+Our optimal control problem takes the usual form
+
+.. math::
+
+    u^*(\cdot) = \operatorname*{arg\,min}_{u \in L^2([0, T])} \int_0^T
+    \ell(t, x(t), u(t)) \operatorname*{d}\!t + K(x(T))
+
+subject to some linear dynamics
+
+.. math::
+
+    \dot{x} = A x + B u, \quad x(0) = x_0.
+
+The controls :math:`u` are the linear accelerations and euler-angle
+accelerations, in the head frame.
+Our state vector :math:`x` can be decomposed as
+
+.. math::
+
+    x = \begin{bmatrix} x_{\mathrm{robo}} \\ x_{\mathrm{vest}} \end{bmatrix},
+    \quad x_{\mathrm{vest}} = \begin{bmatrix} x_{\mathrm{irl}} \\
+    x_{\mathrm{sim}} \end{bmatrix}.
+
+where :math:`x_{\mathrm{robo}}` denotes the Cartesian position and velocity of
+the headframe and where :math:`x_{\mathrm{irl}}` and :math:`x_{\mathrm{sim}}`
+denote the vestibular linear acceleration and angular velocity of the real
+person and simulated person, respectively.
+The dynamics :math:`(A, B)` act on :math:`x_{\mathrm{robo}}` as a double
+integrator, and they act on :math:`x_{\mathrm{irl}}` and
+:math:`x_{\mathrm{sim}}` via SISO vestibular models, taken from the literature.
+The SISO vestibular systems are described by
+:class:`exp_mpc.stewart_min.vest.VSpec`.
+Next, the running cost is of the form
+
+.. math::
+
+    \ell(t, x, u) \approx |(x_{\mathrm{irl}} - x_{\mathrm{sim}}) \odot
+    e^{\alpha t}|_W^2 + \sum_{c \in \mathcal{C}} q_c(x_{\mathrm{robo}}) +
+    |u|_W^2.
+
+Namely, we have exponential decay factors on the vestibular tracking terms, and
+we have a sum over the boundary quartic costs :math:`q_c`, where
+:math:`\mathcal{C}` denotes the set of constraints.
+The quartic costs are implemented as
+:class:`exp_mpc.stewart_min.quartic_cost.QuarticCost`.
+Finally, we solve the minimization problem via real-time L-BFGS iterations.
+The L-BFGS algorithm is implemented in a separate library.
 """
 
 from __future__ import annotations
