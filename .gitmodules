@@ -6,4 +6,4 @@
 	url = https://github.com/jozbee/call_jax_from_cpp.git
 [submodule "cpp/third_party/lbfgs"]
 	path = cpp/third_party/lbfgs
-	url = git@github.com:jozbee/lbfgs.git
+	url = https://github.com/jozbee/lbfgs.git
