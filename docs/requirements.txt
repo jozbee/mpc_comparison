@@ -1,12 +1,17 @@
-jax==0.9.0.1
-numpy
-matplotlib
-pandas
-control
-sphinx>=7.0
-sphinx-book-theme
-myst-parser
-sphinx-autodoc-typehints
-sphinx-copybutton
-sphinx_design
-sphinx-remove-toctrees
+# general dependencies
+# jax==0.9.0.1
+# numpy
+# matplotlib
+# pandas
+# control
+# sphinx>=7.0
+# sphinx-book-theme
+# myst-parser
+# sphinx-autodoc-typehints
+# sphinx-copybutton
+# sphinx_design
+# sphinx-remove-toctrees
+
+# install packages, which lists docs dependencies
+cpp/third_party/lbfgs/.
+.[docs]
