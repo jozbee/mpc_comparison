@@ -189,7 +189,7 @@ def _quartic_cost(
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class QuarticCost:
-    """(Jit-able) Quartic cost function.
+    r"""(Jit-able) Quartic cost function.
 
     Parameters
     ----------

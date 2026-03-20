@@ -2,7 +2,7 @@
 name = "exp_mpc"
 version = "0.1.0"
 description = "Experimental mpc computations"
-readme = "README.txt"
+readme = "README.md"
 requires-python = ">=3.12"
 license = {file = "LICENSE.txt"}
 authors = [
