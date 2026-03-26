@@ -37,6 +37,12 @@ Output data: -0.0246488, 0.000437004
 (The example was run on Apple Silicon, which is emulating the x86 architecture.
 You should expect better performance on bare metal.)
 
+## Input/Output interpretation
+
+All input and output quantities should be interpreted in the head frame, when applicable.
+E.g., when `hstate0` is the zero vector, then the robot is in its home position and the head is translated upwards.
+The translation between the two frames is specified by the `human_displacement` parameter in {py:class}`exp_mpc.stewart_min.robo.RoboGeom`.
+
 ## Integration notes
 
 The Python to C++ pipeline consists of API wrappers and some minimal dependencies.

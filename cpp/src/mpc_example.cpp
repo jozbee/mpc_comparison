@@ -18,8 +18,8 @@ int main() {
   const double dt = 0.005;  // 200 hz
   const std::vector<double> acc_ref = {1.0, 0.0, 9.81};
   const std::vector<double> omega_ref = {0.0, 0.0, 0.1};
-  std::vector<double> rstate0(2 * 6, 0.0);
-  rstate0[2] = 0.1;  // home z-coordinate
+  std::vector<double> hstate0(2 * 6, 0.0);
+  hstate0[2] = 0.1;  // home z-coordinate
   std::vector<double> vstate0_irl(15, 0.0);
   std::vector<double> vstate0_sim(15, 0.0);
   std::vector<double> control0(6, 0.0);
@@ -60,7 +60,7 @@ int main() {
                                          device),
         pjrt::Buffer::to_device_blocking(omega_ref.data(), omega_ref.size(),
                                          client, device),
-        pjrt::Buffer::to_device_blocking(rstate0.data(), rstate0.size(), client,
+        pjrt::Buffer::to_device_blocking(hstate0.data(), hstate0.size(), client,
                                          device),
         vstate0_irl_buff,
         vstate0_sim_buff,
@@ -85,9 +85,9 @@ int main() {
     control_hist.push_back(control_horizon);
     for (std::size_t i = 0; i < 6; i++) {
       control0[i] = control_horizon[i];
-      rstate0[i] =
-          rstate0[i] + dt * rstate0[i + 6] + 0.5 * dt * dt * control_horizon[i];
-      rstate0[i + 6] = rstate0[i + 6] + dt * control_horizon[i];
+      hstate0[i] =
+          hstate0[i] + dt * hstate0[i + 6] + 0.5 * dt * dt * control_horizon[i];
+      hstate0[i + 6] = hstate0[i + 6] + dt * control_horizon[i];
     }
   }
 

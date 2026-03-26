@@ -582,7 +582,7 @@ def _leg_boundary_cost_arr(
     robo_geom: robo.RoboGeom,
     weights: Weights,
     cost_terms: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
     use_rotary: bool = True,
 ) -> tuple[jax.Array, jax.Array]:
     """Include leg length and leg velocity costs.
@@ -595,14 +595,14 @@ def _leg_boundary_cost_arr(
         robo_geom=robo_geom,
         use_rotary=use_rotary,
     )
-    rstate = rstate.pop0()
-    lengths, vels = jax.vmap(leg_pos_vel)(rstate)
+    hstate = hstate.pop0()
+    lengths, vels = jax.vmap(leg_pos_vel)(hstate)
     lengths = jnp.ravel(lengths)
     vels = jnp.ravel(vels)
     length_costs = jax.vmap(cost_terms.leg_cost)(lengths)
     vel_costs = jax.vmap(cost_terms.leg_vel_cost)(vels)
-    w_len = weights.scale_leg(rstate.size)
-    w_vel = weights.scale_leg_vel(rstate.size)
+    w_len = weights.scale_leg(hstate.size)
+    w_vel = weights.scale_leg_vel(hstate.size)
     length_cost_arr = jnp.reshape(length_costs * w_len, shape=(-1, 6))
     vel_cost_arr = jnp.reshape(vel_costs * w_vel, shape=(-1, 6))
     return length_cost_arr, vel_cost_arr
@@ -612,7 +612,7 @@ def _leg_boundary_cost(
     robo_geom: robo.RoboGeom,
     weights: Weights,
     cost_terms: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
     use_rotary: bool,
 ) -> jax.Array:
     """Include leg length and leg velocity costs.
@@ -621,7 +621,7 @@ def _leg_boundary_cost(
     velocities cheaper than computing them separately, which is productive.
     """
     length_cost_arr, vel_cost_arr = _leg_boundary_cost_arr(
-        robo_geom, weights, cost_terms, rstate, use_rotary
+        robo_geom, weights, cost_terms, hstate, use_rotary
     )
     length_cost_val = jnp.sum(jnp.mean(length_cost_arr, axis=0))
     vel_cost_val = jnp.sum(jnp.mean(vel_cost_arr, axis=0))
@@ -630,11 +630,11 @@ def _leg_boundary_cost(
 
 def _joint_angles(
     robo_geom: robo.RoboGeom,
-    rstate: utils.RState,
+    hstate: utils.HState,
     use_rotary: bool,
 ) -> jax.Array:
     return jnp.concatenate(
-        utils.angle_joint(rstate, robo_geom=robo_geom, use_xy=use_rotary)
+        utils.angle_joint(hstate, robo_geom=robo_geom, use_xy=use_rotary)
     )
 
 
@@ -642,7 +642,7 @@ def _joint_angle_boundary_cost_arr(
     robo_geom: robo.RoboGeom,
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
     use_rotary: bool = True,
 ) -> jax.Array:
     """Joint angle cost."""
@@ -651,10 +651,10 @@ def _joint_angle_boundary_cost_arr(
         robo_geom,
         use_rotary=use_rotary,
     )
-    rstate = rstate.pop0()
-    angles = jnp.ravel(jax.vmap(joint_angles_part)(rstate))
+    hstate = hstate.pop0()
+    angles = jnp.ravel(jax.vmap(joint_angles_part)(hstate))
     costs = jax.vmap(costs.joint_angle_cost)(angles)
-    w = weights.scale_joint_angle(rstate.size)
+    w = weights.scale_joint_angle(hstate.size)
     return (costs * w).reshape(-1, 12)
 
 
@@ -662,7 +662,7 @@ def _joint_angle_boundary_cost(
     robo_geom: robo.RoboGeom,
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
     use_rotary: bool,
 ) -> jax.Array:
     """Joint angle cost.
@@ -674,7 +674,7 @@ def _joint_angle_boundary_cost(
         robo_geom,
         weights,
         costs,
-        rstate,
+        hstate,
         use_rotary,
     )
     return jnp.sum(jnp.mean(cost_arr, axis=0))
@@ -683,85 +683,85 @@ def _joint_angle_boundary_cost(
 def _roll_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    rstate = rstate.pop0()
-    roll = rstate.roll
+    hstate = hstate.pop0()
+    roll = hstate.roll
     costs = jax.vmap(costs.roll_cost)(roll)
-    w = weights.scale_roll(rstate.size)
+    w = weights.scale_roll(hstate.size)
     return costs * w
 
 
 def _roll_boundary_cost(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    cost_arr = _roll_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _roll_boundary_cost_arr(weights, costs, hstate)
     return jnp.mean(cost_arr)
 
 
 def _pitch_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    rstate = rstate.pop0()
-    pitch = rstate.pitch
+    hstate = hstate.pop0()
+    pitch = hstate.pitch
     costs = jax.vmap(costs.pitch_cost)(pitch)
-    w = weights.scale_pitch(rstate.size)
+    w = weights.scale_pitch(hstate.size)
     return costs * w
 
 
 def _pitch_boundary_cost(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    cost_arr = _pitch_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _pitch_boundary_cost_arr(weights, costs, hstate)
     return jnp.mean(cost_arr)
 
 
 def _yaw_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    rstate = rstate.pop0()
-    yaw = rstate.yaw
+    hstate = hstate.pop0()
+    yaw = hstate.yaw
     costs = jax.vmap(costs.yaw_cost)(yaw)
-    w = weights.scale_yaw(rstate.size)
+    w = weights.scale_yaw(hstate.size)
     return costs * w
 
 
 def _yaw_boundary_cost(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    cost_arr = _yaw_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _yaw_boundary_cost_arr(weights, costs, hstate)
     return jnp.mean(cost_arr)
 
 
 def _yaw_dot_boundary_cost_arr(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    rstate = rstate.pop0()
-    yaw_dot = rstate.yaw_dot
+    hstate = hstate.pop0()
+    yaw_dot = hstate.yaw_dot
     yaw_dot = jnp.ravel(jnp.transpose(yaw_dot))
     costs = jax.vmap(costs.yaw_dot_cost)(yaw_dot)
-    w = weights.scale_yaw_dot(rstate.size)
+    w = weights.scale_yaw_dot(hstate.size)
     return costs * w
 
 
 def _yaw_dot_boundary_cost(
     weights: Weights,
     costs: CostTerms,
-    rstate: utils.RState,
+    hstate: utils.HState,
 ) -> jax.Array:
-    cost_arr = _yaw_dot_boundary_cost_arr(weights, costs, rstate)
+    cost_arr = _yaw_dot_boundary_cost_arr(weights, costs, hstate)
     return jnp.mean(cost_arr)
 
 
@@ -787,7 +787,7 @@ def _terminal_cost(
     vspec_acc: vest.VSpec,
     vspec_omega: vest.VSpec,
     weights: Weights,
-    rstate: utils.RState,
+    hstate: utils.HState,
     vstate_irl: utils.VState,
     vstate_sim: utils.VState,
 ) -> jax.Array:
@@ -863,10 +863,10 @@ def _terminal_cost(
     )
 
     scales = scale0 * scale1 * weights.terminal_rt_scale
-    last_state = rstate.state[-1]
+    last_state = hstate.state[-1]
     last_state = last_state.at[:3].subtract(robo_geom.cart_home)
     rt_cost = jnp.sum(jnp.square(last_state) * scales)
-    rt_cost += jnp.square(rstate.state[-1][5]) * (
+    rt_cost += jnp.square(hstate.state[-1][5]) * (
         scale(x_omegaz0) * scale(x_omegaz1) * weights.terminal_rt_scale * 1e1
     )
 
@@ -875,7 +875,7 @@ def _terminal_cost(
 
 def _cost(
     control: utils.Control,
-    rstate0: jax.Array,
+    hstate0: jax.Array,
     control0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
@@ -891,13 +891,13 @@ def _cost(
     use_terminal: bool = True,  # static
 ) -> jax.Array:
     # precompute states
-    rstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
+    hstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
         dt,
         vspec_acc,
         vspec_omega,
         acc_ref,
         omega_ref,
-        rstate0,
+        hstate0,
         vstate0_irl,
         vstate0_sim,
         control0,
@@ -912,20 +912,20 @@ def _cost(
         robo_geom,
         weights,
         cost_terms,
-        rstate,
+        hstate,
         use_rotary,
     )
     cost += _joint_angle_boundary_cost(
         robo_geom,
         weights,
         cost_terms,
-        rstate,
+        hstate,
         use_rotary,
     )
-    cost += _roll_boundary_cost(weights, cost_terms, rstate)
-    cost += _pitch_boundary_cost(weights, cost_terms, rstate)
-    cost += _yaw_boundary_cost(weights, cost_terms, rstate)
-    cost += _yaw_dot_boundary_cost(weights, cost_terms, rstate)
+    cost += _roll_boundary_cost(weights, cost_terms, hstate)
+    cost += _pitch_boundary_cost(weights, cost_terms, hstate)
+    cost += _yaw_boundary_cost(weights, cost_terms, hstate)
+    cost += _yaw_dot_boundary_cost(weights, cost_terms, hstate)
     cost += _control_cost(weights, control)
     if use_terminal:
         cost += _terminal_cost(
@@ -933,7 +933,7 @@ def _cost(
             vspec_acc,
             vspec_omega,
             weights,
-            rstate,
+            hstate,
             vstate_irl,
             vstate_sim,
         )
@@ -958,7 +958,7 @@ _cost_static_argnames = [
 )
 def cost_flat_jax(
     control_flat: jax.Array,
-    rstate0: jax.Array,
+    hstate0: jax.Array,
     control0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
@@ -984,7 +984,7 @@ def cost_flat_jax(
     control_flat :
         Flattened control sequence with ordering
         ``[x, y, z, roll, pitch, yaw]`` per time step.
-    rstate0 :
+    hstate0 :
         Current robot state.
     control0 :
         Current robot accelerations.
@@ -1024,7 +1024,7 @@ def cost_flat_jax(
     control = utils.Control.from_flat(control_flat)
     return _cost(
         control=control,
-        rstate0=rstate0,
+        hstate0=hstate0,
         control0=control0,
         vstate0_irl=vstate0_irl,
         vstate0_sim=vstate0_sim,
@@ -1047,7 +1047,7 @@ def cost_flat_jax(
 )
 def cost_and_grad_flat_jax(
     control_flat: jax.Array,
-    rstate0: jax.Array,
+    hstate0: jax.Array,
     control0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
@@ -1069,7 +1069,7 @@ def cost_and_grad_flat_jax(
     control_flat :
         Flattened control sequence with ordering
         ``[x, y, z, roll, pitch, yaw]`` per time step.
-    rstate0 :
+    hstate0 :
         Current robot state.
     control0 :
         Current robot accelerations.
@@ -1111,7 +1111,7 @@ def cost_and_grad_flat_jax(
     cost_and_grad = jax.value_and_grad(cost_flat_jax, argnums=0)
     return cost_and_grad(
         control_flat,
-        rstate0=rstate0,
+        hstate0=hstate0,
         control0=control0,
         vstate0_irl=vstate0_irl,
         vstate0_sim=vstate0_sim,
@@ -1145,7 +1145,7 @@ class TrainState:
 
     Parameters
     ----------
-    rstate0 :
+    hstate0 :
         Current robot state.
     vstate0_irl :
         Current vestibular state for the in-real-life person.
@@ -1158,7 +1158,7 @@ class TrainState:
         (Last optimization solution.)
     """
 
-    rstate0: jax.Array
+    hstate0: jax.Array
     vstate0_irl: jax.Array
     vstate0_sim: jax.Array
     control0: jax.Array
@@ -1223,11 +1223,11 @@ class TrainState:
                 g_map[vstate0_mode[1]]
             )
 
-        rstate0 = zeros(r_num)
-        rstate0 = rstate0.at[:3].add(robo_geom.cart_home)
+        hstate0 = zeros(r_num)
+        hstate0 = hstate0.at[:3].add(robo_geom.cart_home)
 
         return cls(
-            rstate0=rstate0,
+            hstate0=hstate0,
             vstate0_irl=vstate0_irl,
             vstate0_sim=vstate0_sim,
             control0=zeros(u_num),
@@ -1278,7 +1278,7 @@ def lbfgs_cost(
     train_state, acc_ref, omega_ref = args
     return cost_flat_jax(
         control_flat=control_flat,
-        rstate0=train_state.rstate0,
+        hstate0=train_state.hstate0,
         control0=train_state.control0,
         vstate0_irl=train_state.vstate0_irl,
         vstate0_sim=train_state.vstate0_sim,
@@ -1405,11 +1405,11 @@ def train_step_with_cost_jax(
     omega_ref = ctrl_refinement(omega_ref)
 
     # compute results
-    rstate = utils.get_rstate(dt, control, ts.rstate0)
+    hstate = utils.get_hstate(dt, control, ts.hstate0)
     vstate_irl = utils.get_vstate_irl(
         vspec_acc,
         vspec_omega,
-        rstate,
+        hstate,
         control,
         ts.control0,
         ts.vstate0_irl,
@@ -1420,7 +1420,7 @@ def train_step_with_cost_jax(
 
     # bookkeeping
     table_sol = utils.TableSol(
-        x=rstate,
+        x=hstate,
         u=control,
         vstate_irl=vstate_irl,
         vstate_sim=vstate_sim,
@@ -1431,7 +1431,7 @@ def train_step_with_cost_jax(
         ),
     )
     next_state = TrainState(
-        rstate0=rstate.state[1],
+        hstate0=hstate.state[1],
         vstate0_irl=vstate_irl.x_state[0],  # NOT off-by-one
         vstate0_sim=vstate_sim.x_state[1],
         control0=res[0][:6],

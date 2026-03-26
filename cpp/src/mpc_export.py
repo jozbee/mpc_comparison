@@ -43,7 +43,7 @@ def mpc_solver(
     # input
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    rstate0: jax.Array,
+    hstate0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
     control0: jax.Array,
@@ -59,7 +59,7 @@ def mpc_solver(
     """
     assert acc_ref.shape == (3,)
     assert omega_ref.shape == (3,)
-    assert rstate0.shape == (12,)
+    assert hstate0.shape == (12,)
     assert last_control.shape == (n * 6,)
 
     #########
@@ -73,11 +73,11 @@ def mpc_solver(
         args: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         x: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        rstate0, vstate0_irl, vstate0_sim, control0 = args
+        hstate0, vstate0_irl, vstate0_sim, control0 = args
         control_flat = x
         return opt.cost_and_grad_flat_jax(
             control_flat=control_flat,
-            rstate0=rstate0,
+            hstate0=hstate0,
             control0=control0,
             vstate0_irl=vstate0_irl,
             vstate0_sim=vstate0_sim,
@@ -109,7 +109,7 @@ def mpc_solver(
     new_last_control, _, _ = lbfgs.lbfgs(
         opt_params=opt_params,
         x0=last_control,
-        fun_params=(rstate0, vstate0_irl, vstate0_sim, control0),
+        fun_params=(hstate0, vstate0_irl, vstate0_sim, control0),
     )
     control_horizon = (
         utils.Control.from_flat(new_last_control)
@@ -128,9 +128,9 @@ def mpc_solver(
     # need to update vstate0_irl and vstate0_sim before returning
 
     # get irl controls
-    rstate = utils.RState(rstate0)
-    acc_irl = utils.rot(rstate, use_xy=False).T @ (control0[:3] + robo.gravity)
-    omega_irl = utils.angle_vel(rstate)
+    hstate = utils.HState(hstate0)
+    acc_irl = utils.rot(hstate, use_xy=False).T @ (control0[:3] + robo.gravity)
+    omega_irl = utils.angle_vel(hstate)
 
     # partition
     a_num = 3 * vspec_acc.n_state

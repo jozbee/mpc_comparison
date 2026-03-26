@@ -15,7 +15,7 @@ Classes
    :nosignatures:
 
    VState
-   RState
+   HState
    Control
    TableStats
    TableSol
@@ -44,7 +44,7 @@ Functions
    angle_joint
    angle_joint_top
    angle_joint_bot
-   get_rstate
+   get_hstate
    get_vstate
    get_vstate_irl
    get_states_with_eigen
