@@ -99,7 +99,7 @@ class RoboParams:
         return self is other
 
 
-_human_displacement = np.array([0.0, 0.0, 0.588])
+_human_displacement = np.array([-0.3302, 0.0, 1.2977])
 _bots = np.array(
     [
         [952.5055, 91.0723, -1410.0000],
