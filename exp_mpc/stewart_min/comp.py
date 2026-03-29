@@ -1,975 +1,616 @@
-"""Primitive computations in JAX.
-
-Includes computations for the following:
-
-* Geometry computations
-* Inverse kinematics for Stewart platforms
-* Integration schemes, including linear-time-invariant (LTI) systems and an
-  efficient diagonal variant.
-
-For a description of the LTI integration scheme, see the module docs for
-:mod:`exp_mpc.stewart_min.vest`.
-"""
+"""Primitive geometry computations in JAX."""
 
 import functools
 import jax
 import jax.numpy as jnp
-import numpy as np
-
-import exp_mpc.stewart_min.robo as robo
 
 
-############
-# geometry #
-############
+def rot(q: jax.Array) -> jax.Array:
+    r"""Rotation matrix from unit quaternion.
 
+    We assume the scalar first convention for quaternions, i.e.,
+    :math:`q = q_0 + q_1 \, i + q_2 \, j + q_3 \, k`.
 
-@functools.partial(jax.jit, static_argnames=["use_xy"])
-def rot(phi: float, theta: float, psi: float, use_xy: bool = True) -> jax.Array:
-    r"""Get the rotation matrix specified by Euler angles.
-
-    Parameters
-    ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    use_xy :
-        ``True`` to ignore yaw, and ``False`` to use all Euler angles.
+    Paramters
+    ---------
+    q :
+        Unit quaternion
 
     Returns
     -------
-    R :
-        Rotation matrix :math:`R_z \, R_y \, R_x`.
-        If ``use_xy == True``, then we only return :math:`R_y \, R_x`.
+    rot :
+        Rotation matrix from `q`.
     """
-    R_x = jnp.array(
+    assert q.shape == (4,)
+    q_0, q_1, q_2, q_3 = q
+    x0 = q_1**2
+    x1 = q_2**2
+    x2 = -x1
+    x3 = q_0**2
+    x4 = q_3**2
+    x5 = x3 - x4
+    x6 = 2 * q_0
+    x7 = q_3 * x6
+    x8 = q_2 * x6
+    x9 = 2 * q_1
+    x10 = -x0
+    x11 = q_1 * x6
+    return jnp.array(
         [
-            [1.0, 0.0, 0.0],
-            [0.0, jnp.cos(phi), -jnp.sin(phi)],
-            [0.0, jnp.sin(phi), jnp.cos(phi)],
+            [x0 + x2 + x5, 2 * q_1 * q_2 - x7, q_3 * x9 + x8],
+            [q_2 * x9 + x7, x1 + x10 + x5, 2 * q_2 * q_3 - x11],
+            [2 * q_1 * q_3 - x8, 2 * q_2 * q_3 + x11, x10 + x2 + x3 + x4],
         ]
-    )  # roll
-    R_y = jnp.array(
+    )
+
+
+def tilt_rot(t: jax.Array) -> jax.Array:
+    r"""Rotation matrix from tilt quaternion.
+
+    A tilt quaternion has zero z-component, i.e.,
+    :math:`t = t_0 + t_1 \, i + t_2 \, j + 0 \, k`.
+    Supposing `t` is a unit quaternion, we compute the corresponding rotation
+    matrix.
+
+    Parameters
+    ---------
+    t :
+        Tilt unit quaternion.
+
+    Returns
+    -------
+    rot :
+        Rotation matrix
+    """
+
+    assert t.shape == (3,)
+    t_0, t_1, t_2 = t
+    x0 = 2 * t_2**2 - 1
+    x1 = 2 * t_2
+    x2 = t_1 * x1
+    x3 = t_0 * x1
+    x4 = 2 * t_1**2
+    x5 = 2 * t_0 * t_1
+    return jnp.array([[-x0, x2, x3], [x2, 1 - x4, -x5], [-x3, x5, -x0 - x4]])
+
+
+def tilt_euler(t: jax.Array) -> jax.Array:
+    r"""Euler angles from tilt quaternion.
+
+    We assume the euler angle representation such that we have the rotation
+    matrix decomposition :math:`R = R_z \, R_y \, R_x`.
+
+    Parameters
+    ---------
+    t :
+        Tilt unit quaternion.
+
+    Returns
+    -------
+    euler :
+        Euler angles `(x=roll, y=pitch, z=yaw)`.
+    """
+
+    assert t.shape == (3,)
+    t_0, t_1, t_2 = t
+    x0 = 2 * t_0
+    x1 = t_1**2
+    x2 = 2 * t_2**2 - 1
+    x3 = 2 * x1 + x2
+    return jnp.array(
         [
-            [jnp.cos(theta), 0.0, jnp.sin(theta)],
-            [0.0, 1.0, 0.0],
-            [-jnp.sin(theta), 0.0, jnp.cos(theta)],
+            jnp.arctan2(t_1 * x0, -x3),
+            jnp.arctan2(t_2 * x0, jnp.sqrt(4 * t_0**2 * x1 + x3**2)),
+            jnp.arctan2(2 * t_1 * t_2, -x2),
         ]
-    )  # pitch
-    if not use_xy:
-        R_z = jnp.array(
-            [
-                [jnp.cos(psi), -jnp.sin(psi), 0.0],
-                [jnp.sin(psi), jnp.cos(psi), 0.0],
-                [0.0, 0.0, 1.0],
-            ]
-        )  # yaw
-        return R_z @ R_y @ R_x
-    else:
-        return R_y @ R_x
+    )
 
 
-@functools.partial(jax.jit, static_argnames=["use_xy"])
-def rot_dot(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    use_xy: bool = True,
-) -> jax.Array:
-    r"""Get the time derivative of a rotation matrix specified by Euler angles.
+def inv_yt(yaw: jax.Array, t: jax.Array) -> jax.Array:
+    r"""Get quaternion from yaw-tilt decomposition.
+
+    The yaw vector is given by (`yaw` is a scalar)
+    :math:`y = \cos(yaw / 2) + 0 \, i + 0 \, j + \sin(yaw / 2) \, k`.
+    The tilt vector is given by
+    :math:`t = t_0 + t_1 \, i + t_2 \, j + 0 \, k`.
+    The final quaternion is computed via the quaternion multiplication
+    :math:`y \, t`.
 
     Parameters
     ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    phi_dot :
-        Roll derivative.
-    theta_dot :
-        Pitch derivative.
-    psi_dot :
-        Yaw derivative
-    use_xy :
-        ``True`` to ignore yaw, and ``False`` to use all Euler angles.
-
-    Returns
-    -------
-    R_dot :
-        Rotation matrix derivative
-        :math:`\frac{\mathrm{d}}{\mathrm{d} t} (R_z \, R_y \, R_x)`.
-        If ``use_xy == True``, then we only return
-        :math:`\frac{\mathrm{d}}{\mathrm{d} t} (R_y \, R_x)`.
-    """
-    rot_part = functools.partial(rot, use_xy=use_xy)
-    return jax.jvp(rot_part, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))[
-        1
-    ]
-
-
-@functools.partial(jax.jit, static_argnames=["use_xy"])
-def rot_and_dot(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    use_xy: bool = True,
-) -> tuple[jax.Array, jax.Array]:
-    r"""Get the rotation matrix and its time derivative, from Euler angles.
-
-    Because this function uses automatic differentiation, it is more efficient
-    to call this function compared to separately computing the rotation and its
-    time derivative.
-
-    Parameters
-    ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    phi_dot :
-        Roll derivative.
-    theta_dot :
-        Pitch derivative.
-    psi_dot :
-        Yaw derivative
-    use_xy :
-        ``True`` to ignore yaw, and ``False`` to use all Euler angles.
-
-    Returns
-    -------
-    R :
-        Rotation matrix :math:`R_z \, R_y \, R_x`.
-        If ``use_xy == True``, then we only return :math:`R_y \, R_x`.
-    R_dot :
-        Rotation matrix derivative
-        :math:`\frac{\mathrm{d}}{\mathrm{d} t} (R_z \, R_y \, R_x)`.
-        If ``use_xy == True``, then we only return
-        :math:`\frac{\mathrm{d}}{\mathrm{d} t} (R_y \, R_x)`.
-    """
-    rot_part = functools.partial(rot, use_xy=use_xy)
-    return jax.jvp(rot_part, (phi, theta, psi), (phi_dot, theta_dot, psi_dot))
-
-
-@functools.partial(jax.jit, static_argnames=["use_xy"])
-def rot_dot2(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    phi_dot2: float,
-    theta_dot2: float,
-    psi_dot2: float,
-    use_xy: bool = True,
-) -> jax.Array:
-    r"""Get the second time derivative of a rotation matrix, from Euler angles.
-
-    Parameters
-    ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    phi_dot :
-        Roll derivative.
-    theta_dot :
-        Pitch derivative.
-    psi_dot :
-        Yaw derivative
-    phi_dot2 :
-        Second roll derivative.
-    theta_dot2 :
-        Second pitch derivative.
-    psi_dot2 :
-        Second yaw derivative
-    use_xy :
-        True to ignore yaw, and False to use all Euler angles.
-
-    Returns
-    -------
-    R_dot :
-        Rotation matrix derivative
-        :math:`\frac{\mathrm{d}^2}{\mathrm{d} t^2} (R_z \, R_y \, R_x)`.
-        If ``use_xy == True``, then we only return
-        :math:`\frac{\mathrm{d}^2}{\mathrm{d} t^2} (R_y \, R_x)`.
-    """
-    rot_part = functools.partial(rot, use_xy=use_xy)
-    primals = (phi, theta, psi)
-    tangents = (phi_dot, theta_dot, psi_dot)
-    tangents2 = (phi_dot2, theta_dot2, psi_dot2)
-
-    # we need a product rule, so we need two jvps
-    # namely, the tangents are also functions of time
-    # (we have also numerically checked these implementations with sympy)
-
-    def _get_R_dot_0(phi_: float, theta_: float, psi_: float) -> jax.Array:
-        return jax.jvp(rot_part, (phi_, theta_, psi_), tangents)[1]
-
-    def _get_R_dot_1(
-        phi_dot_: float, theta_dot_: float, psi_dot_: float
-    ) -> jax.Array:
-        return jax.jvp(rot_part, primals, (phi_dot_, theta_dot_, psi_dot_))[1]
-
-    res0 = jax.jvp(_get_R_dot_0, primals, tangents)
-    res1 = jax.jvp(_get_R_dot_1, tangents, tangents2)
-    return res0[1] + res1[1]
-
-
-@functools.partial(jax.jit, static_argnames=["geom"])
-def leg_pos(geom: robo.RoboGeom, R: jax.Array, t: jax.Array) -> jax.Array:
-    """Compute leg lengths (inverse kinematics).
-
-    Parameters
-    ----------
-    geom :
-        Robot geometry.
-    R :
-        Rotation matrix.
+    yaw :
+        Yaw angle.
     t :
-        Translation vector.
+        Tile quaternion
 
     Returns
     -------
-    ell :
-        Vector of leg lengths of shape :math:`6 \times 3`.
+    quat :
+        Quaternion representing the yaw-tilt composition.
     """
-    lengths = []
-    delta = geom.human_displacement
-    for i in range(6):  # unroll
-        top_i = R @ (geom.tops[i] - delta) + delta + t
-        diff = top_i - geom.bots[i]
-        lengths.append(jnp.linalg.norm(diff))
-    return jnp.array(lengths)
+    assert t.shape == (3,)
+    t_0, t_1, t_2 = t
+    x0 = (1 / 2) * yaw
+    x1 = jnp.cos(x0)
+    x2 = jnp.sin(x0)
+    return jnp.array(
+        [t_0 * x1, t_1 * x1 - t_2 * x2, t_1 * x2 + t_2 * x1, t_0 * x2]
+    )
 
 
-@functools.partial(jax.jit, static_argnames=["geom"])
-def leg_vel(
-    geom: robo.RoboGeom,
-    R: jax.Array,
-    t: jax.Array,
-    R_dot: jax.Array,
-    t_dot: jax.Array,
-) -> jax.Array:
-    """Compute leg length velocities (inverse kinematics).
+def ang_vel(q: jax.Array, c: jax.Array, dt: jax.Array) -> jax.Array:
+    r"""Compute angular velocity (moving frame) from finite difference.
+
+    The angular velocity in the moving frame is given by
+
+    .. math::
+        \dot{q} = q \, \omega
+
+    with :math:`\omega` a vector quaternion.
+    Note that :math:`\omega` gives the moving frame angular velocity.
+    We approximate the derivative with a forward finite difference.
 
     Parameters
     ----------
-    geom :
-        Robot geometry.
-    R :
-        Rotation matrix.
-    t :
-        Translation vector.
-    R_dot :
-        Rotation matrix time derivative.
-    t_dot :
-        Translation vector time derivative.
-
-    Returns
-    -------
-    ell_dot :
-        Vector of leg velcoties of shape :math:`6 \times 3`.
-    """
-    leg_pos_geom = functools.partial(leg_pos, geom)
-    return jax.jvp(leg_pos_geom, (R, t), (R_dot, t_dot))[1]
-
-
-@functools.partial(jax.jit, static_argnames=["geom"])
-def leg_pos_vel(
-    geom: robo.RoboGeom,
-    R: jax.Array,
-    t: jax.Array,
-    R_dot: jax.Array,
-    t_dot: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    """Compute leg lengths and their velocities.
-
-    Parameters
-    ----------
-    geom :
-        Robot geometry.
-    R :
-        Rotation matrix.
-    t :
-        Translation vector.
-    R_dot :
-        Rotation matrix time derivative.
-    t_dot :
-        Translation vector time derivative.
-
-    Returns
-    -------
-    ell :
-        Vector of leg lengths of shape :math:`6 \times 3`.
-    ell_dot :
-        Vector of leg velcoties of shape :math:`6 \times 3`.
-    """
-    leg_pos_geom = functools.partial(leg_pos, geom)
-    return jax.jvp(leg_pos_geom, (R, t), (R_dot, t_dot))
-
-
-@functools.partial(jax.jit, static_argnames=["geom"])
-def leg_acc(
-    geom: robo.RoboGeom,
-    R: jax.Array,
-    t: jax.Array,
-    R_dot: jax.Array,
-    t_dot: jax.Array,
-    R_dot2: jax.Array,
-    t_dot2: jax.Array,
-) -> jax.Array:
-    """Compute leg length accelerations.
-
-    Parameters
-    ----------
-    geom :
-        Robot geometry.
-    R :
-        Rotation matrix.
-    t :
-        Translation vector.
-    R_dot :
-        Rotation matrix time derivative.
-    t_dot :
-        Translation vector time derivative.
-    R_dot2 :
-        Rotation matrix second time derivative.
-    t_dot2 :
-        Translation vector second time derivative.
-
-    Returns
-    -------
-    ell_dot2 :
-        Vector of leg accelerations of shape :math:`6 \times 3`.
-    """
-    leg_pos_geom = functools.partial(leg_pos, geom)
-
-    def leg_pos_0(R_: jax.Array, t_: jax.Array) -> jax.Array:
-        return jax.jvp(leg_pos_geom, (R_, t_), (R_dot, t_dot))[1]
-
-    def leg_pos_1(R_dot_: jax.Array, t_dot_: jax.Array) -> jax.Array:
-        return jax.jvp(leg_pos_geom, (R, t), (R_dot_, t_dot_))[1]
-
-    res0 = jax.jvp(leg_pos_0, (R, t), (R_dot, t_dot))[1]
-    res1 = jax.jvp(leg_pos_1, (R_dot, t_dot), (R_dot2, t_dot2))[1]
-    return res0 + res1
-
-
-@functools.partial(jax.jit, static_argnames=("world",))
-def transfer_PHI(
-    phi: float,
-    theta: float,
-    psi: float,
-    world: bool = False,
-) -> jax.Array:
-    r"""Matrix to map table euler angle derivatives to head angular velocity.
-
-    Parameters
-    ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    world :
-        ``True`` to get transfer matrix for world frame, and ``False`` for the
-        moving head frame.
-
-    Returns
-    -------
-    PHI :
-        Matrix :math:`\Phi` such that the angular velocity is computed via
-        the vector matrix product
-        :math:`\omega = \Phi \, [\dot{\phi}, \dot{\theta}, \dot{\psi}]^\top`.
-
-    Notes
-    -----
-    Let the subscripts :math:`\mathrm{w}`, :math:`\mathrm{h}`, and
-    :math:`\mathrm{r}` denote world frame, head frame, and robot frame,
-    respectively.
-    Suppose that we have an :math:`\mathrm{SE}(3)` transformation
-    :math:`(R, \Delta)` such that
-
-    .. math::
-
-        x_{\mathrm{w}} = R \, x_{\mathrm{h}} + \Delta.
-
-    If :math:`x_{\mathrm{h}}` is a fixed point in the head frame, i.e., if
-    :math:`\dot{x}_{\mathrm{h}} = 0`, then
-
-    .. math::
-
-        \dot{x}_{\mathrm{w}} &= \dot{R} \, x_{\mathrm{h}} + \dot{\Delta} \\
-        &= \dot{R} \, R^\top \, (x_{\mathrm{w}} - \Delta) + \dot{\Delta}.
-
-    Because :math:`\dot{R} \, R^\top` is skew symmetric (from the identity
-    :math:`R \, R^\top \equiv I`), we can define the world-frame angular
-    velocity :math:`\omega_{\mathrm{w}} \in \mathbb{R}^3` to be the vector
-    :math:`[\omega]_\times = \dot{R} \, R^\top`, where
-    
-    .. math::
-
-        [\omega]_\times =
-        \begin{bmatrix}
-            0 & -\omega_z & \omega_y \\
-            \omega_z & 0 & -\omega_x \\
-            -\omega_y & \omega_x & 0
-        \end{bmatrix},
-
-    which parameterizes the skew symmetric matrices.
-    To transform this vector into the head frame, we have
-    :math:`\omega_{\mathrm{h}} = R^\top \, \omega_{\mathrm{w}}`.
-    The vector algebra identity
-    :math:`u \cdot (v \times w) = v \cdot (w \times u)` gives
-    :math:`R \, [\omega]_\times R^\top = [R \, \omega]_\times` so that
-    :math:`\omega_{\mathrm{h}} = R^\top \, \dot{R}`.
-    Using the chain rule, we can compute the angular velocity matrices, and
-    we can compute the linear map :math:`\Phi` that computes
-    :math:`\omega = \Phi \, [\dot{\phi}, \dot{\theta}, \dot{\psi}]^\top`.
-    This is pretty easily computed via
-    `SymPy <https://github.com/sympy/sympy>`__.
-    Example code follows
-
-    .. code-block:: python
-
-        def make_R() -> sp.Matrix:
-            R_x = sp.Matrix(
-                [
-                    [1, 0, 0],
-                    [0, sp.cos(phi), -sp.sin(phi)],
-                    [0, sp.sin(phi), sp.cos(phi)],
-                ]
-            )  # roll
-            R_y = sp.Matrix(
-                [
-                    [sp.cos(theta), 0, sp.sin(theta)],
-                    [0, 1, 0],
-                    [-sp.sin(theta), 0, sp.cos(theta)],
-                ]
-            )  # pitch
-            R_z = sp.Matrix(
-                [
-                    [sp.cos(psi), -sp.sin(psi), 0],
-                    [sp.sin(psi), sp.cos(psi), 0],
-                    [0, 0, 1],
-                ]
-            )  # yaw
-            return R_z * R_y * R_x  # type: ignore
-
-        R = make_R()
-        R
-
-        def make_omega_vec(world=False):
-            if world:
-                # table angular velocity (wrt world)
-                omega_mat = sp.simplify(R.diff(t) * R.T)
-            else:
-                # head angular velocity (wrt instantaneous table)
-                omega_mat = sp.simplify(R.T * R.diff(t))
-
-            omega_vec = sp.Matrix([omega_mat[2, 1], omega_mat[0, 2], omega_mat[1, 0]])
-            omega_vec = sp.simplify(omega_vec)
-            
-            return omega_vec
-
-        def make_PHI(world=False):
-            if world:
-                # table angular velocity (wrt world)
-                omega_mat = sp.simplify(R.diff(t) * R.T)
-            else:
-                # head angular velocity (wrt instantaneous table)
-                omega_mat = sp.simplify(R.T * R.diff(t))
-
-            omega_vec = sp.Matrix([omega_mat[2, 1], omega_mat[0, 2], omega_mat[1, 0]])
-            omega_vec = sp.simplify(omega_vec)
-
-            euler_diff = [phi.diff(t), theta.diff(t), psi.diff(t)]
-            PHI = sp.Matrix(3, 3, lambda i, j: omega_vec[i].coeff(euler_diff[j]))
-            PHI = sp.simplify(PHI)
-            
-            return PHI
-
-        PHI = make_PHI()
-        PHI
-
-    Finally, we provide a more intuitive interpretation of angular velocity in
-    the head frame.
-    This is for the author's personal reference.
-    Take the current time to be :math:`t = 0`, and consider the robot frame
-
-    .. math::
-
-        x_{\mathrm{r}} = R_{\mathrm{h}} \, x_{\mathrm{h}} + \Delta_{\mathrm{h}}.
-
-    where
-    
-    .. math::
-
-        R(t) &=: R(0) \, R_{\mathrm{h}}(t) \\
-        \Delta(t) &=: \Delta(0) + R(0) \, \Delta_h(t).
-
-    Then, as before, we have
-
-    .. math::
-
-        \dot{x}_{\mathrm{r}} = \dot{R}_{\mathrm{h}} \, R_{\mathrm{h}}^\top \,
-        (x_{\mathrm{r}} - \Delta_{\mathrm{h}}) + \dot{\Delta}_{\mathrm{h}}.
-
-    At :math:`t = 0`, then :math:`R_{\mathrm{h}} = R^\top \, R = I` and
-
-    .. math::
-
-        \dot{R}_{\mathrm{h}} \, R_{\mathrm{h}}^\top = (R^\top \, \dot{R}) \, I)
-        = R^\top \, \dot{R}.
-
-    So, the angular velocity in the head frame an be interpreted as the
-    infitesimal world-frame angular velocity.
-    """
-    # sympy generated
-    if not world:
-        return jnp.array(
-            [
-                [1, 0, -jnp.sin(theta)],
-                [0, jnp.cos(phi), jnp.sin(phi) * jnp.cos(theta)],
-                [0, -jnp.sin(phi), jnp.cos(phi) * jnp.cos(theta)],
-            ]
-        )
-    else:
-        return jnp.array(
-            [
-                [jnp.cos(psi) * jnp.cos(theta), -jnp.sin(psi), 0],
-                [jnp.sin(psi) * jnp.cos(theta), jnp.cos(psi), 0],
-                [-jnp.sin(theta), 0, 1],
-            ]
-        )
-
-
-@functools.partial(jax.jit, static_argnames=("world",))
-def angle_vel(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    world: bool = False,
-) -> jax.Array:
-    """Compute Angular velocity vector.
-
-    Parameters
-    ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    phi_dot :
-        Roll velocity.
-    theta_dot :
-        Pitch velocity.
-    psi_dot :
-        Yaw velocity.
-    world :
-        True to compute angular velocity in the world frame, and False for the
-        head (moving) frame.
+    p :
+        Previous unit quaternion.
+    c :
+        Current unit quaternion.
+    dt :
+        Time step.
 
     Returns
     -------
     omega :
-        Angular velocity.
-
-    See Also
-    --------
-    :func:`exp_mpc.stewart_min.comp.transfer_PHI` :
-        Transfer matric to compute angular velocity.
+        Moving frame angular velocity.
     """
-    PHI = transfer_PHI(phi, theta, psi, world)
-    return PHI @ jnp.array([phi_dot, theta_dot, psi_dot])
+    assert q.shape == (4,) and c.shape == (4,)
+    q_0, q_1, q_2, q_3 = q
+    c_0, c_1, c_2, c_3 = c
+    x0 = 1 / dt
+    return jnp.array(
+        [
+            x0 * (-c_0 * q_1 + c_1 * q_0 + c_2 * q_3 - c_3 * q_2),
+            x0 * (-c_0 * q_2 - c_1 * q_3 + c_2 * q_0 + c_3 * q_1),
+            x0 * (-c_0 * q_3 + c_1 * q_2 - c_2 * q_1 + c_3 * q_0),
+        ]
+    )
 
 
-@functools.partial(jax.jit, static_argnames=("world",))
-def angle_acc(
-    phi: float,
-    theta: float,
-    psi: float,
-    phi_dot: float,
-    theta_dot: float,
-    psi_dot: float,
-    phi_dot2: float,
-    theta_dot2: float,
-    psi_dot2: float,
-    world: bool = False,
-) -> jax.Array:
-    """Compute Angular acceleration vector.
+def fill_v(t, v):
+    r"""Fill Lie Algebra vector from tilt components.
+
+    Given a tile vector, :math:`t = t_0 + t_1 \, i + t_2 \, j + 0 \, k`, there
+    is only a 2-dimensional subspace of tangent vectors :math:`V` such that
+    the solution to the ODE :math:`\dot{t} = t \, v` satisfies :math:`t_3 = 0`
+    for all time.
+    We parameterize :math:`V` with two components, which obviously depends on
+    the tilt quaternion :math:`t`.
 
     Parameters
     ----------
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    phi_dot :
-        Roll velocity.
-    theta_dot :
-        Pitch velocity.
-    psi_dot :
-        Yaw velocity.
-    phi_dot2 :
-        Roll acceleration.
-    theta_dot2 :
-        Pitch acceleration.
-    psi_dot2 :
-        Yaw acceleration.
-    world :
-        True to compute angular acceleration in the world frame, and False for
-        the head (moving) frame.
+    t :
+        Tilt.
+    v :
+        Lie Algebra vector.
 
     Returns
     -------
-    alpha :
-        Angular acceleration.
-
-    See Also
-    --------
-    :func:`exp_mpc.stewart_min.comp.transfer_PHI` :
-        Transfer matric to compute angular velocity.
-    :func:`jax.jvp` :
-        For automatic differentiation.
+    fv :
+        Filled Lie Algebra vector.
     """
-    # no product rule this time, because we already have the angular velocity
-    primals = (phi, theta, psi, phi_dot, theta_dot, psi_dot)
-    tangents = (phi_dot, theta_dot, psi_dot, phi_dot2, theta_dot2, psi_dot2)
-    return jax.jvp(
-        functools.partial(angle_vel, world=world), primals, tangents
-    )[1]
+    assert t.shape == (3,) and v.shape == (2,)
+    v3 = (-t[1] * v[1] + t[2] * v[0]) / t[0]
+    return jnp.concatenate([v, jnp.array([v3])])
 
 
-@functools.partial(jax.jit, static_argnames=["geom", "use_xy"])
-def angle_joint(
-    geom: robo.RoboGeom,
-    x: jax.Array,
-    y: jax.Array,
-    z: jax.Array,
-    phi: jax.Array,
-    theta: jax.Array,
-    psi: jax.Array,
-    use_xy: bool = True,
-) -> tuple[jax.Array, jax.Array]:
+@jax.jit
+def _ssinc(x):
+    r"""Specialized implementation of square root sinc.
+
+    Given multidimensional input :math:`x \in \mathbb{R}^n`, we want to compute
+    :math:`sin(\|x\|) / \|x\|`.
+    This can be computed using the usual function `sinc`.
+    However, note that the square root operation naively ruins
+    differentiability when applying automatic differentiation, because the
+    chain rule fails us.
+    However, this function is differentiable: just look at the Taylor series
+    expansion.
+    Thus, we have a custom run function.
+    """
+    if x.size == 1:
+        return jax.lax.cond(
+            x <= 0.0,  # technically bad if x < 0...
+            lambda: _ssinc_maclaurin(0, x),
+            lambda: jnp.sin(jnp.sqrt(x)) / jnp.sqrt(x),
+        )
+    else:
+        return jax.vmap(_ssinc)(x)
+
+
+@functools.partial(jax.custom_jvp, nondiff_argnums=[0])
+def _ssinc_maclaurin(k, x):
+    fact = jnp.prod(jnp.arange(k + 1, 2 * k + 1 + 1, dtype=float))
+    return jnp.ones_like(x) * (-1) ** k / fact
+
+
+@_ssinc_maclaurin.defjvp
+def _sinc_maclaurin_jvp(k, primals, tangents):
+    x = primals[0]
+    t = tangents[0]
+    return _ssinc_maclaurin(k, x), _ssinc_maclaurin(k + 1, x) * t
+
+
+@jax.jit
+def _scos(x):
+    """See `_ssinc`."""
+    if x.size == 1:
+        return jax.lax.cond(
+            x <= 0,
+            lambda: _scos_maclaurin(0, x),
+            lambda: jnp.cos(jnp.sqrt(x)),  # usual
+        )
+    else:
+        return jax.vmap(_scos)(x)
+
+
+@functools.partial(jax.custom_jvp, nondiff_argnums=[0])
+def _scos_maclaurin(k, x):
+    fact = jnp.prod(jnp.arange(k + 1, 2 * k + 1, dtype=float))
+    return jnp.ones_like(x) * (-1) ** k / fact
+
+
+@_scos_maclaurin.defjvp
+def _scos_maclaurin_jvp(k, primals, tangents):
+    x = primals[0]
+    t = tangents[0]
+    return _scos_maclaurin(k, x), _scos_maclaurin(k + 1, x) * t
+
+
+def quat_zoh(v: jax.Array, dt: jax.Array) -> jax.Array:
+    r"""Compute ZoH matrix for given Lie Algebra vector.
+
+    If :math:`q: \mathbb{R} \to \mathbb{R}^4` is a path through the unit
+    quaternions, then we can write
+
+    .. math::
+        \dot{q}(t) = q(t) \, \omega(t), \qquad
+        \omega = 0 + \omega_1 \, i + \omega_2 \, j + \omega_3 \, k
+
+    where :math:`2 \, \omega` is the usual angular velocity in the moving frame.
+    If :math:`\omega` is held constant over the time :math:`[0, T]`, then
+
+    .. math::
+
+        q(T) = e^{A \, \Delta t} \, q(0)
+
+    where :math:`A` is the matrix represented by :math:`A \, q = q \, \omega`,
+    with the RHS the usual quaternion multiplication.
+    The zero-order-hold (ZoH) matrix is :math:`e^{A \, \Delta t}`.
+
+    Parameters
+    ----------
+    v :
+        Lie Algebra vector to update quaternion.
+    dt :
+        Integration time step.
+
+    Returns
+    -------
+    exp :
+        ZoH matrix.
+    """
+    assert v.shape == (3,)
+    v *= dt
+    v_square = jnp.sum(jnp.square(v))
+    c = _scos(v_square)
+    s = _ssinc(v_square)
+    res = jnp.array(
+        [
+            [c, -v[0] * s, -v[1] * s, -v[2] * s],
+            [v[0] * s, c, v[2] * s, -v[1] * s],
+            [v[1] * s, -v[2] * s, c, v[0] * s],
+            [v[2] * s, v[1] * s, -v[0] * s, c],
+        ]
+    )
+    return res
+
+
+def tilt_zoh(v: jax.Array, dt: jax.Array) -> jax.Array:
+    r"""Compute ZoH matrix for given Lie Algebra vector for tilt quaternions.
+
+    The only difference with `quat_zoh` is that we assume that the unit
+    base point for the unit quaternion is a tilt, and v is chosen so that
+    the output is also a tilt.
+    Apparently this makes a performance difference in the jax implementation.
+
+    Parameters
+    ----------
+    v :
+        Lie Algebra vector to update quaternion.
+    dt :
+        Integration time step.
+
+    Returns
+    -------
+    exp :
+        ZoH matrix.
+    """
+    assert v.shape == (3,)
+    v *= dt
+    v_square = jnp.sum(jnp.square(v))
+    c = _scos(v_square)
+    s = _ssinc(v_square)
+    res = jnp.array(
+        [
+            [c, -v[0] * s, -v[1] * s],
+            [v[0] * s, c, v[2] * s],
+            [v[1] * s, -v[2] * s, c],
+        ]
+    )
+    return res
+
+
+def _ssinc_deriv(x):
+    r"""Derivatives of square-root sinc function.
+
+    Given multidimensional input :math:`x \in \mathbb{R}^n`, we want to compute
+    :math:`sin(\|x\|) / \|x\|`.
+    This can be computed using the usual function `sinc`.
+    However, note that the square root operation naively ruins
+    differentiability when applying automatic differentiation, because the
+    chain rule fails us.
+    However, this function is differentiable: just look at the Taylor series
+    expansion.
+    Thus, we manually implement its derivative, and similar quantities.
+    """
+    sqr = jnp.sqrt(x)
+    scos = jnp.cos(sqr)
+    ssinc = jnp.sin(sqr) / sqr
+    ssincp = (scos - ssinc) / (2 * x)
+    return jax.lax.cond(
+        x <= 0,
+        lambda: (1.0, 1.0, -1 / 6),
+        lambda: (scos, ssinc, ssincp),
+    )
+
+
+def _g_deriv(t, v, dt):
+    """Sympy generated code differentiating the function `g`.
+
+    See the commented line in the source code for `process_tilt_fwd` for the
+    jax implementation, which is slightly slower than this sympy implementation.
+    """
+    assert t.shape == (3,) and v.shape == (2,)
+    t_0, t_1, t_2 = t
+    v_1, v_2 = v
+
+    x0 = t_0 ** (-3)
+    x1 = t_1 * v_2 - t_2 * v_1
+    x2 = x1**2
+    x3 = t_0**2
+    x4 = dt**2
+    x5 = x3 ** (-1)
+    x6 = x4 * x5
+    x7 = x6 * (x2 + x3 * (v_1**2 + v_2**2))
+
+    c0, s0, s1 = _ssinc_deriv(x7)
+
+    x8 = s0
+    x9 = t_0 * x8
+    x10 = t_1 * v_1 + t_2 * v_2
+    x11 = s1
+    x12 = 2 * x11
+    x13 = dt * x12
+    x14 = x10 * x13 + x9
+    x15 = x2 * x4
+    x16 = -x10
+    x17 = x1 * x6
+    x18 = x12 * x4
+    x19 = x1 * x18
+    x20 = -t_2 * x8 + v_1 * x19
+    x21 = x12 * x15
+    x22 = t_1 * x1
+    x23 = dt * x9
+    x24 = t_2 * x21 + x22 * x23
+    x25 = -x20 * x3 + x24
+    x26 = t_0**4
+    x27 = dt * x1 / x26
+    x28 = dt * x0
+    x29 = v_2 * x28
+    x30 = v_1 * x28
+    x31 = t_1 * x8
+    x32 = -dt * t_0 * t_2 * x1 * x8 + t_1 * x21 + x3 * (v_2 * x19 + x31)
+    x33 = -x32
+    x34 = t_2 * x1
+    x35 = v_1 * x3 - x34
+    x36 = x23 * x35
+    x37 = dt * x5
+    x38 = t_2 * x8
+    x39 = v_2 * x3 + x22
+    x40 = x23 * x39
+    x41 = x18 * x34
+    x42 = v_1 * x18
+    x43 = -t_1 * x38
+    x44 = x18 * x22
+    x45 = v_2 * x18
+    x46 = c0
+    x47 = dt * x8
+    x48 = v_1 * x47
+    x49 = v_2 * x47
+    x50 = x1 * x47 / t_0
+    g0 = jnp.array(
+        [
+            [x0 * x14 * x15, v_2 * x17 * (x13 * x16 - x9), v_1 * x14 * x17],
+            [x25 * x27, x29 * (x20 * x3 - x24), x25 * x30],
+            [x27 * x33, x29 * x32, x30 * x33],
+        ]
+    )
+    g1 = jnp.array(
+        [
+            [
+                x37 * (2 * x11 * x16 * x35 * x4 - x3 * x31 - x36),
+                x37 * (2 * x11 * x16 * x39 * x4 - x3 * x38 - x40),
+            ],
+            [
+                x28
+                * (
+                    -t_1 * x36
+                    + x26 * x8
+                    + x3 * (t_2**2 * x8 + x35 * x42)
+                    - x35 * x41
+                ),
+                x28 * (-t_1 * x40 + x3 * (x39 * x42 + x43) - x39 * x41),
+            ],
+            [
+                x28 * (-t_2 * x36 + x3 * (x35 * x45 + x43) + x35 * x44),
+                x28
+                * (
+                    -t_2 * x40
+                    + x26 * x8
+                    + x3 * (t_1**2 * x8 + x39 * x45)
+                    + x39 * x44
+                ),
+            ],
+        ]
+    )
+    g2 = jnp.array([[x46, -x48, -x49], [x48, x46, -x50], [x49, x50, x46]])
+    return (g0, g1, g2)
+
+
+def _g(x1, x2, x3, dt):
+    fv = fill_v(x1, x2)
+    M = tilt_zoh(fv, dt)
+    return M @ x3
+
+
+@jax.custom_vjp
+def process_tilt(t0, v, dt):
+    """Process tilt vectors from sequence of tangent vectors using ZoH.
+
+    We implement a custom derivative rule, because the naive implementation is
+    slow due to memory bounds.
+    We explicitly reduce the amount of memory needed in the back propogation.
+
+    Parameters
+    ----------
+    t0 :
+        Initial tilt unit quaternion.
+    v :
+        Tangent vector for tilt quaternion (first two components).
+    dt :
+        Time step for zero-order-hold (ZoH) integration.
+
+    Warning
+    -------
+    Our custom derivative rule does not produce meaningful outputs for
+    derivatives with respect to `t0` and `dt`.
+    This is not a problem for our current MPC implementation, but you are
+    warned.
+    """
+
+    def comp_tilt(t, v):
+        t1 = _g(t, v, t, dt)
+        return t1, t1
+
+    _, t = jax.lax.scan(comp_tilt, t0, v)
+    return t
+
+
+def _process_tilt_fwd(t0, v, dt):
+    def comp_tilt(t, v):
+        # g0, g1, g2 = jax.jacrev(_g, argnums=[0, 1, 2])(t, v, t, dt)
+        g0, g1, g2 = _g_deriv(t, v, dt)
+        M = g2
+        t1 = M @ t
+        return t1, (t1, g1, g0 + g2)
+
+    _, (t, g1, g02) = jax.lax.scan(comp_tilt, t0, v)
+    return t, (g1, g02)
+
+
+def _process_tilt_bwd(res, c):
+    g1, g02 = res
+
+    def bwd_acc(a, gc):
+        g1, g02, c = gc
+        a = c + g02.T @ a
+        w = g1.T @ a
+        return a, w
+
+    a = c[-1]
+    w1 = g1[-1].T @ a
+    _, w = jax.lax.scan(bwd_acc, a, (g1[:-1], g02[1:], c[:-1]), reverse=True)
+    w = jnp.concatenate([w, w1.reshape(1, -1)])
+
+    t0_dummy = jnp.zeros(3)
+    dt_dummy = jnp.array(0.0)
+    return t0_dummy, w, dt_dummy
+
+
+process_tilt.defvjp(_process_tilt_fwd, _process_tilt_bwd)
+
+
+def leg_pos(
+    tops: jax.Array,
+    bots: jax.Array,
+) -> jax.Array:
+    """Compute leg lengths (inverse kinematics).
+
+    We assume that `tops` and `bots` are represented in the same frame.
+    This is always in a fixed frame somewhere around the center of the stewart
+    platform.
+
+    Parameters
+    ----------
+    tops :
+        Top leg coordinates, after being transformed.
+    bots :
+        Bottom leg coordinates.
+
+    Returns
+    -------
+    ell :
+        Vector of leg lengths of length 6.
+    """
+    ell = jnp.linalg.norm(tops - bots, axis=1)
+    return ell
+
+
+def leg_ang(
+    tops: jax.Array,
+    bots: jax.Array,
+    top_normals: jax.Array,
+    bot_normals: jax.Array,
+) -> jax.Array:
     """Joint angles, both top and bottom.
 
     Parameters
     ----------
-    geom :
-        Robot geometry, for leg coordinates.
-    x :
-        X-translation.
-    y :
-        Y-translation.
-    z :
-        Z-translation.
-    phi :
-        Roll.
-    theta :
-        Pitch.
-    psi :
-        Yaw.
-    use_xy :
-        True to have yaw only be used in the rotary table top.
-        False to have the table base yaw.
+    tops :
+        Top leg coordinates, after being transformed.
+    bots :
+        Bottom leg coordinates.
+    top_normals :
+        Normal vectors from tops to bots, at home.
+    bot_normals :
+        Normal vectors from bots to tops, at home.
 
     Returns
     -------
-    top_angles :
-        Top angles, a :math:`6` vector.
-    bot_angles :
-        Bottom angles, a :math:`6` vector.
+    angles :
+        Top angles and bottom angles, a :math:`12` vector.
     """
-    R = rot(phi, theta, psi, use_xy)
-    t = jnp.array([x, y, z])
     top_angles = []
     bot_angles = []
-    delta = geom.human_displacement
     for i in range(6):
-        top_i = R @ (geom.tops[i] - delta) + delta + t
-        diff = top_i - geom.bots[i]
+        diff = tops[i] - bots[i]
         leg_dir = diff / jnp.linalg.norm(diff)
 
-        top_mag = jnp.linalg.norm(jnp.cross(geom.top_normals[i], leg_dir))
+        top_mag = jnp.linalg.norm(jnp.cross(top_normals[i], leg_dir))
         top_angles.append(jnp.asin(top_mag))
 
-        bot_mag = jnp.linalg.norm(jnp.cross(geom.bot_normals[i], leg_dir))
+        bot_mag = jnp.linalg.norm(jnp.cross(bot_normals[i], leg_dir))
         bot_angles.append(jnp.asin(bot_mag))
 
-    return jnp.array(top_angles), jnp.array(bot_angles)
-
-
-###############
-# integration #
-###############
-
-
-@jax.jit
-def discrete_1d_euler(
-    dt: jax.Array,
-    x0: jax.Array,
-    v0: jax.Array,
-    a: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    r"""Discrete 1D Euler integration, with scalar initial data.
-
-    Simply compute the double integrator
-    
-    .. math::
-
-        v_{k + 1} &= v_k + (\Delta t) \, a_k. \\
-        x_{k + 1} &= x_k + (\Delta t) \, v_k + \frac{1}{2} \, (\Delta t)^2 \,
-        a_k.
-
-    Parameters
-    ----------
-    dt :
-        Uniform time step.
-    x0 :
-        Initial position.
-    v0 :
-        Initial velocity.
-    a :
-        Constant accelerations.
-
-    Returns
-    -------
-    x :
-        Integrated position.
-    v :
-        Integrated velocity.
-    """
-    a = jnp.ravel(a)  # really, an assertion...
-    v = jnp.cumsum(jnp.concatenate([jnp.array([v0]), dt * a]))
-    v0 = dt * v[:-1] + 0.5 * dt**2 * a
-    x = jnp.cumsum(jnp.concatenate([jnp.array([x0]), v0]))
-    return x, v
-
-
-@jax.jit
-def lti_int(
-    E0: jax.Array,
-    E1: jax.Array,
-    C: jax.Array,
-    D: jax.Array,
-    x0: jax.Array,
-    u: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    r"""Fast integration scheme for SISO LTI systems.
-
-    See the module docs for :mod:`exp_mpc.stewart_min.vest` for mathematical
-    interpretations.
-    Namely, ``E0`` and ``E1`` implicitly encode the step size discretization, and
-    `u`.
-    Also, this routine is somewhat specialized for SISO LTI systems.
-
-    Parameters
-    ----------
-    E0 :
-        State integration matrix.
-    E1 :
-        Control integration matrix.
-    C :
-        :math:`y = C \, x + D \, u`.
-    D :
-        :math:`y = C \, x + D \, u`.
-    x0 :
-        Initial state
-    u :
-        Control variables.
-
-    Returns
-    -------
-    x :
-        Internal states.
-        Also contains the initial state.
-    y :
-        Observed states.
-    """
-    x0 = jnp.ravel(x0)
-    u = jnp.ravel(u)
-    E1 = jnp.squeeze(E1)
-    C = jnp.squeeze(C)
-
-    assert E0.shape[0] == E0.shape[1]
-    assert len(E1.shape) == 1
-    assert E1.size == E0.shape[1]
-    assert len(C.shape) == 1
-    assert C.size == E0.shape[1]
-    assert x0.size == E0.shape[1]
-    assert u.size > 0
-
-    x = jnp.empty(shape=(u.size + 1, x0.size), dtype=float)
-    x = x.at[0].set(x0)
-
-    def for_body(i: int, x: jax.Array) -> jax.Array:
-        xi = E0 @ x[i] + E1 * u[i]
-        x = x.at[i + 1].set(xi)
-        return x
-
-    # skip intial condition, because can't optimize over it, and it isn't
-    #  really meaninful in the context of having a matrix D
-    x = jax.lax.fori_loop(0, u.size, for_body, x)
-    x = x[1:]
-    y = C @ x.T + jnp.squeeze(D @ jnp.atleast_2d(u))
-    return x, y
-
-
-def lti_int_single(
-    E0: jax.Array | np.ndarray,
-    E1: jax.Array | np.ndarray,
-    x0: jax.Array,
-    u: jax.Array,
-) -> jax.Array:
-    """A single update of :func:`exp_mpc.stewart_min.comp.lti_int`.
-
-    Technically, because of shapes, this is slightly more general than
-    :func:`exp_mpc.stewart_min.comp.lti_int`.
-
-    Parameters
-    ----------
-    E0 :
-        State integration matrix
-    E1 :
-        Control integration matrix
-    x0 :
-        Initial state
-    u :
-        Control on x0.
-
-    Returns
-    -------
-    x1 :
-        Single updated state.
-    """
-    x0 = x0.reshape(-1, E0.shape[0])
-    x1 = E0 @ x0.T + E1 @ u.reshape(1, -1)
-    return jnp.ravel(x1.T)
-
-
-def eigen_int(
-    eig: jax.Array | np.ndarray,
-    EP1: jax.Array | np.ndarray,
-    CP: jax.Array | np.ndarray,
-    D: jax.Array | np.ndarray,
-    P_inv: jax.Array | np.ndarray,
-    x0: jax.Array,
-    u: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    """LTI integration, but using eigen-integration matrices.
-
-    Note that we do not return the internal states, for efficiency.
-    The observed states are all that is desired, for computation.
-    If we wanted the internal states, we would also need to have access to the
-    matrix ``P`` (or compute it from ``P_inv``).
-
-    Note that the data layout is pretty specific.
-    See the beginning assertions.
-    E.g., ``x0`` is flat, but has a 2d structure that conforms (in some sense) with
-    the 2d shape of ``u``.
-
-    Parameters
-    ----------
-    eig :
-        Eigven values for ``E0``.
-    EP1 :
-        ``P_inv @ E1``.
-    CP :
-        ``C @ P``.
-    D :
-        ``y = C @ x + D @ u``.
-    P_inv :
-        Matrix inverse of ``P``.
-    x0 :
-        Initial (internal) state.
-    u :
-        Controls.
-
-    Returns
-    -------
-    x :
-        Internal states.
-    y :
-        Observed states.
-
-    See Also
-    --------
-    :mod:`exp_mpc.stewart_min.vest` :
-        Specifies the meaning of the integration matrices and the faster eigen
-        implementation.
-
-    Warning
-    -------
-    The returned internal states ``x`` are in the eigen-basis, so to get the
-    actual states, one needs to transform to ``P @ x``.
-    """
-    assert len(eig.shape) == 1
-    assert len(EP1.shape) == 2
-    assert EP1.shape[1] == 1
-    assert eig.size == EP1.shape[0]
-    assert P_inv.shape[0] == P_inv.shape[1] and P_inv.shape[0] == EP1.shape[0]
-    assert len(x0.shape) == 1
-    assert x0.size % P_inv.shape[0] == 0
-    assert len(u.shape) == 2
-    assert u.shape[1] == x0.size // P_inv.shape[0]
-    assert u.size > 0
-
-    # transform into the eigen vector coordinates
-    x0 = jnp.transpose(P_inv @ x0.reshape(-1, eig.size).T)
-
-    # control wizardry with shapes...
-    # ut is a 3-tensor, with indices
-    #  (references index, state component index, time index)
-    ut = jnp.transpose(EP1 @ u.T.reshape(1, -1))  # (time, ref/state)
-    ut = ut.reshape(x0.shape[0], -1, x0.shape[1])  # (ref, time, state)
-    ut = jnp.transpose(ut, axes=(0, 2, 1))  # (ref, state, time)
-
-    # desired final state shape: (ref, time, state)
-    # iterations:
-    #  initial conditions, components, time
-
-    def eigen_update(d, x0, u):
-        x1 = d * x0 + u
-        return x1, x1
-
-    def scan_eigen_update(x0, d, u):
-        part_eigen_update = functools.partial(eigen_update, d)
-        return jax.lax.scan(part_eigen_update, x0, u)[1]
-
-    d = jnp.tile(eig, reps=(ut.shape[0], 1))
-    x = jax.vmap(jax.vmap(scan_eigen_update))(x0, d, ut)
-    assert isinstance(x, jax.Array)
-    x = jnp.transpose(x, axes=(0, 2, 1))  # (ref, time, state)
-
-    def get_y(x, u):
-        return jnp.squeeze(CP @ x.T + D @ jnp.atleast_2d(u))
-
-    # desired final output shape (SISO): (time, ref)
-    y = jnp.transpose(jax.vmap(get_y)(x, u.T))
-    x = jnp.transpose(x, axes=(1, 0, 2))  # (time, ref, state)
-    x = x.reshape(x.shape[0], -1)  # (time, flattened ref-states)
-    return x, y
+    return jnp.array(top_angles + bot_angles)

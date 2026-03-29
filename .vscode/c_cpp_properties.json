@@ -5,6 +5,8 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "${workspaceFolder}",
+                "${workspaceFolder}/cpp",
+                "${workspaceFolder}/cpp/third_party/call_jax_from_cpp",
                 "/opt/homebrew/include",
                 "${workspaceFolder}/cpp/third_party/highfive/include/**"
             ],

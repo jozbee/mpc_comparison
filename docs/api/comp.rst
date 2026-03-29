@@ -26,7 +26,6 @@ Functions
    angle_vel
    angle_acc
    angle_joint
-   discrete_1d_euler
    lti_int
    lti_int_single
    eigen_int

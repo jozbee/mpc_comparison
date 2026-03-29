@@ -25,10 +25,8 @@ This JAX implementation is jit-able and auto-differentiable.
 """
 
 from __future__ import annotations
-
 import dataclasses
 import typing as tp
-
 import numpy as np
 import jax
 import jax.numpy as jnp

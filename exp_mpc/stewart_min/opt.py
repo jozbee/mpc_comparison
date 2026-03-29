@@ -67,20 +67,18 @@ The L-BFGS algorithm is implemented in a separate library.
 """
 
 from __future__ import annotations
-
 import dataclasses
 import functools
 import time
 import typing as tp
-
 import numpy as np
 import jax
 import jax.numpy as jnp
+import scipy.optimize as sci_opt
 
-import exp_mpc.stewart_min.robo as robo
-import exp_mpc.stewart_min.vest as vest
+import exp_mpc.stewart_min.siso as siso
+import exp_mpc.stewart_min.mpc_spec as mpc_spec
 import exp_mpc.stewart_min.utils as utils
-import exp_mpc.stewart_min.quartic_cost as quartic_cost
 
 import lbfgs.lbfgs as lbfgs
 
@@ -93,902 +91,147 @@ lbfgs_result: tp.TypeAlias = tuple[jax.Array, jax.Array, jax.Array]
 jax.config.update("jax_enable_x64", True)
 
 
-#####################
-# weighting classes #
-#####################
-
-
-def _init_field(arr: jax.Array) -> jax.Array:
-    """Initialize a field with the same shape as the input array."""
-    return dataclasses.field(
-        default_factory=lambda: arr,
-    )
-
-
-@jax.tree_util.register_dataclass
-@dataclasses.dataclass
-class Weights:
-    """Cost function weights.
-
-    Parameters
-    ----------
-    acc :
-        Per-axis weights for linear acceleration: ``[x, y, z]``.
-    omega :
-        Per-axis weights for angular velocity:
-        ``[roll_dot, pitch_dot, yaw_dot]``.
-    leg :
-        Per-leg weights for leg lengths.
-    leg_vel :
-        Per-leg weights for leg velocities.
-    joint_angle :
-        Per-joint weights for top and bottom joint angles.
-        Ordering is ``[top_0..top_5, bot_0..bot_5]``.
-    roll :
-        Roll weight.
-    pitch :
-        Pitch weight.
-    yaw :
-        Yaw weight.
-    yaw_dot :
-        Yaw velocity weight.
-    control :
-        Per-axis weights for control effort:
-        ``[x_dot2, y_dot2, z_dot2, roll_dot2, pitch_dot2, yaw_dot2]``.
-    terminal_exp_scale :
-        Exponential scaling factor for terminal-state attenuation.
-    terminal_vt_scale :
-        Global scale for terminal vestibular mismatch term.
-    terminal_rt_scale :
-        Global scale for terminal robot state mismatch term.
-    """
-
-    acc: jax.Array = _init_field(jnp.ones(3))
-    omega: jax.Array = _init_field(jnp.ones(3))
-    leg: jax.Array = _init_field(jnp.ones(6))
-    leg_vel: jax.Array = _init_field(jnp.ones(6))
-    joint_angle: jax.Array = _init_field(jnp.ones(12))
-    roll: jax.Array = _init_field(jnp.ones(1))
-    pitch: jax.Array = _init_field(jnp.ones(1))
-    yaw: jax.Array = _init_field(jnp.ones(1))
-    yaw_dot: jax.Array = _init_field(jnp.ones(1))
-    control: jax.Array = _init_field(jnp.ones(6))
-    terminal_exp_scale: jax.Array = _init_field(jnp.array(50.0))
-    terminal_vt_scale: jax.Array = _init_field(jnp.array(4.0))
-    terminal_rt_scale: jax.Array = _init_field(jnp.array(0.2))
-
-    def __post_init__(self) -> None:
-        """Validate expected weight-array shapes."""
-        assert self.acc.ndim == 1
-        assert self.acc.shape[0] == 3
-        assert self.omega.ndim == 1
-        assert self.omega.shape[0] == 3
-        assert self.leg.ndim == 1
-        assert self.leg.shape[0] == 6
-        assert self.leg_vel.ndim == 1
-        assert self.leg_vel.shape[0] == 6
-        assert self.joint_angle.ndim == 1
-        assert self.joint_angle.shape[0] == 12
-        assert self.roll.ndim == 1
-        assert self.roll.shape[0] == 1
-        assert self.pitch.ndim == 1
-        assert self.pitch.shape[0] == 1
-        assert self.yaw.ndim == 1
-        assert self.yaw.shape[0] == 1
-        assert self.yaw_dot.ndim == 1
-        assert self.yaw_dot.shape[0] == 1
-        assert self.control.ndim == 1
-        assert self.control.shape[0] == 6
-        assert self.terminal_exp_scale.ndim == 0
-        assert self.terminal_vt_scale.ndim == 0
-        assert self.terminal_rt_scale.ndim == 0
-
-    def _time_scale(self, n: int, name: str) -> jax.Array:
-        """Get time scale weights for flat array.
-
-        See the `ExpWeights` class for a nontrivial implementation
-        """
-        # identity
-        return jnp.ones(n, dtype=float)
-
-    def scale_acc(self, n: int) -> jax.Array:
-        """Get time expanded weights for acceleration cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            2D array of shape ``(n, 3)`` with per-step and per-axis weights.
-        """
-        time_scale = self._time_scale(n, "acc")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.acc.size))
-        val_scale = jnp.tile(self.acc, (n, 1))
-        return time_scale * val_scale
-
-    def scale_omega(self, n: int) -> jax.Array:
-        """Get time expanded weights for angular velocity cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            2D array of shape ``(n, 3)`` with per-step and per-axis weights.
-        """
-        time_scale = self._time_scale(n, "omega")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.omega.size))
-        val_scale = jnp.tile(self.omega, (n, 1))
-        return time_scale * val_scale
-
-    def scale_leg(self, n: int) -> jax.Array:
-        """Get time expanded weights for leg length cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n * 6,)``.
-        """
-        time_scale = self._time_scale(n, "leg")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg.size))
-        val_scale = jnp.tile(self.leg, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_leg_vel(self, n: int) -> jax.Array:
-        """Get time expanded weights for leg velocity cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n * 6,)``.
-        """
-        time_scale = self._time_scale(n, "leg_vel")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.leg_vel.size))
-        val_scale = jnp.tile(self.leg_vel, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_joint_angle(self, n: int) -> jax.Array:
-        """Get time expanded weights for joint angle cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n * 12,)``.
-        """
-        time_scale = self._time_scale(n, "joint_angle")
-        time_scale = jnp.tile(
-            time_scale.reshape(-1, 1), (1, self.joint_angle.size)
-        )
-        val_scale = jnp.tile(self.joint_angle, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_roll(self, n: int) -> jax.Array:
-        """Get time expanded weights for roll boundary cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n,)``.
-        """
-        time_scale = self._time_scale(n, "roll")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.roll.size))
-        val_scale = jnp.tile(self.roll, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_pitch(self, n: int) -> jax.Array:
-        """Get time expanded weights for pitch boundary cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n,)``.
-        """
-        time_scale = self._time_scale(n, "pitch")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.pitch.size))
-        val_scale = jnp.tile(self.pitch, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_yaw(self, n: int) -> jax.Array:
-        """Get time expanded weights for yaw boundary cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n,)``.
-        """
-        time_scale = self._time_scale(n, "yaw")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw.size))
-        val_scale = jnp.tile(self.yaw, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_yaw_dot(self, n: int) -> jax.Array:
-        """Get time expanded weights for yaw velocity boundary cost.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n,)``.
-        """
-        time_scale = self._time_scale(n, "yaw_dot")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.yaw_dot.size))
-        val_scale = jnp.tile(self.yaw_dot, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-    def scale_control(self, n: int) -> jax.Array:
-        """Get time expanded weights for control effort.
-
-        Parameters
-        ----------
-        n :
-            Number of horizon samples.
-
-        Returns
-        -------
-        scale :
-            Flattened weight array of shape ``(n * 6,)``.
-        """
-        time_scale = self._time_scale(n, "control")
-        time_scale = jnp.tile(time_scale.reshape(-1, 1), (1, self.control.size))
-        val_scale = jnp.tile(self.control, (n, 1))
-        return jnp.ravel(time_scale * val_scale)
-
-
-@jax.tree_util.register_dataclass
-@dataclasses.dataclass
-class ExpWeights(Weights):
-    """Exponential time decaying extension of :class:`Weights`.
-
-    Parameters
-    ----------
-    alpha_acc :
-        Decay rate for accelerations.
-    alpha_omega :
-        Decay rate for angular velocities.
-    alpha_leg :
-        Decay rate for leg lengths.
-    alpha_leg_vel :
-        Decay rate for leg velocities.
-    alpha_joint_angle :
-        Decay rate for joint angles.
-    alpha_roll :
-        Decay rate for roll.
-    alpha_pitch :
-        Decay rate for pitch.
-    alpha_yaw :
-        Decay rate for yaw.
-    alpha_yaw_dot :
-        Decay rate for yaw velocities.
-    alpha_control :
-        Decay rate for control effort.
-
-    Notes
-    -----
-    The time profile is ``exp(-k / n * alpha)`` where ``k`` is the
-    discrete horizon index and ``n`` is horizon length.
-    Namely, ``alpha`` is the maximum exponential decrease factor, or
-    alternatively, ``alpha`` is the decay rate when time is normalized to unity.
-    """
-    alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
-    alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
-    alpha_leg: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_joint_angle: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_roll: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_pitch: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_yaw_dot: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
-
-    def _time_scale(self, n: int, name: str) -> jax.Array:
-        """Get time scale weights for flat array."""
-        # exponential decrease
-        alpha_map = {
-            "acc": self.alpha_acc,
-            "omega": self.alpha_omega,
-            "leg": self.alpha_leg,
-            "leg_vel": self.alpha_leg_vel,
-            "joint_angle": self.alpha_joint_angle,
-            "roll": self.alpha_roll,
-            "pitch": self.alpha_pitch,
-            "yaw": self.alpha_yaw,
-            "yaw_dot": self.alpha_yaw_dot,
-            "control": self.alpha_control,
-        }
-        return jnp.exp(-jnp.arange(n, dtype=float) / n * alpha_map[name])
-
-
-@jax.tree_util.register_dataclass
-@dataclasses.dataclass
-class CostTerms:
-    """Container for the boundary penalties used by the MPC objective.
-
-    Parameters
-    ----------
-    leg_cost :
-        Quartic cost for leg length boundary.
-    leg_vel_cost :
-        Quartic cost for leg velocity boundary.
-    joint_angle_cost :
-        Quartic cost for joint angle boundary.
-    roll_cost :
-        Quartic cost for roll boundary.
-    pitch_cost :
-        Quartic cost for pitch boundary.
-    yaw_cost :
-        Quartic cost for yaw boundary.
-    yaw_dot_cost :
-        Quartic cost for yaw rate boundary.
-    """
-    leg_cost: quartic_cost.QuarticCost
-    leg_vel_cost: quartic_cost.QuarticCost
-    joint_angle_cost: quartic_cost.QuarticCost
-    roll_cost: quartic_cost.QuarticCost
-    pitch_cost: quartic_cost.QuarticCost
-    yaw_cost: quartic_cost.QuarticCost
-    yaw_dot_cost: quartic_cost.QuarticCost
-
-
-###################
-# hyperbolic cost #
-###################
-
-
-def _hyper(x: jax.Array) -> jax.Array:
-    """Hyperbolic cost function?
-
-    WARNING: look at the implementation to see if this is just the identity
-    function.
-    Otherwise, when composed with the vector L^2 norm, this function is
-    quadratic, but has the same linear asymptotics as the L^1 norm.
-
-    Note
-    ----
-    The hyperbolic tangent function is modified to work better with auto-diff.
-    The original function is
-
-    .. math:: \\sqrt{1 + \frac{x^2}{a^2}} - 1.
-
-    Instead, we use
-
-    .. math:: \\sqrt{1 + \frac{x}{a}} - 1.
-
-    So, instead of passing the L^2 norm, we should pass the squared L^2 norm.
-    Even though the two forms are equivalent under these norm conventions,
-    the compiler will _not_ cancel the square root and the square, which causes
-    intermediate values to become nan.
-    """
-    # we can scale the input to make the quadratic region of attraction larger
-    # for us, unity works quite well
-    # a = 2**0
-    # return jnp.sqrt(1.0 + x / a) - 1.0
-
-    # identity...
-    return x
-
-
 ########
 # cost #
 ########
 
 
-def _acc_cost_arr(
-    weights: Weights,
-    vstate_irl: utils.VState,
-    vstate_sim: utils.VState,
+def _head_cost(
+    spec: mpc_spec.MPCSpec,
+    y_vest_irl: jax.Array,
+    y_vest_sim: jax.Array,
 ) -> jax.Array:
-    """Head acceleration cost terms."""
-    w = weights.scale_acc(vstate_irl.size)
-    a_irl = jnp.array([vstate_irl.y_accx, vstate_irl.y_accy, vstate_irl.y_accz])
-    a_sim = jnp.array([vstate_sim.y_accx, vstate_sim.y_accy, vstate_sim.y_accz])
-    diff = (a_irl - a_sim) * w.T
-    diff_xy = diff[:2]
-    diff_z = diff[2]
+    n = y_vest_irl.shape[0]
 
-    def hyper(arr0, arr1):
-        arr0 = jnp.atleast_1d(arr0)
-        arr1 = jnp.atleast_1d(arr1)
-        return _hyper(arr0 @ arr0) + _hyper(arr1 @ arr1)
+    lin_diff = jnp.square(y_vest_irl[:, :3] - y_vest_sim[:, :3])
+    lin_cost = spec.weights.scale_lin_dyn(n) * lin_diff
+    ome_diff = jnp.square(y_vest_irl[:, 3:] - y_vest_sim[:, 3:])
+    ome_cost = spec.weights.scale_omega(n) * ome_diff
 
-    return jax.vmap(hyper)(diff_xy.T, diff_z)
+    return 0.5 * jnp.sum(jnp.mean(lin_cost + ome_cost, axis=0))
 
 
-def _acc_cost(
-    weights: Weights,
-    vstate_irl: utils.VState,
-    vstate_sim: utils.VState,
+def _ik_cost(
+    spec: mpc_spec.MPCSpec,
+    leg_pos: jax.Array,
+    leg_vel: jax.Array,
+    leg_ang: jax.Array,
 ) -> jax.Array:
-    """Head acceleration cost."""
-    cost_arr = _acc_cost_arr(weights, vstate_irl, vstate_sim)
-    return 0.5 * jnp.mean(cost_arr)
+    n = leg_pos.shape[0]
+
+    leg_pos_fun = jax.vmap(spec.cost_terms.leg_pos_cost)
+    leg_vel_fun = jax.vmap(spec.cost_terms.leg_vel_cost)
+    leg_ang_fun = jax.vmap(spec.cost_terms.leg_ang_cost)
+
+    leg_pos_quart = leg_pos_fun(leg_pos.flatten()).reshape(-1, 6)
+    leg_vel_quart = leg_vel_fun(leg_vel.flatten()).reshape(-1, 6)
+    leg_ang_quart = leg_ang_fun(leg_ang.flatten()).reshape(-1, 12)
+
+    leg_pos_cost = leg_pos_quart * spec.weights.scale_leg_pos(n)
+    leg_vel_cost = leg_vel_quart * spec.weights.scale_leg_vel(n)
+    leg_ang_cost = leg_ang_quart * spec.weights.scale_leg_ang(n)
+
+    def mean(x):
+        return jnp.sum(jnp.mean(x, axis=0))
+
+    return mean(leg_pos_cost) + mean(leg_vel_cost) + mean(leg_ang_cost)
 
 
-def _omega_cost_arr(
-    weights: Weights,
-    vstate_irl: utils.VState,
-    vstate_sim: utils.VState,
+def _euler_cost(
+    spec: mpc_spec.MPCSpec,
+    euler_ang: jax.Array,
+    yaw: jax.Array,
+    yaw_dot: jax.Array,
+    yaw_ctrl: jax.Array,
 ) -> jax.Array:
-    """Angular velocity cost terms."""
-    w = weights.scale_omega(vstate_irl.size)  # or `vstate_sim.size`
-    w_irl = jnp.array(
-        [vstate_irl.y_omegax, vstate_irl.y_omegay, vstate_irl.y_omegaz]
+    n = euler_ang.shape[0]
+
+    roll_fun = jax.vmap(spec.cost_terms.roll_cost)
+    pitch_fun = jax.vmap(spec.cost_terms.pitch_cost)
+    yaw_fun = jax.vmap(spec.cost_terms.yaw_cost)
+    yaw_dot_fun = jax.vmap(spec.cost_terms.yaw_dot_cost)
+    yaw_ctrl_fun = jax.vmap(spec.cost_terms.yaw_ctrl_cost)
+
+    roll_cost = roll_fun(euler_ang[:, 0]) * spec.weights.scale_roll(n)
+    pitch_cost = pitch_fun(euler_ang[:, 1]) * spec.weights.scale_pitch(n)
+    yaw_cost = yaw_fun(yaw) * spec.weights.scale_yaw(n)
+    yaw_dot_cost = yaw_dot_fun(yaw_dot) * spec.weights.scale_yaw_dot(n)
+    yaw_ctrl_cost = yaw_ctrl_fun(yaw_ctrl) * spec.weights.scale_yaw_ctrl(n)
+
+    return jnp.mean(
+        roll_cost + pitch_cost + yaw_cost + yaw_dot_cost + yaw_ctrl_cost
     )
-    w_sim = jnp.array(
-        [vstate_sim.y_omegax, vstate_sim.y_omegay, vstate_sim.y_omegaz]
-    )
-    diff = (w_irl - w_sim) * w.T
-    diff_xy = diff[:2]
-    diff_z = diff[2]
-
-    def hyper(arr0, arr1):
-        arr0 = jnp.atleast_1d(arr0)
-        arr1 = jnp.atleast_1d(arr1)
-        return _hyper(arr0 @ arr0) + _hyper(arr1 @ arr1)
-
-    return jax.vmap(hyper)(diff_xy.T, diff_z)
-
-
-def _omega_cost(
-    weights: Weights,
-    vstate_irl: utils.VState,
-    vstate_sim: utils.VState,
-) -> jax.Array:
-    """Angular velocity cost."""
-    cost_arr = _omega_cost_arr(weights, vstate_irl, vstate_sim)
-    return 0.5 * jnp.mean(cost_arr)
-
-
-def _leg_boundary_cost_arr(
-    robo_geom: robo.RoboGeom,
-    weights: Weights,
-    cost_terms: CostTerms,
-    hstate: utils.HState,
-    use_rotary: bool = True,
-) -> tuple[jax.Array, jax.Array]:
-    """Include leg length and leg velocity costs.
-
-    By using automatic differentiation, we can compute the lengths and the
-    velocities cheaper than computing them separately, which is productive.
-    """
-    leg_pos_vel = functools.partial(
-        utils.leg_pos_vel,
-        robo_geom=robo_geom,
-        use_rotary=use_rotary,
-    )
-    hstate = hstate.pop0()
-    lengths, vels = jax.vmap(leg_pos_vel)(hstate)
-    lengths = jnp.ravel(lengths)
-    vels = jnp.ravel(vels)
-    length_costs = jax.vmap(cost_terms.leg_cost)(lengths)
-    vel_costs = jax.vmap(cost_terms.leg_vel_cost)(vels)
-    w_len = weights.scale_leg(hstate.size)
-    w_vel = weights.scale_leg_vel(hstate.size)
-    length_cost_arr = jnp.reshape(length_costs * w_len, shape=(-1, 6))
-    vel_cost_arr = jnp.reshape(vel_costs * w_vel, shape=(-1, 6))
-    return length_cost_arr, vel_cost_arr
-
-
-def _leg_boundary_cost(
-    robo_geom: robo.RoboGeom,
-    weights: Weights,
-    cost_terms: CostTerms,
-    hstate: utils.HState,
-    use_rotary: bool,
-) -> jax.Array:
-    """Include leg length and leg velocity costs.
-
-    By using automatic differentiation, we can compute the lengths and the
-    velocities cheaper than computing them separately, which is productive.
-    """
-    length_cost_arr, vel_cost_arr = _leg_boundary_cost_arr(
-        robo_geom, weights, cost_terms, hstate, use_rotary
-    )
-    length_cost_val = jnp.sum(jnp.mean(length_cost_arr, axis=0))
-    vel_cost_val = jnp.sum(jnp.mean(vel_cost_arr, axis=0))
-    return length_cost_val + vel_cost_val
-
-
-def _joint_angles(
-    robo_geom: robo.RoboGeom,
-    hstate: utils.HState,
-    use_rotary: bool,
-) -> jax.Array:
-    return jnp.concatenate(
-        utils.angle_joint(hstate, robo_geom=robo_geom, use_xy=use_rotary)
-    )
-
-
-def _joint_angle_boundary_cost_arr(
-    robo_geom: robo.RoboGeom,
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-    use_rotary: bool = True,
-) -> jax.Array:
-    """Joint angle cost."""
-    joint_angles_part = functools.partial(
-        _joint_angles,
-        robo_geom,
-        use_rotary=use_rotary,
-    )
-    hstate = hstate.pop0()
-    angles = jnp.ravel(jax.vmap(joint_angles_part)(hstate))
-    costs = jax.vmap(costs.joint_angle_cost)(angles)
-    w = weights.scale_joint_angle(hstate.size)
-    return (costs * w).reshape(-1, 12)
-
-
-def _joint_angle_boundary_cost(
-    robo_geom: robo.RoboGeom,
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-    use_rotary: bool,
-) -> jax.Array:
-    """Joint angle cost.
-
-    This is about 3 times more expensive to compute than the other
-    cost functions (including boundary cost functions).
-    """
-    cost_arr = _joint_angle_boundary_cost_arr(
-        robo_geom,
-        weights,
-        costs,
-        hstate,
-        use_rotary,
-    )
-    return jnp.sum(jnp.mean(cost_arr, axis=0))
-
-
-def _roll_boundary_cost_arr(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    hstate = hstate.pop0()
-    roll = hstate.roll
-    costs = jax.vmap(costs.roll_cost)(roll)
-    w = weights.scale_roll(hstate.size)
-    return costs * w
-
-
-def _roll_boundary_cost(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    cost_arr = _roll_boundary_cost_arr(weights, costs, hstate)
-    return jnp.mean(cost_arr)
-
-
-def _pitch_boundary_cost_arr(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    hstate = hstate.pop0()
-    pitch = hstate.pitch
-    costs = jax.vmap(costs.pitch_cost)(pitch)
-    w = weights.scale_pitch(hstate.size)
-    return costs * w
-
-
-def _pitch_boundary_cost(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    cost_arr = _pitch_boundary_cost_arr(weights, costs, hstate)
-    return jnp.mean(cost_arr)
-
-
-def _yaw_boundary_cost_arr(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    hstate = hstate.pop0()
-    yaw = hstate.yaw
-    costs = jax.vmap(costs.yaw_cost)(yaw)
-    w = weights.scale_yaw(hstate.size)
-    return costs * w
-
-
-def _yaw_boundary_cost(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    cost_arr = _yaw_boundary_cost_arr(weights, costs, hstate)
-    return jnp.mean(cost_arr)
-
-
-def _yaw_dot_boundary_cost_arr(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    hstate = hstate.pop0()
-    yaw_dot = hstate.yaw_dot
-    yaw_dot = jnp.ravel(jnp.transpose(yaw_dot))
-    costs = jax.vmap(costs.yaw_dot_cost)(yaw_dot)
-    w = weights.scale_yaw_dot(hstate.size)
-    return costs * w
-
-
-def _yaw_dot_boundary_cost(
-    weights: Weights,
-    costs: CostTerms,
-    hstate: utils.HState,
-) -> jax.Array:
-    cost_arr = _yaw_dot_boundary_cost_arr(weights, costs, hstate)
-    return jnp.mean(cost_arr)
-
-
-def _control_cost_arr(
-    weights: Weights,
-    control: utils.Control,
-) -> jax.Array:
-    w = weights.scale_control(control.size)
-    costs = jnp.square(control.flatten() * w)
-    return costs.reshape(-1, 6)
 
 
 def _control_cost(
-    weights: Weights,
-    control: utils.Control,
+    spec: mpc_spec.MPCSpec,
+    control: mpc_spec.MPCSpec,
 ) -> jax.Array:
-    cost_arr = _control_cost_arr(weights, control)
-    return 0.5 * jnp.sum(jnp.mean(cost_arr, axis=0))
+    control = control.reshape(-1, 6)
+    n = control.shape[0]
+    control_cost = jnp.square(control) * spec.weights.scale_control(n)
+    return 0.5 * jnp.sum(jnp.mean(control_cost, axis=0))
 
 
 def _terminal_cost(
-    robo_geom: robo.RoboGeom,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
-    weights: Weights,
-    hstate: utils.HState,
-    vstate_irl: utils.VState,
-    vstate_sim: utils.VState,
+    spec: mpc_spec.MPCSpec,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    y_vest_sim: jax.Array,
+    xyz: jax.Array,
+    yaw: jax.Array,
+    tilt: jax.Array,
 ) -> jax.Array:
-    # setup
-    vi = vstate_irl
-    vs = vstate_sim
+    if not spec.use_terminal:
+        return 0.0
 
-    a_P = vspec_acc.P
-    o_P = vspec_omega.P
+    def _ssum(x):
+        return jnp.sum(jnp.square(x))
 
-    a_num = vspec_acc.n_state
-    o_num = vspec_omega.n_state
-    idx = np.cumsum([0] + [a_num] * 3 + [o_num] * 3)
-
-    x_accx0 = a_P @ vs.x_state[0, idx[0] : idx[1]]
-    x_accx1 = a_P @ vs.x_state[-1, idx[0] : idx[1]]
-    x_accy0 = a_P @ vs.x_state[0, idx[1] : idx[2]]
-    x_accy1 = a_P @ vs.x_state[-1, idx[1] : idx[2]]
-    x_accz0 = a_P @ vs.x_state[0, idx[2] : idx[3]]
-    x_accz1 = a_P @ vs.x_state[-1, idx[2] : idx[3]]
-    x_omegax0 = o_P @ vs.x_state[0, idx[3] : idx[4]]
-    x_omegax1 = o_P @ vs.x_state[-1, idx[3] : idx[4]]
-    x_omegay0 = o_P @ vs.x_state[0, idx[4] : idx[5]]
-    x_omegay1 = o_P @ vs.x_state[-1, idx[4] : idx[5]]
-    x_omegaz0 = o_P @ vs.x_state[0, idx[5] : idx[6]]
-    x_omegaz1 = o_P @ vs.x_state[-1, idx[5] : idx[6]]
-
-    irl_x_omegaz1 = o_P @ vi.x_state[-1, idx[5] : idx[6]]
-    o_diff = irl_x_omegaz1 - x_omegaz1
-
-    def o_V(x):
-        return jnp.dot(vspec_omega.V @ x, x)
-
-    # compute
-
-    def scale(x):
-        return jnp.exp(-weights.terminal_exp_scale * jnp.sum(jnp.square(x)))
-
-    vt_cost = o_V(o_diff) * (scale(x_omegaz0) * scale(x_omegaz1))
-    vt_cost *= weights.terminal_vt_scale
-
-    scale0 = jnp.array(
+    ref = jnp.concatenate(
         [
-            scale(x_accx0),
-            scale(x_accy0),
-            scale(x_accz0),
-            scale(x_omegax0),
-            scale(x_omegay0),
-            scale(x_omegaz0),
-            scale(x_accx0),
-            scale(x_accy0),
-            scale(x_accz0),
-            scale(x_omegax0),
-            scale(x_omegay0),
-            scale(x_omegaz0),
+            acc_ref[:, :2].flatten(),  # non-jerk
+            y_vest_sim[:, 3].flatten(),  # jerk
+            omega_ref.flatten(),
         ]
     )
-    scale1 = jnp.array(
-        [
-            scale(x_accx1),
-            scale(x_accy1),
-            scale(x_accz1),
-            scale(x_omegax1),
-            scale(x_omegay1),
-            scale(x_omegaz1),
-            scale(x_accx1),
-            scale(x_accy1),
-            scale(x_accz1),
-            scale(x_omegax1),
-            scale(x_omegay1),
-            scale(x_omegaz1),
-        ]
-    )
+    scale = jnp.exp(-spec.weights.terminal_exp_scale * _ssum(ref))
 
-    scales = scale0 * scale1 * weights.terminal_rt_scale
-    last_state = hstate.state[-1]
-    last_state = last_state.at[:3].subtract(robo_geom.cart_home)
-    rt_cost = jnp.sum(jnp.square(last_state) * scales)
-    rt_cost += jnp.square(hstate.state[-1][5]) * (
-        scale(x_omegaz0) * scale(x_omegaz1) * weights.terminal_rt_scale * 1e1
-    )
+    cart_last = jnp.concatenate([xyz[-1], jnp.atleast_1d(yaw[-1]), tilt[-1]])
+    ang_home = jnp.array([0.0, 1.0, 0.0, 0.0])
+    cart_home = jnp.concatenate([spec.cart_home, ang_home])
 
-    return rt_cost + vt_cost
+    rt_cost = _ssum(cart_last - cart_home)
+    res = scale * rt_cost * spec.weights.terminal_rt_scale
+    return res
 
 
-def _cost(
-    control: utils.Control,
-    hstate0: jax.Array,
-    control0: jax.Array,
+def cost(
+    spec: mpc_spec.MPCSpec,  # static
+    control: jax.Array,
+    prefilt0: jax.Array,
+    filt0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    weights: Weights,
-    cost_terms: CostTerms,
-    dt: jax.Array,
-    robo_geom: robo.RoboGeom,  # static
-    vspec_acc: vest.VSpec,  # static
-    vspec_omega: vest.VSpec,  # static
-    use_rotary: bool = True,  # static
-    use_terminal: bool = True,  # static
+    xyz_hist: jax.Array,
+    yaw_hist: jax.Array,
+    tilt_hist: jax.Array,
 ) -> jax.Array:
-    # precompute states
-    hstate, vstate_irl, vstate_sim = utils.get_states_with_eigen(
-        dt,
-        vspec_acc,
-        vspec_omega,
-        acc_ref,
-        omega_ref,
-        hstate0,
-        vstate0_irl,
-        vstate0_sim,
-        control0,
-        control,
-    )
-
-    # cost
-    cost = jnp.array(0.0)
-    cost += _acc_cost(weights, vstate_irl, vstate_sim)
-    cost += _omega_cost(weights, vstate_irl, vstate_sim)
-    cost += _leg_boundary_cost(
-        robo_geom,
-        weights,
-        cost_terms,
-        hstate,
-        use_rotary,
-    )
-    cost += _joint_angle_boundary_cost(
-        robo_geom,
-        weights,
-        cost_terms,
-        hstate,
-        use_rotary,
-    )
-    cost += _roll_boundary_cost(weights, cost_terms, hstate)
-    cost += _pitch_boundary_cost(weights, cost_terms, hstate)
-    cost += _yaw_boundary_cost(weights, cost_terms, hstate)
-    cost += _yaw_dot_boundary_cost(weights, cost_terms, hstate)
-    cost += _control_cost(weights, control)
-    if use_terminal:
-        cost += _terminal_cost(
-            robo_geom,
-            vspec_acc,
-            vspec_omega,
-            weights,
-            hstate,
-            vstate_irl,
-            vstate_sim,
-        )
-    return cost
-
-
-#######################
-# scipy cost wrappers #
-#######################
-
-_cost_static_argnames = [
-    "robo_geom",
-    "vspec_acc",
-    "vspec_omega",
-    "use_rotary",
-    "use_terminal",
-]
-
-@functools.partial(
-    jax.jit,
-    static_argnames=_cost_static_argnames,
-)
-def cost_flat_jax(
-    control_flat: jax.Array,
-    hstate0: jax.Array,
-    control0: jax.Array,
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    weights: Weights,
-    cost_terms: CostTerms,
-    dt: jax.Array,
-    robo_geom: robo.RoboGeom,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
-    use_rotary: bool = True,
-    use_terminal: bool = True,
-) -> jax.Array:
-    """Evaluate MPC objective from a flattened control trajectory.
-
-    This flattening wrapper is easily motivated.
-    Optimization algorithms prefer that the optimization variables are
-    represented as a vector, i.e., a flat array.
+    """Evaluate MPC objective from a control trajectory.
 
     Parameters
     ----------
-    control_flat :
+    spec :
+        MPC specification.
+    control :
         Flattened control sequence with ordering
-        ``[x, y, z, roll, pitch, yaw]`` per time step.
-    hstate0 :
-        Current robot state.
-    control0 :
-        Current robot accelerations.
-        (Last robot control.)
+        `[x, y, z, yaw, tilt0, tilt1, tilt2]` per time step.
+    prefilt0 :
+        Initial states for prefilter.
+    filt0 :
+        Initial states for control filters.
     vstate0_irl :
         Initial vestibular state for the in-real-life person.
     vstate0_sim :
@@ -997,83 +240,101 @@ def cost_flat_jax(
         Reference linear acceleration trajectory in the head frame.
     omega_ref :
         Reference angular velocity trajectory in the head frame.
-    weights :
-        Cost weights.
-    cost_terms :
-        Quartic boundary penalties.
-    dt :
-        Time step.
-    robo_geom :
-        Stewart platform geometry.
-    vspec_acc :
-        Vestibular acceleration model specification.
-    vspec_omega :
-        Vestibular angular velocity model specification.
-    use_rotary :
-        ``True`` to simulate a rotary platform on top of the Stewart platform.
-        ``False`` for no rotary platform.
-    use_terminal :
-        ``True`` to include the terminal cost.
-        The terminal cost is mainly used for smooth tracking to home.
+    xyz_hist :
+        Previous two linear positions of robot.
+    yaw_hist :
+        Previous two yaw positions of robot.
+    tilt_hist :
+        Previous two tilt quaternions of robot.
 
     Returns
     -------
     cost :
         Scalar MPC objective value.
     """
-    control = utils.Control.from_flat(control_flat)
-    return _cost(
-        control=control,
-        hstate0=hstate0,
-        control0=control0,
-        vstate0_irl=vstate0_irl,
-        vstate0_sim=vstate0_sim,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
-        weights=weights,
-        cost_terms=cost_terms,
-        vspec_acc=vspec_acc,
-        vspec_omega=vspec_omega,
-        dt=dt,
-        robo_geom=robo_geom,
-        use_rotary=use_rotary,
-        use_terminal=use_terminal,
+    # compute states
+    x_pre, y_pre = utils.prefilt_u(
+        spec=spec,
+        u=control,
+        prefilt0=prefilt0,
+    )
+    u_yaw = y_pre[:, 3]
+    x_xyz, y_xyz, x_yaw, y_yaw, x_tilt, y_tilt = utils.apply_u(
+        spec=spec,
+        u=y_pre,
+        filt0=filt0,
+    )
+    acc_head, omega_head = utils.head_dynamics(
+        spec=spec,
+        xyz=y_xyz,
+        yaw=y_yaw,
+        tilt=y_tilt,
+        xyz_hist=xyz_hist,
+        yaw_hist=yaw_hist,
+        tilt_hist=tilt_hist,
+    )
+    leg_pos, leg_vel, leg_ang, euler_ang, yaw_dot = utils.kinematics(
+        spec=spec,
+        xyz=y_xyz,
+        tilt=y_tilt,
+        yaw=y_yaw,
+        xyz_hist=xyz_hist,
+        tilt_hist=tilt_hist,
+        yaw_hist=yaw_hist,
+    )
+    x_vest_irl, y_vest_irl = utils.eigen_vstates(
+        spec=spec,
+        acc=acc_head,
+        omega=omega_head,
+        vstate0=vstate0_irl,
+        return_eig_states=True,
+    )
+    x_vest_sim, y_vest_sim = utils.eigen_vstates(
+        spec=spec,
+        acc=acc_ref,
+        omega=omega_ref,
+        vstate0=vstate0_sim,
+        return_eig_states=True,
     )
 
+    # cost
+    cost_head = _head_cost(spec, y_vest_irl, y_vest_sim)
+    cost_ik = _ik_cost(spec, leg_pos, leg_vel, leg_ang)
+    cost_euler = _euler_cost(spec, euler_ang, y_yaw, yaw_dot, u_yaw)
+    cost_control = _control_cost(spec, control)
+    cost_term = _terminal_cost(
+        spec, acc_ref, omega_ref, y_vest_sim, y_xyz, y_yaw, y_tilt
+    )
+    return cost_head + cost_ik + cost_euler + cost_control + cost_term
 
-@functools.partial(
-    jax.jit,
-    static_argnames=_cost_static_argnames,
-)
-def cost_and_grad_flat_jax(
-    control_flat: jax.Array,
-    hstate0: jax.Array,
-    control0: jax.Array,
+
+@functools.partial(jax.jit, static_argnames=["spec"])
+def cost_and_grad(
+    spec: mpc_spec.MPCSpec,
+    control: jax.Array,
+    prefilt0: jax.Array,
+    filt0: jax.Array,
     vstate0_irl: jax.Array,
     vstate0_sim: jax.Array,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    weights: Weights,
-    cost_terms: CostTerms,
-    dt: jax.Array,
-    robo_geom: robo.RoboGeom,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
-    use_rotary: bool = True,
-    use_terminal: bool = True,
+    xyz_hist: jax.Array,
+    yaw_hist: jax.Array,
+    tilt_hist: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     """Evaluate MPC objective and gradient for flattened controls.
 
     Parameters
     ----------
-    control_flat :
+    spec :
+        MPC specification.
+    control :
         Flattened control sequence with ordering
-        ``[x, y, z, roll, pitch, yaw]`` per time step.
-    hstate0 :
-        Current robot state.
-    control0 :
-        Current robot accelerations.
-        (Last robot control.)
+        `[x, y, z, yaw, tilt0, tilt1, tilt2]` per time step.
+    prefilt0 :
+        Initial states for prefilter.
+    filt0 :
+        Initial states for control filters.
     vstate0_irl :
         Initial vestibular state for the in-real-life person.
     vstate0_sim :
@@ -1082,24 +343,12 @@ def cost_and_grad_flat_jax(
         Reference linear acceleration trajectory in the head frame.
     omega_ref :
         Reference angular velocity trajectory in the head frame.
-    weights :
-        Cost weights.
-    cost_terms :
-        Quartic boundary penalties.
-    dt :
-        Time step.
-    robo_geom :
-        Stewart platform geometry.
-    vspec_acc :
-        Vestibular acceleration model specification.
-    vspec_omega :
-        Vestibular angular velocity model specification.
-    use_rotary :
-        ``True`` to simulate a rotary platform on top of the Stewart platform.
-        ``False`` for no rotary platform.
-    use_terminal :
-        ``True`` to include the terminal cost.
-        The terminal cost is mainly used for smooth tracking to home.
+    xyz_hist :
+        Previous two linear positions of robot.
+    yaw_hist :
+        Previous two yaw positions of robot.
+    tilt_hist :
+        Previous two tilt quaternions of robot.
 
     Returns
     -------
@@ -1108,23 +357,19 @@ def cost_and_grad_flat_jax(
     grad :
         Control (flat) gradient of MPC cost.
     """
-    cost_and_grad = jax.value_and_grad(cost_flat_jax, argnums=0)
-    return cost_and_grad(
-        control_flat,
-        hstate0=hstate0,
-        control0=control0,
-        vstate0_irl=vstate0_irl,
-        vstate0_sim=vstate0_sim,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
-        weights=weights,
-        cost_terms=cost_terms,
-        vspec_acc=vspec_acc,
-        vspec_omega=vspec_omega,
-        dt=dt,
-        robo_geom=robo_geom,
-        use_rotary=use_rotary,
-        use_terminal=use_terminal,
+    res_fun = jax.value_and_grad(cost, argnums=1)
+    return res_fun(
+        spec,
+        control,
+        prefilt0,
+        filt0,
+        vstate0_irl,
+        vstate0_sim,
+        acc_ref,
+        omega_ref,
+        xyz_hist,
+        yaw_hist,
+        tilt_hist,
     )
 
 
@@ -1136,7 +381,7 @@ def cost_and_grad_flat_jax(
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class TrainState:
-    """State for training.
+    """State for training, plus extra info for post processing.
 
     The name was motivated by the machine learning community.
     See :class:`flax.training.train_state.TrainState`.
@@ -1145,130 +390,259 @@ class TrainState:
 
     Parameters
     ----------
-    hstate0 :
-        Current robot state.
+    control :
+        Control sequence for the MPC horizon.
+        (Last optimization solution.)
+    prefilt0 :
+        Initial state for control pre-filtering.
+        Includes initial tilt quaternion (for pre-filting control).
+    filt0 :
+        Initial state for robot filters.
     vstate0_irl :
         Current vestibular state for the in-real-life person.
     vstate0_sim :
         Current vestibular state for the simulated/reference person.
-    control0 :
-        Current robot acceleration.
-    control_flat :
-        Flattened control sequence for the MPC horizon.
-        (Last optimization solution.)
+    xyz_hist :
+        Previous two linear positions of robot.
+    yaw_hist :
+        Previous two yaw positions of robot.
+    tilt_hist :
+        Previous two tilt quaternions of robot.
+    x_pre :
+        Internal states for control prefilter.
+    y_pre :
+        Controls for robots.
+    x_xyz :
+        Internal states for robot linear position.
+    y_xyz :
+        Observed states for robot linear position.
+    x_yaw :
+        Internal states for robot yaw angle.
+    u_yaw :
+        Acutal (nondiff) controls for robot yaw angle.
+    y_yaw :
+        Observed states for robot yaw angle.
+    x_tilt :
+        Internal states for robot tilt.
+    y_tilt :
+        Observed states for robot tilt.
+    acc_head :
+        Linear acceleration of head frame.
+    omega_head :
+        Angular velocity of head frame.
+    leg_pos :
+        Leg positions from kinematics.
+    leg_vel :
+        Leg velocities from kinematics.
+    leg_ang :
+        Leg angles from kinematics.
+    euler_ang :
+        Euler angles from kinematics.
+    yaw_dot :
+        Derivative of yaw angle from kinematics.
+    x_vest_irl :
+        Internal states for vestibular system of in-real-life person.
+    y_vest_irl :
+        Observed states for vestibular system of in-real-life person.
+    x_vest_sim :
+        Internal states for vestibular system of simulated person.
+    y_vest_sim :
+        Observed states for vestibular system of simulated person.
     """
 
-    hstate0: jax.Array
+    # training info
+    control: jax.Array
+    prefilt0: jax.Array
+    filt0: jax.Array
     vstate0_irl: jax.Array
     vstate0_sim: jax.Array
-    control0: jax.Array
-    control_flat: jax.Array
+    xyz_hist: jax.Array
+    yaw_hist: jax.Array
+    tilt_hist: jax.Array
+
+    # extra info
+    x_pre: jax.Array
+    y_pre: jax.Array
+    x_xyz: jax.Array
+    y_xyz: jax.Array
+    x_yaw: jax.Array
+    u_yaw: jax.Array
+    y_yaw: jax.Array
+    x_tilt: jax.Array
+    y_tilt: jax.Array
+    acc_head: jax.Array
+    omega_head: jax.Array
+    leg_pos: jax.Array
+    leg_vel: jax.Array
+    leg_ang: jax.Array
+    euler_ang: jax.Array
+    yaw_dot: jax.Array
+    x_vest_irl: jax.Array
+    y_vest_irl: jax.Array
+    x_vest_sim: jax.Array
+    y_vest_sim: jax.Array
 
     @classmethod
     def zero_init(
         cls,
-        robo_geom: robo.RoboGeom,
-        horizon_num: int,
-        vspec_acc: vest.VSpec,
-        vspec_omega: vest.VSpec,
-        vstate0_mode: tp.Optional[tuple[str, str]] = None,
+        spec: mpc_spec.MPCSpec,
+        sim_acc_z: float = 9.81,
     ) -> "TrainState":
         """Init train state with zeros.
 
         Parameters
         ----------
-        robo_geom :
-            Stewart platform geometry.
-            Used for home positioning.
-        horizon_num :
-            Horizon length.
-        vspec_acc :
-            Vestibular specification for acceleration.
-        vspec_omega :
-            Vestibular specification for angular velocity.
-        vstate0_mode :
-            Determines if the initial vestibular states should be initialized
-            to respect gravity.
-            The first and second entries represent the irl and sim conditions,
-            respectively.
-            If not ``None``, the options are ``"earth"`` or ``"moon"``.
+        spec :
+            MPC specification.
+        sim_acc_z :
+            Initial simulation acceleration in the z-direction.
+            E.g., 1.625 for moon gravity and 9.81 for earth gravity.
 
         Returns
         -------
         train_state :
             Zeroed train state.
         """
-        acc_num = vspec_acc.E0.shape[0]
-        omega_num = vspec_omega.E0.shape[0]
-        v0_earth = vspec_acc.v0_earth
-        v0_moon = vspec_acc.v0_moon
+        acc_num = spec.vspec_acc.n_state
+        jerk_num = spec.vspec_jerk.n_state
+        omega_num = spec.vspec_omega.n_state
         u_num = 6
-        r_num = u_num * 2
-        v_num = 3 * acc_num + 3 * omega_num
+        v_num = 2 * acc_num + jerk_num + 3 * omega_num
 
-        # gravity_range and gravity_map (setup)
-        gr = (2 * acc_num, 3 * acc_num)
-        g_map = {"earth": v0_earth, "moon": v0_moon}
+        control = jnp.zeros(u_num * spec.n)
 
-        def zeros(n):
-            return jnp.zeros(n, dtype=float)
-
-        vstate0_irl = zeros(v_num)
-        vstate0_sim = zeros(v_num)
-        if vstate0_mode is not None:
-            vstate0_irl = vstate0_irl.at[gr[0] : gr[1]].set(
-                g_map[vstate0_mode[0]]
+        # prefilt with identity tilt
+        tilt0 = jnp.array([1.0, 0.0, 0.0])
+        ctrl_home = np.concatenate([spec.cart_home, np.zeros(3)])
+        prefilt0_terms = []
+        for pos in ctrl_home:
+            prefilt0_pos = siso.obs_x0(
+                A=spec.ctrlspec.A,
+                B=spec.ctrlspec.B,
+                C=spec.ctrlspec.C,
+                D=spec.ctrlspec.D,
+                y=np.ones(spec.ctrlspec.n_state) * pos,
+                u=np.ones(spec.ctrlspec.n_state) * pos,
             )
-            vstate0_sim = vstate0_sim.at[gr[0] : gr[1]].set(
-                g_map[vstate0_mode[1]]
+            prefilt0_terms.append(prefilt0_pos)
+        prefilt0 = jnp.concatenate(prefilt0_terms + [tilt0])
+
+        # produce filt0 with home at xyz home and identity rotation
+        filt0_terms = []
+        home = np.concatenate([spec.cart_home, np.array([0.0, 1.0, 0.0, 0.0])])
+        filt_specs = [spec.xyzspec] * 3 + [spec.yspec] + [spec.tspec] * 3
+        for pos, filt_spec in zip(home, filt_specs):  # xyz
+            filt0_pos = siso.obs_x0(
+                A=filt_spec.A,
+                B=filt_spec.B,
+                C=filt_spec.C,
+                D=filt_spec.D,
+                y=np.ones(filt_spec.n_state) * pos,
+                u=np.ones(filt_spec.n_state) * pos,
+            )
+            filt0_terms.append(filt0_pos)
+        filt0 = jnp.concatenate(filt0_terms)
+
+        # need to initialize z-jerk carefully
+        vstate0_irl = jnp.zeros(v_num)
+        vstate0_sim = jnp.zeros(v_num)
+
+        def jerk0(val):
+            return siso.obs_x0(
+                A=spec.vspec_jerk.A,
+                B=spec.vspec_jerk.B,
+                C=spec.vspec_jerk.C,
+                D=spec.vspec_jerk.D,
+                y=np.zeros(spec.vspec_jerk.n_state),
+                u=np.ones(spec.vspec_jerk.n_state) * val,
             )
 
-        hstate0 = zeros(r_num)
-        hstate0 = hstate0.at[:3].add(robo_geom.cart_home)
+        jerk0_earth = jerk0(mpc_spec.gravity[-1])
+        jerk0_sim = jerk0(sim_acc_z)
+        n_acc = spec.vspec_acc.n_state
+        n_jerk = spec.vspec_jerk.n_state
+        idxs = slice(2 * n_acc, 2 * n_acc + n_jerk)
+        vstate0_irl = vstate0_irl.at[idxs].set(jerk0_earth)
+        vstate0_sim = vstate0_sim.at[idxs].set(jerk0_sim)
+
+        # misc
+        xyz_hist = jnp.tile(spec.cart_home.reshape(1, -1), reps=(2, 1))
+        yaw_hist = jnp.zeros((2,))
+        tilt_hist = jnp.tile(
+            jnp.array([1.0, 0.0, 0.0]).reshape(1, -1), reps=(2, 1)
+        )
+
+        x_pre = jnp.zeros((spec.n, spec.ctrlspec.n_state * 6))
+        y_pre = jnp.zeros((spec.n, 7))
+        x_xyz = jnp.zeros((spec.n, 3, spec.xyzspec.n_state))
+        y_xyz = jnp.zeros((spec.n, 3))
+        x_yaw = jnp.zeros((spec.n, spec.yspec.n_state))
+        u_yaw = jnp.zeros((spec.n,))
+        y_yaw = jnp.zeros((spec.n,))
+        x_tilt = jnp.zeros((spec.n, 3, spec.tspec.n_state))
+        y_tilt = jnp.transpose(
+            jnp.vstack([jnp.ones(spec.n)] + [jnp.zeros(spec.n)] * 2)
+        )  # identity
+        acc_head = jnp.zeros((spec.n, 3))
+        omega_head = jnp.zeros((spec.n, 3))
+        leg_pos = jnp.ones((spec.n, 6)) * mpc_spec._lengths_home
+        leg_vel = jnp.zeros((spec.n, 6))
+        leg_ang = jnp.zeros((spec.n, 12))
+        euler_ang = jnp.zeros((spec.n, 3))
+        yaw_dot = jnp.zeros((spec.n,))
+        x_vest_irl = jnp.zeros((spec.n, v_num))
+        y_vest_irl = jnp.zeros((spec.n, 6))
+        x_vest_sim = jnp.zeros((spec.n, v_num))
+        y_vest_sim = jnp.zeros((spec.n, 6))
 
         return cls(
-            hstate0=hstate0,
+            control=control,
+            prefilt0=prefilt0,
+            filt0=filt0,
             vstate0_irl=vstate0_irl,
             vstate0_sim=vstate0_sim,
-            control0=zeros(u_num),
-            control_flat=zeros(u_num * horizon_num),
+            xyz_hist=xyz_hist,
+            yaw_hist=yaw_hist,
+            tilt_hist=tilt_hist,
+            x_pre=x_pre,
+            y_pre=y_pre,
+            x_xyz=x_xyz,
+            y_xyz=y_xyz,
+            x_yaw=x_yaw,
+            u_yaw=u_yaw,
+            y_yaw=y_yaw,
+            x_tilt=x_tilt,
+            y_tilt=y_tilt,
+            acc_head=acc_head,
+            omega_head=omega_head,
+            leg_pos=leg_pos,
+            leg_vel=leg_vel,
+            leg_ang=leg_ang,
+            euler_ang=euler_ang,
+            yaw_dot=yaw_dot,
+            x_vest_irl=x_vest_irl,
+            y_vest_irl=y_vest_irl,
+            x_vest_sim=x_vest_sim,
+            y_vest_sim=y_vest_sim,
         )
 
 
 def lbfgs_cost(
-    weights: Weights,
-    cost_terms: CostTerms,
-    dt: jax.Array,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
-    robo_geom: robo.RoboGeom,
-    use_terminal: bool,
+    spec: mpc_spec.MPCSpec,
     args: tuple[TrainState, jax.Array, jax.Array],
-    control_flat: jax.Array,
+    control: jax.Array,
 ) -> jax.Array:
-    """L-BFGS wrapper of :func:`cost_flat_jax`.
+    """L-BFGS wrapper of :func:`cost`.
 
     Parameters
     ----------
-    weights :
-        Cost weights.
-    cost_terms :
-        Quartic boundary penalties.
-    dt :
-        Time step used by the MPC horizon.
-    vspec_acc :
-        Vestibular acceleration model specification.
-    vspec_omega :
-        Vestibular angular velocity model specification.
-    robo_geom :
-        Stewart platform geometry.
-    use_terminal :
-        Whether terminal costs are enabled.
+    spec :
+        MPC specification.
     args :
         Tuple ``(train_state, acc_ref, omega_ref)`` passed through L-BFGS.
         These are the arguments that change during each MPC control cycle.
-    control_flat :
-        Flattened control sequence being optimized.
+    control :
+        Control sequence being optimized.
 
     Returns
     -------
@@ -1276,185 +650,239 @@ def lbfgs_cost(
         Scalar MPC objective value.
     """
     train_state, acc_ref, omega_ref = args
-    return cost_flat_jax(
-        control_flat=control_flat,
-        hstate0=train_state.hstate0,
-        control0=train_state.control0,
+    return cost(
+        spec=spec,
+        control=control,
+        prefilt0=train_state.prefilt0,
+        filt0=train_state.filt0,
         vstate0_irl=train_state.vstate0_irl,
         vstate0_sim=train_state.vstate0_sim,
         acc_ref=acc_ref,
         omega_ref=omega_ref,
-        weights=weights,
-        cost_terms=cost_terms,
-        vspec_acc=vspec_acc,
-        vspec_omega=vspec_omega,
-        dt=dt,
-        robo_geom=robo_geom,
-        use_rotary=True,
-        use_terminal=use_terminal,
+        xyz_hist=train_state.xyz_hist,
+        yaw_hist=train_state.yaw_hist,
+        tilt_hist=train_state.tilt_hist,
     )
 
 
 lbfgs_cost_and_grad = jax.jit(
     jax.value_and_grad(lbfgs_cost, argnums=-1),
-    static_argnames=["vspec_acc", "vspec_omega", "robo_geom", "use_terminal"],
+    static_argnames=["spec"],
+)
+
+prefilt_u = jax.jit(utils.prefilt_u, static_argnames=["spec"])
+apply_u = jax.jit(utils.apply_u, static_argnames=["spec"])
+head_dynamics = jax.jit(utils.head_dynamics, static_argnames=["spec"])
+kinematics = jax.jit(utils.kinematics, static_argnames=["spec"])
+eigen_vstates = jax.jit(
+    utils.eigen_vstates, static_argnames=["spec", "return_eig_states"]
 )
 
 
-def train_step_with_cost_jax(
+def apply_control(
+    spec: mpc_spec.MPCSpec,
+    train_state: TrainState,
+    control: jax.Array,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    train_state: TrainState,
-    weights: Weights,
-    cost_terms: CostTerms,
-    dt: jax.Array,
-    dt_mpc: jax.Array,
-    robo_geom: robo.RoboGeom,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
-    vspec_acc_mpc: vest.VSpec,
-    vspec_omega_mpc: vest.VSpec,
-    max_iter: int = 16,
-    max_ls: int = 8,
-    unroll: bool = False,
-    use_terminal: bool = True,
-) -> tuple[TrainState, utils.TableSol, lbfgs_result]:
-    """Run one MPC control cycle with JAX L-BFGS.
+) -> TrainState:
+    """Apply control and references for new TrainState.
 
     Parameters
     ----------
-    acc_ref :
-        Reference linear acceleration trajectory.
-        Shape: ``(horizon_num, 3)``.
-    omega_ref :
-        Reference angular velocity trajectory.
-        Shape: ``(horizon_num, 3)``.
+    spec :
+        MPC specification.
     train_state :
         Current MPC state.
-    weights :
-        Cost weights.
-    cost_terms :
-        Quartic boundary penalties.
-    dt :
-        Robot control cycle.
-    dt_mpc :
-        Optimization horizon integration step.
-        We require ``dt_mpc >= dt``.
-    robo_geom :
-        Stewart platform geometry.
-    vspec_acc :
-        Vestibular acceleration model, with integration time step ``dt``.
-    vspec_omega :
-        Vestibular angular velocity model, with integration time step ``dt``.
-    vspec_acc_mpc :
-        Vestibular acceleration model, with integration time step ``dt_mpc``.
-    vspec_omega_mpc :
-        Vestibular angular velocity model, with integration time step
-        ``dt_mpc``.
-    max_iter :
-        Maximum L-BFGS iterations.
-    max_ls :
-        Maximum line search iterations per L-BFGS step.
-    unroll :
-        Whether to unroll L-BFGS loop (JAX control-flow choice).
-    use_terminal :
-        Whether to include terminal penalties.
+    control :
+        New control to apply.
+    acc_ref :
+        Reference linear acceleration trajectory.
+        Shape: `(horizon_num, 3)`.
+    omega_ref :
+        Reference angular velocity trajectory.
+        Shape: `(horizon_num, 3)`.
 
     Returns
     -------
     next_state :
         Updated MPC state.
-    table_sol :
-        MPC solution trajectory and statistics.
-    lbfgs_res :
-        L-BFGS optimizer tuple ``(minimizer, value, gradient)``.
     """
     ts = train_state
 
-    # compute
-    opt_fun = functools.partial(
-        lbfgs_cost_and_grad,
-        weights,
-        cost_terms,
-        dt_mpc,
-        vspec_acc_mpc,
-        vspec_omega_mpc,
-        robo_geom,
-        use_terminal,
+    # compute states
+    # (code is mostly duplicated from `cost`)
+    x_pre, y_pre = prefilt_u(
+        spec=spec,
+        u=control,
+        prefilt0=ts.prefilt0,
     )
-    opt_params = lbfgs.OptParamsLBFGS(
-        fun=opt_fun,
-        max_iter=max_iter,
-        max_ls=max_ls,
-        tol=1e-5,
-        c1=1e-4,
-        c2=0.9,
+    u_yaw = y_pre[:, 3]
+    x_xyz, y_xyz, x_yaw, y_yaw, x_tilt, y_tilt = apply_u(
+        spec=spec,
+        u=y_pre,
+        filt0=ts.filt0,
     )
-    res = lbfgs.lbfgs(
-        opt_params=opt_params,
-        x0=train_state.control_flat,
-        fun_params=(ts, acc_ref, omega_ref),
-        unroll=unroll,
+    acc_head, omega_head = head_dynamics(
+        spec=spec,
+        xyz=y_xyz,
+        yaw=y_yaw,
+        tilt=y_tilt,
+        xyz_hist=ts.xyz_hist,
+        yaw_hist=ts.yaw_hist,
+        tilt_hist=ts.tilt_hist,
     )
-
-    # convert to non-sim time
-    control_sim = utils.Control.from_flat(res[0])
-    control = control_sim.refine_control(dt_mpc, dt)
-    ctrl_refinement = functools.partial(utils.control_refinement, dt_mpc, dt)
-    acc_ref = ctrl_refinement(acc_ref)
-    omega_ref = ctrl_refinement(omega_ref)
-
-    # compute results
-    hstate = utils.get_hstate(dt, control, ts.hstate0)
-    vstate_irl = utils.get_vstate_irl(
-        vspec_acc,
-        vspec_omega,
-        hstate,
-        control,
-        ts.control0,
-        ts.vstate0_irl,
+    leg_pos, leg_vel, leg_ang, euler_ang, yaw_dot = kinematics(
+        spec=spec,
+        xyz=y_xyz,
+        tilt=y_tilt,
+        yaw=y_yaw,
+        xyz_hist=ts.xyz_hist,
+        tilt_hist=ts.tilt_hist,
+        yaw_hist=ts.yaw_hist,
     )
-    vstate_sim = utils.get_vstate(
-        vspec_acc, vspec_omega, acc_ref, omega_ref, ts.vstate0_sim
+    x_vest_irl, y_vest_irl = eigen_vstates(
+        spec=spec,
+        acc=acc_head,
+        omega=omega_head,
+        vstate0=ts.vstate0_irl,
+        return_eig_states=False,
+    )
+    x_vest_sim, y_vest_sim = eigen_vstates(
+        spec=spec,
+        acc=acc_ref,
+        omega=omega_ref,
+        vstate0=ts.vstate0_sim,
+        return_eig_states=False,
     )
 
     # bookkeeping
-    table_sol = utils.TableSol(
-        x=hstate,
-        u=control,
-        vstate_irl=vstate_irl,
-        vstate_sim=vstate_sim,
-        stats=utils.TableStats(
-            time=jnp.squeeze(0.0),
-            status=jnp.array(0),
-            cost=jnp.array(res[1]),
-        ),
+    prefilt0 = jnp.concatenate([x_pre[0], y_pre[0][-3:]])
+    filt0 = jnp.vstack(
+        [x_xyz[0], x_yaw[0].reshape(1, *x_yaw[0].shape), x_tilt[0]]
     )
     next_state = TrainState(
-        hstate0=hstate.state[1],
-        vstate0_irl=vstate_irl.x_state[0],  # NOT off-by-one
-        vstate0_sim=vstate_sim.x_state[1],
-        control0=res[0][:6],
-        control_flat=res[0],
+        control=control,
+        prefilt0=prefilt0,
+        filt0=jnp.ravel(filt0),
+        vstate0_irl=x_vest_irl[0],
+        vstate0_sim=x_vest_sim[0],
+        xyz_hist=jnp.vstack([ts.xyz_hist[-1], y_xyz[0]]),
+        yaw_hist=jnp.array([ts.yaw_hist[-1], y_yaw[0]]),
+        tilt_hist=jnp.vstack([ts.tilt_hist[-1], y_tilt[0]]),
+        x_pre=x_pre,
+        y_pre=y_pre,
+        x_xyz=x_xyz,
+        y_xyz=y_xyz,
+        x_yaw=x_yaw,
+        u_yaw=u_yaw,
+        y_yaw=y_yaw,
+        x_tilt=x_tilt,
+        y_tilt=y_tilt,
+        acc_head=acc_head,
+        omega_head=omega_head,
+        leg_pos=leg_pos,
+        leg_vel=leg_vel,
+        leg_ang=leg_ang,
+        euler_ang=euler_ang,
+        yaw_dot=yaw_dot,
+        x_vest_irl=x_vest_irl,
+        y_vest_irl=y_vest_irl,
+        x_vest_sim=x_vest_sim,
+        y_vest_sim=y_vest_sim,
     )
-    return next_state, table_sol, res
+    return next_state
+
+
+def train_step_with_cost_jax(
+    spec: mpc_spec.MPCSpec,
+    train_state: TrainState,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+    use_scipy: bool = False,
+) -> tuple[TrainState, lbfgs_result]:
+    """Run one MPC control cycle with JAX L-BFGS.
+
+    Parameters
+    ----------
+    spec :
+        MPC specification.
+    train_state :
+        Current MPC state.
+    acc_ref :
+        Reference linear acceleration trajectory.
+        Shape: `(horizon_num, 3)`.
+    omega_ref :
+        Reference angular velocity trajectory.
+        Shape: `(horizon_num, 3)`.
+
+    Returns
+    -------
+    next_state :
+        Updated MPC state.
+    lbfgs_res :
+        L-BFGS optimizer tuple `(minimizer, value, gradient)`.
+    """
+    ts = train_state
+
+    # update intial guess of solution
+    guess = ts.control.reshape(-1, 6)[1:]  # skip initial
+    guess_last = guess[-1]
+    guess = jnp.vstack([guess, guess_last.reshape(1, -1)])
+    guess_flat = jnp.ravel(guess)
+
+    # compute
+    if not use_scipy:
+        opt_fun = functools.partial(lbfgs_cost_and_grad, spec)
+        opt_params = lbfgs.OptParamsLBFGS(
+            fun=opt_fun,
+            max_iter=spec.max_iter,
+            max_ls=spec.max_ls,
+            init_norm=spec.init_norm,
+            debug=spec.debug,
+            unroll=spec.unroll,
+        )
+        res = lbfgs.lbfgs(
+            opt_params=opt_params,
+            x0=guess_flat,
+            fun_params=(ts, acc_ref, omega_ref),
+        )
+        opt_control = res[0]
+    else:
+        res_sci = sci_opt.minimize(
+            fun=functools.partial(
+                cost_and_grad,
+                spec,
+                prefilt0=ts.prefilt0,
+                filt0=ts.filt0,
+                vstate0_irl=ts.vstate0_irl,
+                vstate0_sim=ts.vstate0_sim,
+                acc_ref=acc_ref,
+                omega_ref=omega_ref,
+                xyz_hist=ts.xyz_hist,
+                yaw_hist=ts.yaw_hist,
+                tilt_hist=ts.tilt_hist,
+            ),
+            x0=guess_flat,
+            method="L-BFGS-B",
+            jac=True,
+            options={
+                "maxiter": spec.max_iter,
+                "maxls": spec.max_ls,
+            },
+        )
+        res = (res_sci.x, res_sci.fun, res_sci.jac)
+        opt_control = res[0]
+
+    next_state = apply_control(
+        spec, train_state, opt_control, acc_ref, omega_ref
+    )
+    return next_state, res
 
 
 train_step_with_cost_jit = jax.jit(
     train_step_with_cost_jax,
-    static_argnames=[
-        "dt",
-        "dt_mpc",
-        "vspec_acc",
-        "vspec_omega",
-        "vspec_acc_mpc",
-        "vspec_omega_mpc",
-        "robo_geom",
-        "max_iter",
-        "max_ls",
-        "unroll",
-        "use_terminal",
-    ],
+    static_argnames=["spec", "use_scipy"],
 )
 
 
@@ -1462,20 +890,9 @@ def train_step_with_cost(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     train_state: TrainState,
-    weights: Weights,
-    cost_terms: CostTerms,
-    dt: jax.Array,
-    dt_mpc: jax.Array,
-    robo_geom: robo.RoboGeom,
-    vspec_acc: vest.VSpec,
-    vspec_omega: vest.VSpec,
-    vspec_acc_mpc: vest.VSpec,
-    vspec_omega_mpc: vest.VSpec,
-    max_iter=16,
-    max_ls=8,
-    unroll: bool = False,
-    use_terminal: bool = True,
-) -> tuple[TrainState, utils.TableSol, lbfgs_result, float]:
+    spec: mpc_spec.MPCSpec,
+    use_scipy: bool = False,
+) -> tuple[TrainState, lbfgs_result, float]:
     """Run one MPC control cycle with JAX L-BFGS, and measure wall time.
 
     Parameters
@@ -1488,41 +905,13 @@ def train_step_with_cost(
         Shape: ``(horizon_num, 3)``.
     train_state :
         Current MPC state.
-    weights :
-        Cost weights.
-    cost_terms :
-        Quartic boundary penalties.
-    dt :
-        Robot control cycle.
-    dt_mpc :
-        Optimization horizon integration step.
-        We require ``dt_mpc >= dt``.
-    robo_geom :
-        Stewart platform geometry.
-    vspec_acc :
-        Vestibular acceleration model, with integration time step ``dt``.
-    vspec_omega :
-        Vestibular angular velocity model, with integration time step ``dt``.
-    vspec_acc_mpc :
-        Vestibular acceleration model, with integration time step ``dt_mpc``.
-    vspec_omega_mpc :
-        Vestibular angular velocity model, with integration time step
-        ``dt_mpc``.
-    max_iter :
-        Maximum L-BFGS iterations.
-    max_ls :
-        Maximum line search iterations per L-BFGS step.
-    unroll :
-        Whether to unroll L-BFGS loop (JAX control-flow choice).
-    use_terminal :
-        Whether to include terminal penalties.
+    spec :
+        MPC specification.
 
     Returns
     -------
     next_state :
         Updated MPC state.
-    table_sol :
-        MPC solution trajectory and statistics.
     lbfgs_res :
         L-BFGS optimizer tuple ``(minimizer, value, gradient)``.
     elapsed_time :
@@ -1530,24 +919,17 @@ def train_step_with_cost(
         :func:`train_step_with_cost_jax`.
     """
     t0 = time.time()
-    res = train_step_with_cost_jit(
-        weights=weights,
-        cost_terms=cost_terms,
+    if use_scipy:
+        train_step = train_step_with_cost_jax
+    else:
+        train_step = train_step_with_cost_jit
+    res = train_step(
         acc_ref=acc_ref,
         omega_ref=omega_ref,
         train_state=train_state,
-        dt=dt,
-        dt_mpc=dt_mpc,
-        vspec_acc=vspec_acc,
-        vspec_omega=vspec_omega,
-        vspec_acc_mpc=vspec_acc_mpc,
-        vspec_omega_mpc=vspec_omega_mpc,
-        robo_geom=robo_geom,
-        max_iter=max_iter,
-        max_ls=max_ls,
-        unroll=unroll,
-        use_terminal=use_terminal,
+        spec=spec,
+        use_scipy=use_scipy,
     )
-    res[0].control0.block_until_ready()
+    res[0].filt0.block_until_ready()
     t1 = time.time()
-    return res[0], res[1], res[2], t1 - t0
+    return res[0], res[1], t1 - t0
