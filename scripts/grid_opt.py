@@ -12,7 +12,6 @@ import jax.numpy as jnp
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import exp_mpc.stewart_min.const as const
 import exp_mpc.stewart_min.robo as robo
 import exp_mpc.stewart_min.vest as vest
 import exp_mpc.stewart_min.utils as utils
@@ -124,47 +123,50 @@ def single_sms(args: tuple) -> None:
     euler_margins = [0.2 / 3.0, 0.1 / 3.0]
     euler_sizes = [2**0, 2**3, 2**8]
 
+    params = robo.RoboParams()
+    geom = robo.RoboGeom()
+
     leg_cost = quartic_cost.QuarticCost.from_bounds(
         margins=[0.3, 0.2, 0.1],
         sizes=[1.0, 2**3, 2**5, 2**10],
-        low=const.leg_min,
-        high=const.leg_max,
+        low=params.leg_min,
+        high=params.leg_max,
     )
     leg_vel_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
         sizes=sizes,
-        low=-const.max_leg_vel,
-        high=const.max_leg_vel,
+        low=-params.max_leg_vel,
+        high=params.max_leg_vel,
     )
     joint_angle_cost = quartic_cost.QuarticCost.from_bounds(
         margins=margins,
         sizes=sizes,
-        low=-const.joint_max_angle,
-        high=const.joint_max_angle,
+        low=-params.joint_max_angle,
+        high=params.joint_max_angle,
     )
     roll_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_roll,
-        high=const.max_roll,
+        low=-params.max_roll,
+        high=params.max_roll,
     )
     pitch_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_pitch,
-        high=const.max_pitch,
+        low=-params.max_pitch,
+        high=params.max_pitch,
     )
     yaw_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_rotary_yaw,
-        high=const.max_rotary_yaw,
+        low=-params.max_rotary_yaw,
+        high=params.max_rotary_yaw,
     )
     yaw_dot_cost = quartic_cost.QuarticCost.from_bounds(
         margins=euler_margins,
         sizes=euler_sizes,
-        low=-const.max_rotary_vel,
-        high=const.max_rotary_vel,
+        low=-params.max_rotary_vel,
+        high=params.max_rotary_vel,
     )
     cost_terms = opt.CostTerms(
         leg_cost=leg_cost,
@@ -176,8 +178,8 @@ def single_sms(args: tuple) -> None:
         yaw_dot_cost=yaw_dot_cost,
     )
 
-    dt = const.dt
-    dt_mpc = const.dt * 2.0
+    dt = params.dt
+    dt_mpc = params.dt_mpc
     tf_acc = vest.spec_refs["acc0"][0]
     tf_omega = vest.spec_refs["omega0"][0]
     vspec_acc = vest.VSpec.transfer2vspec(tf_acc, dt=dt, earth_moon_v0=True)
@@ -186,18 +188,19 @@ def single_sms(args: tuple) -> None:
         tf_acc, dt=dt_mpc, earth_moon_v0=True
     )
     vspec_omega_mpc = vest.VSpec.transfer2vspec(tf_omega, dt=dt_mpc)
-
     train_step = functools.partial(
         opt.train_step_with_cost,
-        weights,
-        cost_terms,
+        weights=weights,
+        cost_terms=cost_terms,
         dt=dt,
         dt_mpc=dt_mpc,
-        opt_options={"maxiter": 3, "maxls": 1},
+        robo_geom=geom,
         vspec_acc=vspec_acc,
         vspec_omega=vspec_omega,
         vspec_acc_mpc=vspec_acc_mpc,
         vspec_omega_mpc=vspec_omega_mpc,
+        max_iter=3,
+        max_ls=1,
         unroll=False,
         use_terminal=True,
     )
@@ -207,6 +210,7 @@ def single_sms(args: tuple) -> None:
     #######
 
     train_state = opt.TrainState.zero_init(
+        robo_geom=geom,
         horizon_num=n,
         vspec_acc=vspec_acc,
         vspec_omega=vspec_omega,
