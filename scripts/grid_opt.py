@@ -4,6 +4,7 @@ import random
 import itertools
 import functools
 import pickle
+import os
 import multiprocessing as mp
 
 import numpy as np
@@ -91,8 +92,8 @@ def single_sms(args: tuple) -> None:
     # setup #
     #########
 
-    assert len(args) == 3
-    index, grid, path = args
+    assert len(args) == 4
+    index, grid, path, ref_file_path = args
     print(f"start: {index}\ngrid: {grid}\n")
 
     assert len(grid) == 5
@@ -102,7 +103,6 @@ def single_sms(args: tuple) -> None:
     alpha_omega = grid[3]
     n = grid[4]  # horizon_num
 
-    ref_file_path = "/Users/jozbee/work/eng/comp/data/sms_00_sms_drive.csv"
     acc_ref, omega_ref = load_specific_sms_references(ref_file_path)
     assert acc_ref.shape[0] == omega_ref.shape[0]
     assert acc_ref.shape[1] == 3
@@ -322,34 +322,40 @@ def single_sms(args: tuple) -> None:
 if __name__ == "__main__":
     random.seed(42)
 
-    exp_scale = [1e2, 2e2, 3e2, 4e2]
-    alpha_scale = [0.0, 1.0, 2.0, 4.0]
+    ##########
+    # params #
+    ##########
 
-    acc_grid = [[1e2, 1e2, 1e0]]
-    omega_grid = [[s, s, s] for s in exp_scale]
-    alpha_acc_grid = alpha_scale.copy()
-    alpha_omega_grid = alpha_scale.copy()
-    horizon_grid = [200]
+    file_name = "../data/sms_00_sms_drive.csv"
+    save_dir = "./grid_data"
+
+    acc_grid = [
+        [1e2, 1e2, 1e0],  # x, y, z acc weights
+    ]
+    omega_grid = [
+        [1e2, 1e2, 1e2],  # x, y, z, ang vel weights
+        [2e2, 2e2, 2e2],
+        [3e2, 3e2, 3e2],
+        [4e2, 4e2, 4e2],
+    ]
+    alpha_acc_grid = [0.0, 1.0, 2.0, 4.0]  # exponential decay factor, acc
+    alpha_omega_grid = [0.0, 1.0, 2.0, 4.0]  # exponential decay factor, ang vel
+    horizon_grid = [200]  # num horizon
+
+    #######
+    # run #
+    #######
+
+    os.makedirs(save_dir, exist_ok=True)
 
     grid_terms = [acc_grid, omega_grid]
     grid_terms.extend([alpha_acc_grid, alpha_omega_grid, horizon_grid])
     grid = list(itertools.product(*grid_terms))
     random.shuffle(grid)  # in-place shuffle
 
-    args = [(i, grid[i], "./grid_data") for i in range(len(grid))]
+    args = [(i, grid[i], save_dir, file_name) for i in range(len(grid))]
 
-    start_index = 0
     cpu_count = mp.cpu_count() // 2 + 2  # == 10
-    tot = len(args)
-    part_size = tot // cpu_count
-    assert start_index < part_size
-
-    if start_index != 0:
-        tmps = [
-            args[part_size * i : part_size * (i + 1)] for i in range(cpu_count)
-        ]
-        tmps = [tmp[start_index:] for tmp in tmps]
-        args = list(itertools.chain(*tmps))
-
-    with mp.Pool(processes=cpu_count) as p:
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=cpu_count) as p:
         p.map(single_sms, args)
