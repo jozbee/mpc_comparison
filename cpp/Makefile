@@ -9,8 +9,8 @@ all: mpc_example
 
 clean: mpc_example_clean
 
-PIP?=pip
-PYTHON?=python
+PIP?=pip3.12
+PYTHON?=python3.12
 PIP_LIST:= $(shell $(PIP) list)
 
 ###############
