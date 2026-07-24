@@ -136,7 +136,7 @@ def single_sms(args: tuple) -> None:
     # run #
     #######
 
-    train_state = opt.TrainState.zero_init(spec, n, acc_ref[0, 3])
+    train_state = opt.TrainState.zero_init(spec, acc_ref[0, 3])
     train_list = []
     times = []
     res_list = []
