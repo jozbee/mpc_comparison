@@ -103,17 +103,18 @@ Namely, this does not exist for triple exponential filters of the form
 """
 
 from __future__ import annotations
+
 import dataclasses
-import warnings
 import functools
-import numpy as np
-import scipy.linalg as sci_lin
+import warnings
+
 import control as ct
 import jax
 import jax.numpy as jnp
+import numpy as np
+import scipy.linalg as sci_lin
 
-import exp_mpc.stewart_min.comp as comp
-
+from exp_mpc.stewart_min import comp
 
 ##################
 # linear algebra #
@@ -217,14 +218,14 @@ def obs_x0(
     # `
     # The following code is valid for general `n`.
 
-    O = np.vstack([C @ mpow(A, i) for i in range(n)])  # noqa: E741
+    O = np.vstack([C @ mpow(A, i) for i in range(n)])
 
     def U_fun(i, j):
         if i == 0 and j == 0:
             return squee(D)
-        elif i == 0 and j != 0:
+        elif i == 0 and j != 0:  # noqa: SIM114
             return 0.0
-        elif i != 0 and j == 0:
+        elif i != 0 and j == 0:  # noqa: SIM114
             return 0.0
         elif j > i:
             return 0.0
@@ -502,7 +503,7 @@ def vec_tilt_quat_lti_int(
     return x, t
 
 
-def tilt_quat_lti_int(
+def quat_lti_int(
     A: jax.Array,
     B: jax.Array,
     C: jax.Array,
@@ -510,14 +511,10 @@ def tilt_quat_lti_int(
     x0: jax.Array,
     u: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    r"""Tilt quaternion SISO LTI integration scheme.
+    r"""Unit quaternion SISO LTI integration scheme.
 
     We use the usual componentwise LTI integration scheme, except at each step,
     the output is normalized to be of unit length.
-    The scheme assumes that we are integrating tilt quaternions, i.e.,
-    quaternions without a z-component, i.e.,
-    :math:`t = a + b \, i + c \, j + 0 \, k`.
-    So, all arithmetic assumes 3-vectors.
 
     Parameters
     ----------
@@ -530,7 +527,7 @@ def tilt_quat_lti_int(
     D :
         :math:`y = C \, x + D \, u`.
     x0 :
-        Initial states for all tilt quaternion components.
+        Initial states for all quaternion components.
     u :
         Control variables.
 
@@ -539,13 +536,13 @@ def tilt_quat_lti_int(
     x :
         Internal states.
     q :
-        Filtered tilt quaternion states.
+        Filtered unit quaternion states.
     """
     B = jnp.ravel(B).reshape(-1, 1)
     C = jnp.ravel(C)
     D = jnp.ravel(D)
-    assert x0.shape == (3 * A.shape[0],)
-    x0 = x0.reshape(3, -1)
+    assert x0.shape == (4 * A.shape[0],)
+    x0 = x0.reshape(4, -1)
 
     def quat_update(x0, u):
         u = u.reshape(1, -1)
@@ -596,7 +593,7 @@ class DiscreteSISO:
         transfer: ct.TransferFunction,
         dt: float,
         method: str = "zoh",
-    ) -> "DiscreteSISO":
+    ) -> DiscreteSISO:
         """Compute a discretized SISO statspace system from a transfer function.
 
         Parameters
@@ -660,7 +657,7 @@ class DiscreteEigSISO(DiscreteSISO):
         cls,
         transfer: ct.TransferFunction,
         dt: float,
-    ) -> "DiscreteEigSISO":
+    ) -> DiscreteEigSISO:
         """Compute a discretized SISO statspace system from a transfer function.
 
         Parameters

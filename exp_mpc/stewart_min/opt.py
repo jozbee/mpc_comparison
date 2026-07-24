@@ -67,23 +67,21 @@ The L-BFGS algorithm is implemented in a separate library.
 """
 
 from __future__ import annotations
+
 import dataclasses
 import functools
 import time
-import typing as tp
-import numpy as np
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import scipy.optimize as sci_opt
+from lbfgs import lbfgs
 
-import exp_mpc.stewart_min.siso as siso
-import exp_mpc.stewart_min.mpc_spec as mpc_spec
-import exp_mpc.stewart_min.utils as utils
-
-import lbfgs.lbfgs as lbfgs
+from exp_mpc.stewart_min import mpc_spec, siso, utils
 
 # lbfgs_res = (minimizer, value, gradient)
-lbfgs_result: tp.TypeAlias = tuple[jax.Array, jax.Array, jax.Array]
+type LBFGSResult = tuple[jax.Array, jax.Array, jax.Array]
 
 # make sure to enable 64-bit precision for jax
 # this is necessary for good performance
@@ -116,6 +114,7 @@ def _ik_cost(
     leg_pos: jax.Array,
     leg_vel: jax.Array,
     leg_ang: jax.Array,
+    leg_pos_estop: jax.Array,
 ) -> jax.Array:
     n = leg_pos.shape[0]
 
@@ -126,15 +125,18 @@ def _ik_cost(
     leg_pos_quart = leg_pos_fun(leg_pos.flatten()).reshape(-1, 6)
     leg_vel_quart = leg_vel_fun(leg_vel.flatten()).reshape(-1, 6)
     leg_ang_quart = leg_ang_fun(leg_ang.flatten()).reshape(-1, 12)
-
-    leg_pos_cost = leg_pos_quart * spec.weights.scale_leg_pos(n)
-    leg_vel_cost = leg_vel_quart * spec.weights.scale_leg_vel(n)
-    leg_ang_cost = leg_ang_quart * spec.weights.scale_leg_ang(n)
+    leg_pos_estop_quart = leg_pos_fun(leg_pos_estop.flatten()).reshape(-1, 6)
 
     def mean(x):
         return jnp.sum(jnp.mean(x, axis=0))
 
-    return mean(leg_pos_cost) + mean(leg_vel_cost) + mean(leg_ang_cost)
+    leg_pos_cost = mean(leg_pos_quart * spec.weights.scale_leg_pos(n))
+    leg_vel_cost = mean(leg_vel_quart * spec.weights.scale_leg_vel(n))
+    leg_ang_cost = mean(leg_ang_quart * spec.weights.scale_leg_ang(n))
+    leg_pos_estop_cost = mean(
+        leg_pos_estop_quart * spec.weights.scale_leg_pos(n)
+    )
+    return leg_pos_cost + leg_vel_cost + leg_ang_cost + leg_pos_estop_cost
 
 
 def _euler_cost(
@@ -180,7 +182,7 @@ def _terminal_cost(
     y_vest_sim: jax.Array,
     xyz: jax.Array,
     yaw: jax.Array,
-    tilt: jax.Array,
+    quat: jax.Array,
 ) -> jax.Array:
     if not spec.use_terminal:
         return 0.0
@@ -197,8 +199,8 @@ def _terminal_cost(
     )
     scale = jnp.exp(-spec.weights.terminal_exp_scale * _ssum(ref))
 
-    cart_last = jnp.concatenate([xyz[-1], jnp.atleast_1d(yaw[-1]), tilt[-1]])
-    ang_home = jnp.array([0.0, 1.0, 0.0, 0.0])
+    cart_last = jnp.concatenate([xyz[-1], jnp.atleast_1d(yaw[-1]), quat[-1]])
+    ang_home = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0])
     cart_home = jnp.concatenate([spec.cart_home, ang_home])
 
     rt_cost = _ssum(cart_last - cart_home)
@@ -217,7 +219,7 @@ def cost(
     omega_ref: jax.Array,
     xyz_hist: jax.Array,
     yaw_hist: jax.Array,
-    tilt_hist: jax.Array,
+    quat_hist: jax.Array,
 ) -> jax.Array:
     """Evaluate MPC objective from a control trajectory.
 
@@ -227,7 +229,7 @@ def cost(
         MPC specification.
     control :
         Flattened control sequence with ordering
-        `[x, y, z, yaw, tilt0, tilt1, tilt2]` per time step.
+        `[x, y, z, yaw, tilt0, tilt1]` per time step.
     prefilt0 :
         Initial states for prefilter.
     filt0 :
@@ -244,8 +246,8 @@ def cost(
         Previous two linear positions of robot.
     yaw_hist :
         Previous two yaw positions of robot.
-    tilt_hist :
-        Previous two tilt quaternions of robot.
+    quat_hist :
+        Previous two unit quaternions of robot.
 
     Returns
     -------
@@ -253,13 +255,13 @@ def cost(
         Scalar MPC objective value.
     """
     # compute states
-    x_pre, y_pre = utils.prefilt_u(
+    _, y_pre = utils.prefilt_u(
         spec=spec,
         u=control,
         prefilt0=prefilt0,
     )
     u_yaw = y_pre[:, 3]
-    x_xyz, y_xyz, x_yaw, y_yaw, x_tilt, y_tilt = utils.apply_u(
+    _, y_xyz, _, y_yaw, _, y_quat = utils.apply_u(
         spec=spec,
         u=y_pre,
         filt0=filt0,
@@ -268,28 +270,30 @@ def cost(
         spec=spec,
         xyz=y_xyz,
         yaw=y_yaw,
-        tilt=y_tilt,
+        quat=y_quat,
         xyz_hist=xyz_hist,
         yaw_hist=yaw_hist,
-        tilt_hist=tilt_hist,
+        quat_hist=quat_hist,
     )
-    leg_pos, leg_vel, leg_ang, euler_ang, yaw_dot = utils.kinematics(
-        spec=spec,
-        xyz=y_xyz,
-        tilt=y_tilt,
-        yaw=y_yaw,
-        xyz_hist=xyz_hist,
-        tilt_hist=tilt_hist,
-        yaw_hist=yaw_hist,
+    leg_pos, leg_vel, leg_ang, leg_pos_estop, euler_ang, yaw_dot = (
+        utils.kinematics(
+            spec=spec,
+            xyz=y_xyz,
+            quat=y_quat,
+            yaw=y_yaw,
+            xyz_hist=xyz_hist,
+            quat_hist=quat_hist,
+            yaw_hist=yaw_hist,
+        )
     )
-    x_vest_irl, y_vest_irl = utils.eigen_vstates(
+    _, y_vest_irl = utils.eigen_vstates(
         spec=spec,
         acc=acc_head,
         omega=omega_head,
         vstate0=vstate0_irl,
         return_eig_states=True,
     )
-    x_vest_sim, y_vest_sim = utils.eigen_vstates(
+    _, y_vest_sim = utils.eigen_vstates(
         spec=spec,
         acc=acc_ref,
         omega=omega_ref,
@@ -299,11 +303,11 @@ def cost(
 
     # cost
     cost_head = _head_cost(spec, y_vest_irl, y_vest_sim)
-    cost_ik = _ik_cost(spec, leg_pos, leg_vel, leg_ang)
+    cost_ik = _ik_cost(spec, leg_pos, leg_vel, leg_ang, leg_pos_estop)
     cost_euler = _euler_cost(spec, euler_ang, y_yaw, yaw_dot, u_yaw)
     cost_control = _control_cost(spec, control)
     cost_term = _terminal_cost(
-        spec, acc_ref, omega_ref, y_vest_sim, y_xyz, y_yaw, y_tilt
+        spec, acc_ref, omega_ref, y_vest_sim, y_xyz, y_yaw, y_quat
     )
     return cost_head + cost_ik + cost_euler + cost_control + cost_term
 
@@ -320,7 +324,7 @@ def cost_and_grad(
     omega_ref: jax.Array,
     xyz_hist: jax.Array,
     yaw_hist: jax.Array,
-    tilt_hist: jax.Array,
+    quat_hist: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     """Evaluate MPC objective and gradient for flattened controls.
 
@@ -347,8 +351,8 @@ def cost_and_grad(
         Previous two linear positions of robot.
     yaw_hist :
         Previous two yaw positions of robot.
-    tilt_hist :
-        Previous two tilt quaternions of robot.
+    quat_hist :
+        Previous two unit quaternions of robot.
 
     Returns
     -------
@@ -369,7 +373,7 @@ def cost_and_grad(
         omega_ref,
         xyz_hist,
         yaw_hist,
-        tilt_hist,
+        quat_hist,
     )
 
 
@@ -395,7 +399,7 @@ class TrainState:
         (Last optimization solution.)
     prefilt0 :
         Initial state for control pre-filtering.
-        Includes initial tilt quaternion (for pre-filting control).
+        Includes initial unit quaternion (for pre-filting control).
     filt0 :
         Initial state for robot filters.
     vstate0_irl :
@@ -406,8 +410,8 @@ class TrainState:
         Previous two linear positions of robot.
     yaw_hist :
         Previous two yaw positions of robot.
-    tilt_hist :
-        Previous two tilt quaternions of robot.
+    quat_hist :
+        Previous two unit quaternions of robot.
     x_pre :
         Internal states for control prefilter.
     y_pre :
@@ -422,10 +426,10 @@ class TrainState:
         Acutal (nondiff) controls for robot yaw angle.
     y_yaw :
         Observed states for robot yaw angle.
-    x_tilt :
-        Internal states for robot tilt.
-    y_tilt :
-        Observed states for robot tilt.
+    x_quat :
+        Internal states for robot quaternion.
+    y_quat :
+        Observed states for robot quaternion.
     acc_head :
         Linear acceleration of head frame.
     omega_head :
@@ -436,6 +440,8 @@ class TrainState:
         Leg velocities from kinematics.
     leg_ang :
         Leg angles from kinematics.
+    leg_pos_estop :
+        Leg position after estop.
     euler_ang :
         Euler angles from kinematics.
     yaw_dot :
@@ -458,7 +464,7 @@ class TrainState:
     vstate0_sim: jax.Array
     xyz_hist: jax.Array
     yaw_hist: jax.Array
-    tilt_hist: jax.Array
+    quat_hist: jax.Array
 
     # extra info
     x_pre: jax.Array
@@ -468,13 +474,14 @@ class TrainState:
     x_yaw: jax.Array
     u_yaw: jax.Array
     y_yaw: jax.Array
-    x_tilt: jax.Array
-    y_tilt: jax.Array
+    x_quat: jax.Array
+    y_quat: jax.Array
     acc_head: jax.Array
     omega_head: jax.Array
     leg_pos: jax.Array
     leg_vel: jax.Array
     leg_ang: jax.Array
+    leg_pos_estop: jax.Array
     euler_ang: jax.Array
     yaw_dot: jax.Array
     x_vest_irl: jax.Array
@@ -487,7 +494,7 @@ class TrainState:
         cls,
         spec: mpc_spec.MPCSpec,
         sim_acc_z: float = 9.81,
-    ) -> "TrainState":
+    ) -> TrainState:
         """Init train state with zeros.
 
         Parameters
@@ -529,8 +536,10 @@ class TrainState:
 
         # produce filt0 with home at xyz home and identity rotation
         filt0_terms = []
-        home = np.concatenate([spec.cart_home, np.array([0.0, 1.0, 0.0, 0.0])])
-        filt_specs = [spec.xyzspec] * 3 + [spec.yspec] + [spec.tspec] * 3
+        home = np.concatenate(
+            [spec.cart_home, np.array([0.0, 1.0, 0.0, 0.0, 0.0])]
+        )
+        filt_specs = [spec.xyzspec] * 3 + [spec.yspec] + [spec.qspec] * 4
         for pos, filt_spec in zip(home, filt_specs):  # xyz
             filt0_pos = siso.obs_x0(
                 A=filt_spec.A,
@@ -568,8 +577,8 @@ class TrainState:
         # misc
         xyz_hist = jnp.tile(spec.cart_home.reshape(1, -1), reps=(2, 1))
         yaw_hist = jnp.zeros((2,))
-        tilt_hist = jnp.tile(
-            jnp.array([1.0, 0.0, 0.0]).reshape(1, -1), reps=(2, 1)
+        quat_hist = jnp.tile(
+            jnp.array([1.0, 0.0, 0.0, 0.0]).reshape(1, -1), reps=(2, 1)
         )
 
         x_pre = jnp.zeros((spec.n, spec.ctrlspec.n_state * 6))
@@ -579,15 +588,18 @@ class TrainState:
         x_yaw = jnp.zeros((spec.n, spec.yspec.n_state))
         u_yaw = jnp.zeros((spec.n,))
         y_yaw = jnp.zeros((spec.n,))
-        x_tilt = jnp.zeros((spec.n, 3, spec.tspec.n_state))
-        y_tilt = jnp.transpose(
-            jnp.vstack([jnp.ones(spec.n)] + [jnp.zeros(spec.n)] * 2)
+        x_quat = jnp.zeros((spec.n, 4, spec.qspec.n_state))
+        y_quat = jnp.transpose(
+            jnp.vstack([jnp.ones(spec.n)] + [jnp.zeros(spec.n)] * 3)
         )  # identity
         acc_head = jnp.zeros((spec.n, 3))
         omega_head = jnp.zeros((spec.n, 3))
         leg_pos = jnp.ones((spec.n, 6)) * mpc_spec._lengths_home
         leg_vel = jnp.zeros((spec.n, 6))
         leg_ang = jnp.zeros((spec.n, 12))
+        leg_pos_estop = jnp.ones((spec.n, 6)) * (
+            mpc_spec._lengths_home - 0.0126538
+        )
         euler_ang = jnp.zeros((spec.n, 3))
         yaw_dot = jnp.zeros((spec.n,))
         x_vest_irl = jnp.zeros((spec.n, v_num))
@@ -603,7 +615,7 @@ class TrainState:
             vstate0_sim=vstate0_sim,
             xyz_hist=xyz_hist,
             yaw_hist=yaw_hist,
-            tilt_hist=tilt_hist,
+            quat_hist=quat_hist,
             x_pre=x_pre,
             y_pre=y_pre,
             x_xyz=x_xyz,
@@ -611,13 +623,14 @@ class TrainState:
             x_yaw=x_yaw,
             u_yaw=u_yaw,
             y_yaw=y_yaw,
-            x_tilt=x_tilt,
-            y_tilt=y_tilt,
+            x_quat=x_quat,
+            y_quat=y_quat,
             acc_head=acc_head,
             omega_head=omega_head,
             leg_pos=leg_pos,
             leg_vel=leg_vel,
             leg_ang=leg_ang,
+            leg_pos_estop=leg_pos_estop,
             euler_ang=euler_ang,
             yaw_dot=yaw_dot,
             x_vest_irl=x_vest_irl,
@@ -661,7 +674,7 @@ def lbfgs_cost(
         omega_ref=omega_ref,
         xyz_hist=train_state.xyz_hist,
         yaw_hist=train_state.yaw_hist,
-        tilt_hist=train_state.tilt_hist,
+        quat_hist=train_state.quat_hist,
     )
 
 
@@ -718,7 +731,7 @@ def apply_control(
         prefilt0=ts.prefilt0,
     )
     u_yaw = y_pre[:, 3]
-    x_xyz, y_xyz, x_yaw, y_yaw, x_tilt, y_tilt = apply_u(
+    x_xyz, y_xyz, x_yaw, y_yaw, x_quat, y_quat = apply_u(
         spec=spec,
         u=y_pre,
         filt0=ts.filt0,
@@ -727,18 +740,18 @@ def apply_control(
         spec=spec,
         xyz=y_xyz,
         yaw=y_yaw,
-        tilt=y_tilt,
+        quat=y_quat,
         xyz_hist=ts.xyz_hist,
         yaw_hist=ts.yaw_hist,
-        tilt_hist=ts.tilt_hist,
+        quat_hist=ts.quat_hist,
     )
-    leg_pos, leg_vel, leg_ang, euler_ang, yaw_dot = kinematics(
+    leg_pos, leg_vel, leg_ang, leg_pos_estop, euler_ang, yaw_dot = kinematics(
         spec=spec,
         xyz=y_xyz,
-        tilt=y_tilt,
+        quat=y_quat,
         yaw=y_yaw,
         xyz_hist=ts.xyz_hist,
-        tilt_hist=ts.tilt_hist,
+        quat_hist=ts.quat_hist,
         yaw_hist=ts.yaw_hist,
     )
     x_vest_irl, y_vest_irl = eigen_vstates(
@@ -759,7 +772,7 @@ def apply_control(
     # bookkeeping
     prefilt0 = jnp.concatenate([x_pre[0], y_pre[0][-3:]])
     filt0 = jnp.vstack(
-        [x_xyz[0], x_yaw[0].reshape(1, *x_yaw[0].shape), x_tilt[0]]
+        [x_xyz[0], x_yaw[0].reshape(1, *x_yaw[0].shape), x_quat[0]]
     )
     next_state = TrainState(
         control=control,
@@ -769,7 +782,7 @@ def apply_control(
         vstate0_sim=x_vest_sim[0],
         xyz_hist=jnp.vstack([ts.xyz_hist[-1], y_xyz[0]]),
         yaw_hist=jnp.array([ts.yaw_hist[-1], y_yaw[0]]),
-        tilt_hist=jnp.vstack([ts.tilt_hist[-1], y_tilt[0]]),
+        quat_hist=jnp.vstack([ts.quat_hist[-1], y_quat[0]]),
         x_pre=x_pre,
         y_pre=y_pre,
         x_xyz=x_xyz,
@@ -777,13 +790,14 @@ def apply_control(
         x_yaw=x_yaw,
         u_yaw=u_yaw,
         y_yaw=y_yaw,
-        x_tilt=x_tilt,
-        y_tilt=y_tilt,
+        x_quat=x_quat,
+        y_quat=y_quat,
         acc_head=acc_head,
         omega_head=omega_head,
         leg_pos=leg_pos,
         leg_vel=leg_vel,
         leg_ang=leg_ang,
+        leg_pos_estop=leg_pos_estop,
         euler_ang=euler_ang,
         yaw_dot=yaw_dot,
         x_vest_irl=x_vest_irl,
@@ -800,7 +814,7 @@ def train_step_with_cost_jax(
     acc_ref: jax.Array,
     omega_ref: jax.Array,
     use_scipy: bool = False,
-) -> tuple[TrainState, lbfgs_result]:
+) -> tuple[TrainState, LBFGSResult]:
     """Run one MPC control cycle with JAX L-BFGS.
 
     Parameters
@@ -861,7 +875,7 @@ def train_step_with_cost_jax(
                 omega_ref=omega_ref,
                 xyz_hist=ts.xyz_hist,
                 yaw_hist=ts.yaw_hist,
-                tilt_hist=ts.tilt_hist,
+                quat_hist=ts.quat_hist,
             ),
             x0=guess_flat,
             method="L-BFGS-B",
@@ -892,7 +906,7 @@ def train_step_with_cost(
     train_state: TrainState,
     spec: mpc_spec.MPCSpec,
     use_scipy: bool = False,
-) -> tuple[TrainState, lbfgs_result, float]:
+) -> tuple[TrainState, LBFGSResult, float]:
     """Run one MPC control cycle with JAX L-BFGS, and measure wall time.
 
     Parameters

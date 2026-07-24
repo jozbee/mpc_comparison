@@ -35,12 +35,13 @@ int main() {
       0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00,
       0.00000000e+00, 0.00000000e+00, 1.00000000e+00, 0.00000000e+00,
       0.00000000e+00};
-  std::vector<double> filt0 = {0.0, 0.0, 0.00795775, 0.0, 0.07957747, 0.0, 0.0};
+  std::vector<double> filt0 = {0.0,        0.0, 0.00795775, 0.0,
+                               0.07957747, 0.0, 0.0,        0.0};
   std::vector<double> vstate0_irl = earth_vstate0;
   std::vector<double> vstate0_sim = earth_vstate0;
   std::vector<double> xyz_hist = {0.0, 0.0, 0.1, 0.0, 0.0, 0.1};
   std::vector<double> yaw_hist = {0.0, 0.0};
-  std::vector<double> tilt_hist = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+  std::vector<double> quat_hist = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0};
   std::vector<double> last_control(200 * 6, 0.0);
 
   // results
@@ -87,8 +88,8 @@ int main() {
   std::shared_ptr<pjrt::Buffer> yaw_hist_buff =
       pjrt::Buffer::to_device_blocking(yaw_hist.data(), yaw_hist.size(), client,
                                        device);
-  std::shared_ptr<pjrt::Buffer> tilt_hist_buff =
-      pjrt::Buffer::to_device_blocking(tilt_hist.data(), tilt_hist.size(),
+  std::shared_ptr<pjrt::Buffer> quat_hist_buff =
+      pjrt::Buffer::to_device_blocking(quat_hist.data(), quat_hist.size(),
                                        client, device);
   std::shared_ptr<pjrt::Buffer> last_control_buff =
       pjrt::Buffer::to_device_blocking(last_control.data(), last_control.size(),
@@ -96,7 +97,7 @@ int main() {
   std::vector<std::shared_ptr<pjrt::Buffer>> input_buffers = {
       acc_ref_buff,     omega_ref_buff,   prefilt0_buff, filt0_buff,
       vstate0_irl_buff, vstate0_sim_buff, xyz_hist_buff, yaw_hist_buff,
-      tilt_hist_buff,   last_control_buff};
+      quat_hist_buff,   last_control_buff};
 
   // random input timing
   std::vector<double> timings(num_samples);

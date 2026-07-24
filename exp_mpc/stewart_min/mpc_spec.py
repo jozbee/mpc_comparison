@@ -4,15 +4,15 @@ Many defaults are defined here for testing.
 """
 
 from __future__ import annotations
+
 import dataclasses
-import typing as tp
-import numpy as np
+
 import control as ct
 import jax
 import jax.numpy as jnp
+import numpy as np
 
-import exp_mpc.stewart_min.siso as siso
-import exp_mpc.stewart_min.quartic_cost as quartic_cost
+from exp_mpc.stewart_min import quartic_cost, siso
 
 jax.config.update("jax_enable_x64", True)
 
@@ -86,6 +86,14 @@ _top_normals /= np.linalg.norm(_top_normals, axis=1)[:, np.newaxis]
 _cart_home = np.array([0.0, 0.0, 0.1])  # home cartesian translation
 _tops_home = np.array([top + _cart_home for top in _tops])
 _lengths_home = float(np.mean(np.linalg.norm(_tops_home - _bots, axis=1)))
+
+# safety info
+# see the MPCSpec notes for notation
+_r_0 = np.array([0.0, 0.0, 0.0])
+_m_t = 1500
+_m_r = 11.9 * 1e-3 * (2 * np.pi / 0.01) ** 2
+_t_e = 0.18
+_a_b = 20 / (11.9 * 1e-3) / (2 * np.pi) * 0.01
 
 # vspec ref defs
 # dt = 0.005
@@ -610,6 +618,16 @@ class MPCSpec:
         Scalar of the (average) leg lengths in the home configuration.
     use_rotary :
         True if table has rotary top, and False otherwise.
+    r_0 :
+        Center of gravity of the cable and its accouterments.
+    m_t :
+        Mass of the table, including its accouterments.
+    m_r :
+        Reflected moment of inertia of each actuator.
+    t_e :
+        Time it takes for bakes to activate after estop.
+    a_b :
+        Deceleration achievable by leg brakes.
     vspec_acc :
         Vestibular acceleration model, with integration time step ``dt``.
     vspec_jerk :
@@ -622,8 +640,8 @@ class MPCSpec:
         Control filtering for xyz pos, with discretization step ``dt``.
     yspec :
         Control filtering for yaw angle, with discretization step ``dt``.
-    tspec :
-        Control filtering for tilt quat, with discretization step ``dt``.
+    qspec :
+        Control filtering for quaternions, with discretization step ``dt``.
     max_iter :
         Maximum L-BFGS iterations.
     max_ls :
@@ -639,8 +657,8 @@ class MPCSpec:
     """
 
     # cost stuff
-    weights: tp.Optional[Weights] = None
-    cost_terms: tp.Optional[CostTerms] = None
+    weights: Weights | None = None
+    cost_terms: CostTerms | None = None
 
     # control
     dt: float = dt
@@ -657,6 +675,13 @@ class MPCSpec:
     lengths_home: float = _default_elem(_lengths_home)
     use_rotary: bool = True
 
+    # robot safety
+    r_0: np.ndarray = _default_elem(_r_0)
+    m_t: float = _default_elem(_m_t)
+    m_r: float = _default_elem(_m_r)
+    t_e: float = _default_elem(_t_e)
+    a_b: float = _default_elem(_a_b)
+
     # vestibular specs
     vspec_acc: siso.DiscreteEigSISO = _default_elem(vspec_acc0)
     vspec_jerk: siso.DiscreteEigSISO = _default_elem(vspec_jerk0)
@@ -666,7 +691,7 @@ class MPCSpec:
     ctrlspec: siso.DiscreteSISO = _default_elem(cspec)
     xyzspec: siso.DiscreteSISO = _default_elem(pspec)
     yspec: siso.DiscreteSISO = _default_elem(rspec)
-    tspec: siso.DiscreteSISO = _default_elem(pspec)
+    qspec: siso.DiscreteSISO = _default_elem(pspec)
 
     # optimization spec
     max_iter: int = 4
@@ -691,19 +716,33 @@ class MPCSpec:
     def init_weight_margins(
         cls,
         weights: Weights,
-        limits: MPCLimits = MPCLimits(),
-        margins: list[float] = [0.2, 0.1],
-        sizes: list[float] = [1.0, 2**3, 2**8],
-        leg_margins: list[float] = [0.3, 0.2, 0.1],
-        leg_sizes: list[float] = [1.0, 2**3, 2**5, 2**10],
-        euler_margins: list[float] = [0.2 / 3.0, 0.1 / 3.0],
-        euler_sizes: list[float] = [1.0, 2**3, 2**8],
+        limits: MPCLimits | None = None,
+        margins: list[float] | None = None,
+        sizes: list[float] | None = None,
+        leg_margins: list[float] | None = None,
+        leg_sizes: list[float] | None = None,
+        euler_margins: list[float] | None = None,
+        euler_sizes: list[float] | None = None,
         **kwargs,
-    ) -> "MPCSpec":
+    ) -> MPCSpec:
+        if limits is None:
+            limits = MPCLimits()
+        if euler_sizes is None:
+            euler_sizes = [1.0, 2**3, 2**8]
+        if euler_margins is None:
+            euler_margins = [0.2 / 3.0, 0.1 / 3.0]
+        if leg_sizes is None:
+            leg_sizes = [1.0, 2**3, 2**5, 2**10]
+        if leg_margins is None:
+            leg_margins = [0.3, 0.2, 0.1]
+        if sizes is None:
+            sizes = [1.0, 2**3, 2**8]
+        if margins is None:
+            margins = [0.2, 0.1]
         spec = cls(**kwargs)
 
         leg_pos_cost = quartic_cost.QuarticCost.from_bounds(
-            margins=[0.3, 0.2, 0.1],
+            margins=leg_margins,
             sizes=[1.0, 2**3, 2**5, 2**10],
             low=limits.leg_min,
             high=limits.leg_max,
