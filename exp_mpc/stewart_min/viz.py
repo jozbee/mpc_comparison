@@ -62,10 +62,7 @@ def table_angle_vel(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
     omega :
         The table angular velocity.
     """
-    zero = jnp.array([0.0])
-    q0 = jnp.concatenate([ts.y_tilt[0], zero])
-    q1 = jnp.concatenate([ts.y_tilt[1], zero])
-    return comp.ang_vel(q0, q1, spec.dt)
+    return comp.ang_vel(ts.y_quat[0], ts.y_quat[1], spec.dt)
 
 
 @functools.partial(jax.jit, static_argnames=["spec"])
@@ -105,10 +102,9 @@ def table_angle_acc(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
     alpha :
         The table angular acceleration.
     """
-    zero = jnp.array([0.0])
-    q0 = jnp.concatenate([ts.y_tilt[0], zero])
-    q1 = jnp.concatenate([ts.y_tilt[1], zero])
-    q2 = jnp.concatenate([ts.y_tilt[2], zero])
+    q0 = ts.y_quat[0]
+    q1 = ts.y_quat[1]
+    q2 = ts.y_quat[2]
     ome0 = comp.ang_vel(q0, q1, spec.dt)
     ome1 = comp.ang_vel(q1, q2, spec.dt)
     return (ome1 - ome0) / spec.dt
@@ -213,9 +209,9 @@ def human_vel(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
         human frame.
     """
     I = np.eye(3)
-    q0 = comp.inv_yt(ts.y_yaw[0], ts.y_tilt[0])
+    q0 = comp.inv_yt(ts.y_yaw[0], ts.y_quat[0])
     R0 = comp.rot(q0)
-    q1 = comp.inv_yt(ts.y_yaw[1], ts.y_tilt[1])
+    q1 = comp.inv_yt(ts.y_yaw[1], ts.y_quat[1])
     R1 = comp.rot(q1)
     pos0 = ts.y_xyz[0] + (R0 - I) @ spec.human_displacement
     pos1 = ts.y_xyz[1] + (R1 - I) @ spec.human_displacement
@@ -240,11 +236,11 @@ def human_acc(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
         in the human frame.
     """
     I = np.eye(3)
-    q0 = comp.inv_yt(ts.y_yaw[0], ts.y_tilt[0])
+    q0 = comp.inv_yt(ts.y_yaw[0], ts.y_quat[0])
     R0 = comp.rot(q0)
-    q1 = comp.inv_yt(ts.y_yaw[1], ts.y_tilt[1])
+    q1 = comp.inv_yt(ts.y_yaw[1], ts.y_quat[1])
     R1 = comp.rot(q1)
-    q2 = comp.inv_yt(ts.y_yaw[2], ts.y_tilt[2])
+    q2 = comp.inv_yt(ts.y_yaw[2], ts.y_quat[2])
     R2 = comp.rot(q2)
     pos0 = ts.y_xyz[0] + (R0 - I) @ spec.human_displacement
     pos1 = ts.y_xyz[1] + (R1 - I) @ spec.human_displacement
@@ -255,13 +251,13 @@ def human_acc(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
 @jax.jit
 def _table_pos(ts: opt.TrainState) -> jax.Array:
     xyz = ts.y_xyz[0]
-    q = jnp.concatenate([ts.y_tilt[0], jnp.array([0.0])])
+    q = jnp.concatenate([ts.y_quat[0], jnp.array([0.0])])
     return jnp.concatenate([xyz, q])
 
 
 @functools.partial(jax.jit, static_argnames=["spec"])
 def _human_pos(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
-    q = comp.inv_yt(ts.y_yaw[0], ts.y_tilt[0])
+    q = comp.inv_yt(ts.y_yaw[0], ts.y_quat[0])
     R = comp.rot(q)
     I = np.eye(3)
     xyz = ts.y_xyz[0] + (R - I) @ spec.human_displacement
@@ -552,7 +548,7 @@ def animate_trajectory(
 
         # Update leg length text
         x, y, z = xyz_table
-        roll, pitch, yaw = comp.tilt_euler(interp_table[i, 3:6])
+        roll, pitch, yaw = comp.tilt2euler(interp_table[i, 3:6])
         leg_text.set_text(
             f"Position: ({x:.2f}, {y:.2f}, {z:.2f})\n"
             f"Orientation: ({np.degrees(roll):.2f}°, "
@@ -1203,6 +1199,7 @@ def plot_actuator_trajectory(
     trajectory: list[opt.TrainState],
     limits: mpc_spec.MPCLimits,
     spec: mpc_spec.MPCSpec,
+    use_estop: bool = False,
     fig_title: str = "Actuator Trajectory",
     fig_kwds: dict = {},
 ) -> mpl_fig.Figure:
@@ -1219,6 +1216,8 @@ def plot_actuator_trajectory(
         MPC limits, used for actuator limit lines.
     spec :
         MPC specification, used for timing and geometry.
+    use_estop :
+        True to use estop variants.
     fig_title :
         Figure super title.
     fig_kwds :
@@ -1247,10 +1246,15 @@ def plot_actuator_trajectory(
     # leg lengths #
     ###############
 
-    leg_pos_vals = np.array([ts.leg_pos[0] for ts in trajectory])
+    if not use_estop:
+        leg_pos_vals = np.array([ts.leg_pos[0] for ts in trajectory])
+        leg_pos_title = "Leg Lengths"
+    else:
+        leg_pos_vals = np.array([ts.leg_pos_estop[0] for ts in trajectory])
+        leg_pos_title = "Leg Lengths Estop"
 
     ax_pos = axes[0, 0]
-    ax_pos.set_title("Leg Lengths")
+    ax_pos.set_title(leg_pos_title)
     ax_pos.set_xlabel("[s]")
     ax_pos.set_ylabel("[m]")
     ax_pos.set_xlim(times[0], times[-1])

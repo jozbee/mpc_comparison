@@ -1,13 +1,12 @@
 """Routines for computing useful MPC quantities."""
 
 import functools
-import numpy as np
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 
-import exp_mpc.stewart_min.siso as siso
-import exp_mpc.stewart_min.comp as comp
-import exp_mpc.stewart_min.mpc_spec as mpc_spec
+from exp_mpc.stewart_min import comp, mpc_spec, siso
 
 
 def prefilt_u(
@@ -62,16 +61,6 @@ def prefilt_u(
     )
     x_tilt, y_tilt = tilt_lti_int(filt0_tilt, y0_tilt, tilt0, u_tilt, spec.dt)
 
-    # TODO(jozbee): remove
-    # print(x_xyzyaw.shape, y_xyzyaw.shape, u_xyzyaw.shape)
-    # x_xyzyaw = jnp.zeros((4, 200, 3))
-    # y_xyzyaw = jnp.transpose(u_xyzyaw)
-
-    # print(x_tilt.shape, y_tilt.shape, u_tilt.shape)
-    # x_tilt = jnp.zeros((200, 6))
-    # y_tilt = jnp.hstack([jnp.ones((200, 1)), u_tilt])
-    # y_tilt /= jnp.linalg.norm(y_tilt, axis=1, keepdims=True)
-
     x_xyzyaw = jnp.transpose(x_xyzyaw, axes=[1, 0, 2])
     x_xyzyaw = jnp.reshape(x_xyzyaw, shape=(x_xyzyaw.shape[0], -1))
 
@@ -109,14 +98,14 @@ def apply_u(
         Internal states for yaw angle.
     y_yaw :
         Observates states for yaw angle.
-    x_tilt :
-        Internal states for tilt.
-    y_tilt :
-        Observed states for tilt.
+    x_quat :
+        Internal states for quat.
+    y_quat :
+        Observed states for quat.
     """
     # setup
     state0_size = (
-        3 * spec.xyzspec.n_state + spec.yspec.n_state + 3 * spec.tspec.n_state
+        3 * spec.xyzspec.n_state + spec.yspec.n_state + 4 * spec.qspec.n_state
     )
     assert filt0.shape == (state0_size,)
     assert len(u.shape) == 2 and u.shape[1] == 7
@@ -127,11 +116,14 @@ def apply_u(
     acc += 3 * spec.xyzspec.n_state
     yaw0 = filt0[acc : acc + spec.yspec.n_state]
     acc += spec.yspec.n_state
-    tilt0 = filt0[acc : acc + 3 * spec.tspec.n_state]
+    quat0 = filt0[acc : acc + 4 * spec.qspec.n_state]
 
     u_xyz = u[:, :3].reshape(-1, 3)
     u_yaw = u[:, 3]
     u_tilt = u[:, 4:].reshape(-1, 3)
+
+    # apply zero control to z-component of quaternion
+    u_quat = jnp.hstack([u_tilt, jnp.zeros((u_tilt.shape[0], 1))])
 
     # compute
     def ss_terms(ss):
@@ -142,9 +134,7 @@ def apply_u(
         in_axes=[0, 1],
     )(xyz0, u_xyz)
     x_yaw, y_yaw = siso.lti_int(*ss_terms(spec.yspec), yaw0, u_yaw)
-    x_tilt, y_tilt = siso.tilt_quat_lti_int(
-        *ss_terms(spec.tspec), tilt0, u_tilt
-    )
+    x_quat, y_quat = siso.quat_lti_int(*ss_terms(spec.qspec), quat0, u_quat)
 
     # get time in the first axis, and return
     def trans(x):
@@ -157,20 +147,20 @@ def apply_u(
     y_xyz = trans(y_xyz)
     # x_yaw = trans(x_yaw)
     y_yaw = trans(y_yaw)
-    # x_tilt = trans(x_tilt)
-    # y_tilt = trans(y_tilt)
+    # x_quat = trans(x_quat)
+    # y_quat = trans(y_quat)
 
-    return x_xyz, y_xyz, x_yaw, y_yaw, x_tilt, y_tilt
+    return x_xyz, y_xyz, x_yaw, y_yaw, x_quat, y_quat
 
 
 def head_dynamics(
     spec: mpc_spec.MPCSpec,
     xyz: jax.Array,
     yaw: jax.Array,
-    tilt: jax.Array,
+    quat: jax.Array,
     xyz_hist: jax.Array,
     yaw_hist: jax.Array,
-    tilt_hist: jax.Array,
+    quat_hist: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     """Compute acceleration and angular velocity in the head frame.
 
@@ -188,8 +178,8 @@ def head_dynamics(
         Past `xyz` history.
     yaw_hist :
         Past `yaw` history.
-    tilt_hist :
-        Past `tilt` history.
+    quat_hist :
+        Past `quat` history.
 
     Returns
     -------
@@ -200,10 +190,10 @@ def head_dynamics(
     """
     assert xyz_hist.shape == (2, 3)
     assert yaw_hist.shape == (2,)
-    assert tilt_hist.shape == (2, 3)
+    assert quat_hist.shape == (2, 4)
     xyz = jnp.vstack([xyz_hist, xyz])
     yaw = jnp.concatenate([yaw_hist, yaw])
-    tilt = jnp.concatenate([tilt_hist, tilt])
+    quat = jnp.concatenate([quat_hist, quat])
 
     def deriv(x):
         return jnp.diff(x, axis=0) / spec.dt
@@ -216,7 +206,7 @@ def head_dynamics(
         rot = comp.rot(q)
         return rot.T @ (acc + mpc_spec.gravity)
 
-    quat = jax.vmap(comp.inv_yt)(yaw, tilt)
+    quat = jax.vmap(comp.inv_yt)(yaw, quat)
     xyz_head = jax.vmap(xyz_head_fun)(xyz, quat)
     acc_head = jax.vmap(acc_head_fun)(deriv(deriv(xyz_head)), quat[2:])
     omega_head = jax.vmap(comp.ang_vel, in_axes=[0, 0, None])(
@@ -228,10 +218,10 @@ def head_dynamics(
 def kinematics(
     spec: mpc_spec.MPCSpec,
     xyz: jax.Array,
-    tilt: jax.Array,
+    quat: jax.Array,
     yaw: jax.Array,
     xyz_hist: jax.Array,
-    tilt_hist: jax.Array,
+    quat_hist: jax.Array,
     yaw_hist: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Compute kinematics for stewart platform.
@@ -242,14 +232,14 @@ def kinematics(
         MPC specification.
     xyz :
         Linear translation, in table frame.
-    tilt :
-        Tilt quaternion, in table frame.
+    quat :
+        Unit quaternion, in table frame.
     yaw :
         Yaw angle, in table frame.
     xyz_hist :
         Past `xyz` history.
-    tilt_hist :
-        Past `tilt` history.
+    quat_hist :
+        Past `quat` history.
     yaw_hist :
         Past `yaw` history.
 
@@ -259,6 +249,8 @@ def kinematics(
         Stewart platform leg lengths.
     leg_vel :
         Stewart platform leg velocities.
+    leg_pos_estop :
+        Stewart platform leg lengths after pressing estop.
     leg_ang :
         Stewart platform joint angles (both top and bottom).
     euler_ang :
@@ -267,24 +259,52 @@ def kinematics(
         Derivative of yaw euler angle.
     """
     assert xyz_hist.shape == (2, 3)
-    assert tilt_hist.shape == (2, 3)
+    assert quat_hist.shape == (2, 4)
     xyz = jnp.vstack([xyz_hist, xyz])
-    tilt = jnp.concatenate([tilt_hist, tilt])
+    quat = jnp.concatenate([quat_hist, quat])
     yaw = jnp.concatenate([yaw_hist, yaw])
 
-    def trans_tops(xyz, tilt):
-        rot = comp.tilt_rot(tilt)
-        return spec.tops @ rot.T + xyz
+    def norm_mat(x):
+        norm = jnp.linalg.norm(x, axis=1)
+        shaped_norm = jnp.tile(norm.reshape(-1, 1), reps=(1, 3))
+        return x / shaped_norm  # componentwise div (no extra broadcasting)
 
-    tops = jax.vmap(trans_tops)(xyz, tilt)
+    def table_geom(xyz, quat):
+        rot = comp.rot(quat)
+        tops = spec.tops @ rot.T + xyz
+        r_0 = rot @ spec.r_0
+        u = norm_mat(tops - spec.bots)
+        return tops, r_0, u
+
+    tops, r_0, u = jax.vmap(table_geom)(xyz, quat)
     leg_pos = jax.vmap(comp.leg_pos, in_axes=[0, None])(tops, spec.bots)
     leg_vel = jnp.diff(leg_pos, axis=0) / spec.dt
     leg_ang = jax.vmap(comp.leg_ang, in_axes=[0, None, None, None])(
         tops, spec.bots, spec.top_normals, spec.bot_normals
     )
-    euler_ang = jax.vmap(comp.tilt_euler)(tilt)
+    euler_ang = jax.vmap(comp.quat2euler)(quat)
     yaw_dot = jnp.diff(yaw) / spec.dt
-    return leg_pos[2:], leg_vel[1:], leg_ang[2:], euler_ang[2:], yaw_dot[1:]
+
+    # extra safety
+    ell_M = functools.partial(
+        comp.ell_M,
+        -mpc_spec.gravity,  # negative gravity convention
+        spec.m_t,
+        spec.m_r,
+        spec.t_e,
+        spec.a_b,
+        spec.tops,
+    )
+    leg_pos_estop = jax.vmap(ell_M)(r_0[1:], u[1:], leg_pos[1:], leg_vel)
+
+    return (
+        leg_pos[2:],
+        leg_vel[1:],
+        leg_ang[2:],
+        leg_pos_estop[1:],
+        euler_ang[2:],
+        yaw_dot[1:],
+    )
 
 
 def eigen_vstates(

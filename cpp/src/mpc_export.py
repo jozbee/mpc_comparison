@@ -4,15 +4,12 @@ From `mpc_comparison/cpp`, call `python3 src/mpc_export.py`
 """
 
 import functools
+
 import jax
 import jax.numpy as jnp
-
-
-import exp_mpc.stewart_min.mpc_spec as mpc_spec
-import exp_mpc.stewart_min.opt as opt
-
 from jax2exec.jax2exec import jax2exec
 
+from exp_mpc.stewart_min import mpc_spec, opt
 
 jax.config.update("jax_enable_x64", True)
 
@@ -60,7 +57,7 @@ def mpc_solver(
     assert vstate0_sim.shape == zero_ts.vstate0_sim.shape
     assert xyz_hist.shape == (zero_ts.xyz_hist.size,)
     assert yaw_hist.shape == (zero_ts.yaw_hist.size,)
-    assert tilt_hist.shape == (zero_ts.tilt_hist.size,)
+    assert tilt_hist.shape == (zero_ts.quat_hist.size,)
     assert last_control.shape == zero_ts.control.shape
 
     acc_ref = jnp.tile(A=acc_ref, reps=(spec.n, 1))
@@ -73,21 +70,24 @@ def mpc_solver(
     mpc_ts.vstate0_sim = vstate0_sim
     mpc_ts.xyz_hist = xyz_hist.reshape(zero_ts.xyz_hist.shape)
     mpc_ts.yaw_hist = yaw_hist.reshape(zero_ts.yaw_hist.shape)
-    mpc_ts.tilt_hist = tilt_hist.reshape(zero_ts.tilt_hist.shape)
+    mpc_ts.quat_hist = tilt_hist.reshape(zero_ts.quat_hist.shape)
     mpc_ts.control = last_control
 
     res_ts = opt.train_step_with_cost_jax(spec, mpc_ts, acc_ref, omega_ref)[0]
+    u_xyz = res_ts.y_pre[0, :3]
+    u_yaw = jnp.atleast_1d(res_ts.y_pre[0, 3])
+    u_tilt = res_ts.y_pre[0, 4:]
     return (
-        res_ts.y_xyz[0],  # 0
-        res_ts.y_yaw[0],  # 1
-        res_ts.y_tilt[0],  # 2
+        u_xyz,  # 0
+        u_yaw,  # 1
+        u_tilt,  # 2
         res_ts.prefilt0,  # 3
         res_ts.filt0,  # 4
         res_ts.vstate0_irl,  # 5
         res_ts.vstate0_sim,  # 6
         res_ts.xyz_hist.flatten(),  # 7
         res_ts.yaw_hist.flatten(),  # 8
-        res_ts.tilt_hist.flatten(),  # 9
+        res_ts.quat_hist.flatten(),  # 9
         res_ts.control,  # 10
     )
 
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     )
     limits = mpc_spec.MPCLimits()
     spec = mpc_spec.MPCSpec.init_weight_margins(
-        weights, limits, max_iter=2, max_ls=2, use_terminal=True
+        weights, limits, max_iter=2, max_ls=1, use_terminal=True
     )
     zero_ts = opt.TrainState.zero_init(spec)
     fun = functools.partial(mpc_solver, spec, zero_ts)
@@ -125,7 +125,7 @@ if __name__ == "__main__":
         make_dummy(zero_ts.vstate0_sim),
         make_dummy(zero_ts.xyz_hist),
         make_dummy(zero_ts.yaw_hist),
-        make_dummy(zero_ts.tilt_hist),
+        make_dummy(zero_ts.quat_hist),
         make_dummy(zero_ts.control),
     )
 

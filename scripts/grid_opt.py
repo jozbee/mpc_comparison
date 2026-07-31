@@ -1,24 +1,20 @@
 """Optimize mpc hyperparameters via grid search."""
 
-import random
-import itertools
 import functools
-import pickle
-import os
+import itertools
 import multiprocessing as mp
+import os
+import pickle
+import random
 
-import numpy as np
+import control as ct
 import jax
 import jax.numpy as jnp
-import pandas as pd
 import matplotlib.pyplot as plt
-import control as ct
+import numpy as np
+import pandas as pd
 
-import exp_mpc.stewart_min.quartic_cost as quartic_cost
-import exp_mpc.stewart_min.siso as siso
-import exp_mpc.stewart_min.mpc_spec as mpc_spec
-import exp_mpc.stewart_min.opt as opt
-import exp_mpc.stewart_min.viz as viz
+from exp_mpc.stewart_min import mpc_spec, opt, siso, viz
 
 jax.config.update("jax_enable_x64", True)
 
@@ -126,7 +122,7 @@ def single_sms(args: tuple) -> None:
     )
     limits = mpc_spec.MPCLimits()
     spec = mpc_spec.MPCSpec.init_weight_margins(
-        weights, limits, max_iter=2, max_ls=2, use_terminal=True
+        weights, limits, max_iter=2, max_ls=1, use_terminal=True
     )
     train_step = functools.partial(
         opt.train_step_with_cost, spec=spec, use_scipy=False

@@ -1,6 +1,7 @@
 """Primitive geometry computations in JAX."""
 
 import functools
+
 import jax
 import jax.numpy as jnp
 
@@ -74,7 +75,7 @@ def tilt_rot(t: jax.Array) -> jax.Array:
     return jnp.array([[-x0, x2, x3], [x2, 1 - x4, -x5], [-x3, x5, -x0 - x4]])
 
 
-def tilt_euler(t: jax.Array) -> jax.Array:
+def tilt2euler(t: jax.Array) -> jax.Array:
     r"""Euler angles from tilt quaternion.
 
     We assume the euler angle representation such that we have the rotation
@@ -105,36 +106,77 @@ def tilt_euler(t: jax.Array) -> jax.Array:
         ]
     )
 
+def quat2euler(q):
+    r"""Euler angles from unit quaternion.
+
+    We assume the euler angle representation such that we have the rotation
+    matrix decomposition :math:`R = R_z \, R_y \, R_x`.
+
+    Parameters
+    ---------
+    q :
+        Unit quaternion.
+
+    Returns
+    -------
+    euler :
+        Euler angles `(x=roll, y=pitch, z=yaw)`.
+    """
+    assert q.shape == (4,)
+    q_0, q_1, q_2, q_3 = q
+    x0 = q_0 * q_1
+    x1 = q_2 * q_3
+    x2 = 2 * q_2**2 - 1
+    x3 = 2 * q_1**2 + x2
+    x4 = 2 * q_2
+    x5 = 2 * q_3
+    return jnp.array(
+        [
+            jnp.arctan2(2 * x0 + 2 * x1, -x3),
+            jnp.arctan2(
+                q_0 * x4 - q_1 * x5, jnp.sqrt(x3**2 + 4 * (x0 + x1) ** 2)
+            ),
+            jnp.arctan2(q_0 * x5 + q_1 * x4, -2 * q_3**2 - x2),
+        ]
+    )
+
 
 def inv_yt(yaw: jax.Array, t: jax.Array) -> jax.Array:
     r"""Get quaternion from yaw-tilt decomposition.
 
     The yaw vector is given by (`yaw` is a scalar)
     :math:`y = \cos(yaw / 2) + 0 \, i + 0 \, j + \sin(yaw / 2) \, k`.
-    The tilt vector is given by
+    The tilt vector should be given by
     :math:`t = t_0 + t_1 \, i + t_2 \, j + 0 \, k`.
     The final quaternion is computed via the quaternion multiplication
     :math:`y \, t`.
+    In practice, the tilt might have a slight nonzero component, which we
+    account for.
 
     Parameters
     ----------
     yaw :
         Yaw angle.
     t :
-        Tile quaternion
+        Unit (tilt) quaternion
 
     Returns
     -------
     quat :
         Quaternion representing the yaw-tilt composition.
     """
-    assert t.shape == (3,)
-    t_0, t_1, t_2 = t
+    assert t.shape == (4,)
+    q_0, q_1, q_2, q_3 = t
     x0 = (1 / 2) * yaw
     x1 = jnp.cos(x0)
     x2 = jnp.sin(x0)
     return jnp.array(
-        [t_0 * x1, t_1 * x1 - t_2 * x2, t_1 * x2 + t_2 * x1, t_0 * x2]
+        [
+            q_0 * x1 - q_3 * x2,
+            q_1 * x1 - q_2 * x2,
+            q_1 * x2 + q_2 * x1,
+            q_0 * x2 + q_3 * x1,
+        ]
     )
 
 
@@ -614,3 +656,167 @@ def leg_ang(
         bot_angles.append(jnp.asin(bot_mag))
 
     return jnp.array(top_angles + bot_angles)
+
+
+def det3(P: jax.Array) -> jax.Array:
+    """Determinant of 3x3 matrix.
+
+    Parameters
+    ----------
+    P :
+        3x3 matrix.
+
+    Returns
+    -------
+    det :
+        Determinant of P.
+    """
+    assert P.shape == (3, 3)
+    t0 = P[0, 0] * (P[1, 1] * P[2, 2] - P[1, 2] * P[2, 1])
+    t1 = P[1, 0] * (P[2, 1] * P[0, 2] - P[0, 1] * P[2, 2])
+    t2 = P[2, 0] * (P[0, 1] * P[1, 2] - P[0, 2] * P[1, 1])
+    return t0 + t1 + t2
+
+
+def inv3(P):
+    """Inverse of 3x3 matrix.
+
+    Parameters
+    ----------
+    P :
+        3x3 matrix.
+
+    Returns
+    -------
+    P_inv :
+        Inverse of P.
+    """
+    cross = jnp.vstack(
+        [
+            jnp.linalg.cross(P[:, 1], P[:, 2]).reshape(1, -1),
+            jnp.linalg.cross(P[:, 2], P[:, 0]).reshape(1, -1),
+            jnp.linalg.cross(P[:, 0], P[:, 1]).reshape(1, -1),
+        ]
+    )
+    return cross / det3(P)
+
+
+@jax.custom_jvp
+@jax.jit
+def inv6(P):
+    """Inverse of 6x6 matrix.
+
+    JAX's implementation of a matrix inverse requires LAPACK by default on CPU
+    (it uses LAPACK to solve several linear systems).
+    This is reasonable, but my C++ exporting software doesn't link to this by
+    default.
+    Also, the default matrix inversion code is apparently slow:
+    https://github.com/jax-ml/jax/issues/11321.
+    We implement our own custom matrix inversion code (using the Schur
+    complement) for :math:`6 \times 6` matrices.
+    It isn't obvious that inverting the matrix should be worse than solving the
+    one linear system that we are interested in, in practice.
+
+    Parameters
+    ----------
+    P :
+        6x6 matrix.
+
+    Returns
+    -------
+    P_inv :
+        Inverse of P.
+    """
+    assert P.shape == (6, 6)
+    A = P[:3, :3]
+    B = P[:3, 3:]
+    C = P[3:, :3]
+    D = P[3:, 3:]
+
+    A3 = inv3(A)
+    CA3 = C @ A3
+    A3B = A3 @ B
+    schur = inv3(D - CA3 @ B)
+    schur_CA3 = schur @ CA3
+    return jnp.vstack(
+        [
+            jnp.hstack([A3 + A3B @ schur_CA3, -A3B @ schur]),
+            jnp.hstack([-schur_CA3, schur]),
+        ]
+    )
+
+
+@inv6.defjvp
+def _inv6_jvp(primals, tangents):
+    # fast derivative rule
+    (P,) = primals
+    (P_dot,) = tangents
+    P_inv = inv6(P)
+    return P_inv, -P_inv @ P_dot @ P_inv
+
+
+def velocity_jacobian(t: jax.Array, u: jax.Array) -> jax.Array:
+    """Velocity jacobian for 6-dof Stewart platform.
+
+    Parameters
+    ----------
+    t :
+        Centers of top spherical joints of Stewart platform.
+        Points are represented in the frame where the origin is the center
+        of the Stewart platform (the moving frame).
+    u :
+        Unit vectors that denote the direction from the bottom spherical joints
+        to the top spherical joints.
+        The vectors are represented in the fixed frame.
+
+    Returns
+    -------
+    vel_jac :
+        The velocity jacobian.
+    """
+    assert t.shape == (6, 3) and u.shape == (6, 3)
+    t_cross_u = jnp.linalg.cross(t, u, axis=1)
+    return jnp.hstack([u, t_cross_u])
+
+
+def a_f(
+    gravity: jax.Array,
+    tops: jax.Array,
+    m_t: jax.Array,
+    m_r: jax.Array,
+    r_0: jax.Array,
+    u: jax.Array,
+) -> jax.Array:
+    twist = jnp.concatenate([gravity, jnp.cross(r_0, gravity)])
+    m = m_t / m_r
+    lam_inv = inv6(velocity_jacobian(tops, u))
+    a_f = m * lam_inv.T @ twist
+    return a_f
+
+
+def ell_M(
+    gravity: jax.Array,
+    m_t: jax.Array,
+    m_r: jax.Array,
+    t_e: jax.Array,
+    a_b: jax.Array,
+    tops: jax.Array,
+    r_0: jax.Array,
+    u: jax.Array,
+    ell_0: jax.Array,
+    v_0: jax.Array,
+) -> jax.Array:
+    assert r_0.shape == (3,)
+    assert u.shape == (6, 3)
+    assert ell_0.shape == (6,)
+    assert v_0.shape == (6,)
+
+    # note that jnp.sign(v_e) is defined to have zero gradient everywhere
+    # this is the desired behavior for this function
+
+    af = a_f(gravity, tops, m_t, m_r, r_0, u)
+    v_e = v_0 + af * t_e
+    a_n = af - jnp.sign(v_e) * a_b
+    delta_ell = -(v_e**2) / (2 * a_n)
+    ell_M = ell_0 + v_0 * t_e + 0.5 * af * t_e**2
+    return ell_M + delta_ell

@@ -52,6 +52,11 @@ include = ["exp_mpc/*"]
 [tool.ruff]
 line-length = 80
 
+[tool.ruff.lint]
+ignore = [
+  "RUF009",
+]
+
 [tool.pyright]
 typeCheckingMode = "standard"
 reportIncompatibleMethodOverride = false

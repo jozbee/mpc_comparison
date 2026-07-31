@@ -35,21 +35,22 @@ int main() {
       0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00,
       0.00000000e+00, 0.00000000e+00, 1.00000000e+00, 0.00000000e+00,
       0.00000000e+00};
-  std::vector<double> filt0 = {0.0, 0.0, 0.00795775, 0.0, 0.07957747, 0.0, 0.0};
+  std::vector<double> filt0 = {0.0,        0.0, 0.00795775, 0.0,
+                               0.07957747, 0.0, 0.0,        0.0};
   std::vector<double> vstate0_irl = earth_vstate0;
   std::vector<double> vstate0_sim = earth_vstate0;
   std::vector<double> xyz_hist = {0.0, 0.0, 0.1, 0.0, 0.0, 0.1};
   std::vector<double> yaw_hist = {0.0, 0.0};
-  std::vector<double> tilt_hist = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+  std::vector<double> quat_hist = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0};
   std::vector<double> last_control(200 * 6, 0.0);
 
   // results
-  std::vector<double> y_xyz = {0.0, 0.0, 0.1};
-  std::vector<double> y_yaw = {0.0};
-  std::vector<double> y_tilt = {1.0, 0.0, 0.0};
-  std::vector<std::vector<double>> y_xyz_res;
-  std::vector<std::vector<double>> y_yaw_res;
-  std::vector<std::vector<double>> y_tilt_res;
+  std::vector<double> u_xyz = {0.0, 0.0, 0.1};
+  std::vector<double> u_yaw = {0.0};
+  std::vector<double> u_tilt = {1.0, 0.0, 0.0};
+  std::vector<std::vector<double>> u_xyz_res;
+  std::vector<std::vector<double>> u_yaw_res;
+  std::vector<std::vector<double>> u_tilt_res;
   std::vector<std::vector<double>> control_res;
 
   // pjrt setup
@@ -59,12 +60,12 @@ int main() {
   pjrt::AOTComputation aot_comp(base_name, client);
 
   // pjrt resuse
-  std::shared_ptr<pjrt::Buffer> y_xyz_buff = pjrt::Buffer::to_device_blocking(
-      y_xyz.data(), y_xyz.size(), client, device);
-  std::shared_ptr<pjrt::Buffer> y_yaw_buff = pjrt::Buffer::to_device_blocking(
-      y_yaw.data(), y_yaw.size(), client, device);
-  std::shared_ptr<pjrt::Buffer> y_tilt_buff = pjrt::Buffer::to_device_blocking(
-      y_tilt.data(), y_tilt.size(), client, device);
+  std::shared_ptr<pjrt::Buffer> u_xyz_buff = pjrt::Buffer::to_device_blocking(
+      u_xyz.data(), u_xyz.size(), client, device);
+  std::shared_ptr<pjrt::Buffer> u_yaw_buff = pjrt::Buffer::to_device_blocking(
+      u_yaw.data(), u_yaw.size(), client, device);
+  std::shared_ptr<pjrt::Buffer> u_tilt_buff = pjrt::Buffer::to_device_blocking(
+      u_tilt.data(), u_tilt.size(), client, device);
   std::shared_ptr<pjrt::Buffer> acc_ref_buff = pjrt::Buffer::to_device_blocking(
       acc_ref.data(), acc_ref.size(), client, device);
   std::shared_ptr<pjrt::Buffer> omega_ref_buff =
@@ -87,8 +88,8 @@ int main() {
   std::shared_ptr<pjrt::Buffer> yaw_hist_buff =
       pjrt::Buffer::to_device_blocking(yaw_hist.data(), yaw_hist.size(), client,
                                        device);
-  std::shared_ptr<pjrt::Buffer> tilt_hist_buff =
-      pjrt::Buffer::to_device_blocking(tilt_hist.data(), tilt_hist.size(),
+  std::shared_ptr<pjrt::Buffer> quat_hist_buff =
+      pjrt::Buffer::to_device_blocking(quat_hist.data(), quat_hist.size(),
                                        client, device);
   std::shared_ptr<pjrt::Buffer> last_control_buff =
       pjrt::Buffer::to_device_blocking(last_control.data(), last_control.size(),
@@ -96,7 +97,7 @@ int main() {
   std::vector<std::shared_ptr<pjrt::Buffer>> input_buffers = {
       acc_ref_buff,     omega_ref_buff,   prefilt0_buff, filt0_buff,
       vstate0_irl_buff, vstate0_sim_buff, xyz_hist_buff, yaw_hist_buff,
-      tilt_hist_buff,   last_control_buff};
+      quat_hist_buff,   last_control_buff};
 
   // random input timing
   std::vector<double> timings(num_samples);
@@ -110,9 +111,9 @@ int main() {
     for (std::size_t i = 2; i < input_buffers.size(); i++) {
       input_buffers[i] = output_buffers[i + 1];
     }
-    output_buffers[0]->to_host_blocking(y_xyz.data(), y_xyz.size());
-    output_buffers[1]->to_host_blocking(y_yaw.data(), y_yaw.size());
-    output_buffers[2]->to_host_blocking(y_tilt.data(), y_tilt.size());
+    output_buffers[0]->to_host_blocking(u_xyz.data(), u_xyz.size());
+    output_buffers[1]->to_host_blocking(u_yaw.data(), u_yaw.size());
+    output_buffers[2]->to_host_blocking(u_tilt.data(), u_tilt.size());
     output_buffers[10]->to_host_blocking(last_control.data(),
                                          last_control.size());
 
@@ -123,9 +124,9 @@ int main() {
             .count();
 
     // update history
-    y_xyz_res.push_back(y_xyz);
-    y_yaw_res.push_back(y_yaw);
-    y_tilt_res.push_back(y_tilt);
+    u_xyz_res.push_back(u_xyz);
+    u_yaw_res.push_back(u_yaw);
+    u_tilt_res.push_back(u_tilt);
     control_res.push_back(last_control);
   }
 
@@ -170,9 +171,9 @@ int main() {
   {
     std::filesystem::create_directories("./data");
     HighFive::File file("./data/mpc_example_data.h5", HighFive::File::Truncate);
-    file.createDataSet("y_xyz_res", y_xyz_res);
-    file.createDataSet("y_yaw_res", y_yaw_res);
-    file.createDataSet("y_tilt_res", y_tilt_res);
+    file.createDataSet("u_xyz_res", u_xyz_res);
+    file.createDataSet("u_yaw_res", u_yaw_res);
+    file.createDataSet("u_tilt_res", u_tilt_res);
     file.createDataSet("control_res", control_res);
     file.createDataSet("timings", timings);
   }
