@@ -264,20 +264,30 @@ def kinematics(
     quat = jnp.concatenate([quat_hist, quat])
     yaw = jnp.concatenate([yaw_hist, yaw])
 
-    def norm_mat(x):
-        norm = jnp.linalg.norm(x, axis=1)
-        shaped_norm = jnp.tile(norm.reshape(-1, 1), reps=(1, 3))
-        return x / shaped_norm  # componentwise div (no extra broadcasting)
-
-    def table_geom(xyz, quat):
+    def table_geom(xyz, quat, yaw):
         rot = comp.rot(quat)
+        rot_yaw = comp.rot_yaw(yaw)
         tops = spec.tops @ rot.T + xyz
-        r_0 = rot @ spec.r_0
-        u = norm_mat(tops - spec.bots)
-        return tops, r_0, u
+        r_0_table = rot @ spec.r_0_table
+        r_0_rotary = rot_yaw @ rot @ spec.r_0_rotary
 
-    tops, r_0, u = jax.vmap(table_geom)(xyz, quat)
-    leg_pos = jax.vmap(comp.leg_pos, in_axes=[0, None])(tops, spec.bots)
+        u = tops - spec.bots
+        u_norm = jnp.linalg.norm(u, axis=1, keepdims=True)
+        u /= u_norm
+        leg_pos = jnp.squeeze(u_norm)
+
+        vel_jac_inv = comp.inv6(comp.velocity_jacobian(spec.tops, u))
+        a_f_table = comp.estop_a_f(
+            -mpc_spec.gravity, spec.m_table, r_0_table, vel_jac_inv
+        )
+        a_f_rotary = comp.estop_a_f(
+            -mpc_spec.gravity, spec.m_rotary, r_0_rotary, vel_jac_inv
+        )
+        a_f = a_f_table + a_f_rotary
+
+        return tops, leg_pos, a_f
+
+    tops, leg_pos, a_f = jax.vmap(table_geom)(xyz, quat, yaw)
     leg_vel = jnp.diff(leg_pos, axis=0) / spec.dt
     leg_ang = jax.vmap(comp.leg_ang, in_axes=[0, None, None, None])(
         tops, spec.bots, spec.top_normals, spec.bot_normals
@@ -286,16 +296,14 @@ def kinematics(
     yaw_dot = jnp.diff(yaw) / spec.dt
 
     # extra safety
-    ell_M = functools.partial(
-        comp.ell_M,
-        -mpc_spec.gravity,  # negative gravity convention
-        spec.m_t,
-        spec.m_r,
+    estop_delta_ell = functools.partial(
+        comp.estop_delta_ell,
         spec.t_e,
         spec.a_b,
-        spec.tops,
+        spec.leg_safety_factor,
     )
-    leg_pos_estop = jax.vmap(ell_M)(r_0[1:], u[1:], leg_pos[1:], leg_vel)
+    leg_pos_estop_delta = jax.vmap(estop_delta_ell)(leg_vel, a_f[1:])
+    leg_pos_estop = leg_pos[1:] + leg_pos_estop_delta
 
     return (
         leg_pos[2:],

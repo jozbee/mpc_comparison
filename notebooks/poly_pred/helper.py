@@ -1,17 +1,15 @@
-import jax
 import functools
+
+import control as ct
+import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import control as ct
 import sympy as sp
+import tqdm
 
-import matplotlib.pyplot as plt
-
-import exp_mpc.stewart_min.siso as siso
-import exp_mpc.stewart_min.mpc_spec as mpc_spec
-import exp_mpc.stewart_min.utils as utils
-import exp_mpc.stewart_min.opt as opt
+from exp_mpc.stewart_min import mpc_spec, opt, siso, utils
 
 jax.config.update("jax_enable_x64", True)
 
@@ -87,7 +85,7 @@ def pred_err(pred_fun, data, hist_size):
     def err_body(hist, future, idx):
         pred = pred_fun(hist, t, idx)
         return jnp.mean(jnp.square((pred - future) * 1e2))
-        # return jnp.mean(jnp.square((pred - future) * 1e2 * jnp.exp(-0.5 * t)))
+        # return jnp.mean(jnp.square((pred - future) * 1e2 * jnp.exp(-1.0 * t)))
         # return jnp.mean(jnp.square((pred - future) * 1e2)[:100])
 
     hist = part(data, hist_size)

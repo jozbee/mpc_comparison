@@ -78,7 +78,7 @@ import numpy as np
 import scipy.optimize as sci_opt
 from lbfgs import lbfgs
 
-from exp_mpc.stewart_min import mpc_spec, siso, utils
+from exp_mpc.stewart_min import comp, mpc_spec, siso, utils
 
 # lbfgs_res = (minimizer, value, gradient)
 type LBFGSResult = tuple[jax.Array, jax.Array, jax.Array]
@@ -177,9 +177,7 @@ def _control_cost(
 
 def _terminal_cost(
     spec: mpc_spec.MPCSpec,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    y_vest_sim: jax.Array,
+    terminal_param: jax.Array,
     xyz: jax.Array,
     yaw: jax.Array,
     quat: jax.Array,
@@ -190,14 +188,7 @@ def _terminal_cost(
     def _ssum(x):
         return jnp.sum(jnp.square(x))
 
-    ref = jnp.concatenate(
-        [
-            acc_ref[:, :2].flatten(),  # non-jerk
-            y_vest_sim[:, 3].flatten(),  # jerk
-            omega_ref.flatten(),
-        ]
-    )
-    scale = jnp.exp(-spec.weights.terminal_exp_scale * _ssum(ref))
+    scale = jnp.exp(-spec.weights.terminal_exp_scale * terminal_param)
 
     cart_last = jnp.concatenate([xyz[-1], jnp.atleast_1d(yaw[-1]), quat[-1]])
     ang_home = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0])
@@ -214,9 +205,8 @@ def cost(
     prefilt0: jax.Array,
     filt0: jax.Array,
     vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
+    y_vest_sim: jax.Array,
+    terminal_param: jax.Array,
     xyz_hist: jax.Array,
     yaw_hist: jax.Array,
     quat_hist: jax.Array,
@@ -236,12 +226,11 @@ def cost(
         Initial states for control filters.
     vstate0_irl :
         Initial vestibular state for the in-real-life person.
-    vstate0_sim :
-        Initial vestibular state for the simulated/reference person.
-    acc_ref :
-        Reference linear acceleration trajectory in the head frame.
-    omega_ref :
-        Reference angular velocity trajectory in the head frame.
+    y_vest_sim :
+        Observed vestibular states for simulated person.
+    terminal_param :
+        Parameter for terminal cost.
+        For now, it denotes when the robot should return to home.
     xyz_hist :
         Previous two linear positions of robot.
     yaw_hist :
@@ -293,88 +282,14 @@ def cost(
         vstate0=vstate0_irl,
         return_eig_states=True,
     )
-    _, y_vest_sim = utils.eigen_vstates(
-        spec=spec,
-        acc=acc_ref,
-        omega=omega_ref,
-        vstate0=vstate0_sim,
-        return_eig_states=True,
-    )
 
     # cost
     cost_head = _head_cost(spec, y_vest_irl, y_vest_sim)
     cost_ik = _ik_cost(spec, leg_pos, leg_vel, leg_ang, leg_pos_estop)
     cost_euler = _euler_cost(spec, euler_ang, y_yaw, yaw_dot, u_yaw)
     cost_control = _control_cost(spec, control)
-    cost_term = _terminal_cost(
-        spec, acc_ref, omega_ref, y_vest_sim, y_xyz, y_yaw, y_quat
-    )
+    cost_term = _terminal_cost(spec, terminal_param, y_xyz, y_yaw, y_quat)
     return cost_head + cost_ik + cost_euler + cost_control + cost_term
-
-
-@functools.partial(jax.jit, static_argnames=["spec"])
-def cost_and_grad(
-    spec: mpc_spec.MPCSpec,
-    control: jax.Array,
-    prefilt0: jax.Array,
-    filt0: jax.Array,
-    vstate0_irl: jax.Array,
-    vstate0_sim: jax.Array,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
-    xyz_hist: jax.Array,
-    yaw_hist: jax.Array,
-    quat_hist: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    """Evaluate MPC objective and gradient for flattened controls.
-
-    Parameters
-    ----------
-    spec :
-        MPC specification.
-    control :
-        Flattened control sequence with ordering
-        `[x, y, z, yaw, tilt0, tilt1, tilt2]` per time step.
-    prefilt0 :
-        Initial states for prefilter.
-    filt0 :
-        Initial states for control filters.
-    vstate0_irl :
-        Initial vestibular state for the in-real-life person.
-    vstate0_sim :
-        Initial vestibular state for the simulated/reference person.
-    acc_ref :
-        Reference linear acceleration trajectory in the head frame.
-    omega_ref :
-        Reference angular velocity trajectory in the head frame.
-    xyz_hist :
-        Previous two linear positions of robot.
-    yaw_hist :
-        Previous two yaw positions of robot.
-    quat_hist :
-        Previous two unit quaternions of robot.
-
-    Returns
-    -------
-    cost :
-        Scalar MPC cost.
-    grad :
-        Control (flat) gradient of MPC cost.
-    """
-    res_fun = jax.value_and_grad(cost, argnums=1)
-    return res_fun(
-        spec,
-        control,
-        prefilt0,
-        filt0,
-        vstate0_irl,
-        vstate0_sim,
-        acc_ref,
-        omega_ref,
-        xyz_hist,
-        yaw_hist,
-        quat_hist,
-    )
 
 
 ################
@@ -406,12 +321,19 @@ class TrainState:
         Current vestibular state for the in-real-life person.
     vstate0_sim :
         Current vestibular state for the simulated/reference person.
+    y_vest_sim_hist :
+        Previous vestibular states for the simulated/reference person.
     xyz_hist :
         Previous two linear positions of robot.
     yaw_hist :
         Previous two yaw positions of robot.
     quat_hist :
         Previous two unit quaternions of robot.
+    terminal_param :
+        Parameter for terminal cost.
+    iter :
+        Train state identifier.
+        (Number of iterations through the MPC algorithm.)
     x_pre :
         Internal states for control prefilter.
     y_pre :
@@ -462,9 +384,12 @@ class TrainState:
     filt0: jax.Array
     vstate0_irl: jax.Array
     vstate0_sim: jax.Array
+    y_vest_sim_hist: jax.Array
     xyz_hist: jax.Array
     yaw_hist: jax.Array
     quat_hist: jax.Array
+    terminal_param: jax.Array
+    iter: jax.Array
 
     # extra info
     x_pre: jax.Array
@@ -575,11 +500,14 @@ class TrainState:
         vstate0_sim = vstate0_sim.at[idxs].set(jerk0_sim)
 
         # misc
+        y_vest_sim_hist = jnp.zeros((4, 6))
         xyz_hist = jnp.tile(spec.cart_home.reshape(1, -1), reps=(2, 1))
         yaw_hist = jnp.zeros((2,))
         quat_hist = jnp.tile(
             jnp.array([1.0, 0.0, 0.0, 0.0]).reshape(1, -1), reps=(2, 1)
         )
+        terminal_param = jnp.array(0.0, dtype=float)
+        iter = jnp.array(0, dtype=int)
 
         x_pre = jnp.zeros((spec.n, spec.ctrlspec.n_state * 6))
         y_pre = jnp.zeros((spec.n, 7))
@@ -598,7 +526,7 @@ class TrainState:
         leg_vel = jnp.zeros((spec.n, 6))
         leg_ang = jnp.zeros((spec.n, 12))
         leg_pos_estop = jnp.ones((spec.n, 6)) * (
-            mpc_spec._lengths_home - 0.0126538
+            mpc_spec._lengths_home - 0.03589903
         )
         euler_ang = jnp.zeros((spec.n, 3))
         yaw_dot = jnp.zeros((spec.n,))
@@ -613,9 +541,12 @@ class TrainState:
             filt0=filt0,
             vstate0_irl=vstate0_irl,
             vstate0_sim=vstate0_sim,
+            y_vest_sim_hist=y_vest_sim_hist,
             xyz_hist=xyz_hist,
             yaw_hist=yaw_hist,
             quat_hist=quat_hist,
+            terminal_param=terminal_param,
+            iter=iter,
             x_pre=x_pre,
             y_pre=y_pre,
             x_xyz=x_xyz,
@@ -642,7 +573,10 @@ class TrainState:
 
 def lbfgs_cost(
     spec: mpc_spec.MPCSpec,
-    args: tuple[TrainState, jax.Array, jax.Array],
+    train_state: TrainState,
+    y_vest_sim: jax.Array,
+    terminal_param: jax.Array,
+    args: None,
     control: jax.Array,
 ) -> jax.Array:
     """L-BFGS wrapper of :func:`cost`.
@@ -662,33 +596,29 @@ def lbfgs_cost(
     cost :
         Scalar MPC objective value.
     """
-    train_state, acc_ref, omega_ref = args
     return cost(
         spec=spec,
         control=control,
         prefilt0=train_state.prefilt0,
         filt0=train_state.filt0,
         vstate0_irl=train_state.vstate0_irl,
-        vstate0_sim=train_state.vstate0_sim,
-        acc_ref=acc_ref,
-        omega_ref=omega_ref,
+        y_vest_sim=y_vest_sim,
+        terminal_param=terminal_param,
         xyz_hist=train_state.xyz_hist,
         yaw_hist=train_state.yaw_hist,
         quat_hist=train_state.quat_hist,
     )
 
 
-lbfgs_cost_and_grad = jax.jit(
-    jax.value_and_grad(lbfgs_cost, argnums=-1),
-    static_argnames=["spec"],
-)
+lbfgs_cost_and_grad = jax.jit(jax.value_and_grad(lbfgs_cost, argnums=-1))
 
-prefilt_u = jax.jit(utils.prefilt_u, static_argnames=["spec"])
-apply_u = jax.jit(utils.apply_u, static_argnames=["spec"])
-head_dynamics = jax.jit(utils.head_dynamics, static_argnames=["spec"])
-kinematics = jax.jit(utils.kinematics, static_argnames=["spec"])
+prefilt_u = jax.jit(utils.prefilt_u)
+apply_u = jax.jit(utils.apply_u)
+head_dynamics = jax.jit(utils.head_dynamics)
+kinematics = jax.jit(utils.kinematics)
 eigen_vstates = jax.jit(
-    utils.eigen_vstates, static_argnames=["spec", "return_eig_states"]
+    utils.eigen_vstates,
+    static_argnames=["return_eig_states"],
 )
 
 
@@ -696,8 +626,9 @@ def apply_control(
     spec: mpc_spec.MPCSpec,
     train_state: TrainState,
     control: jax.Array,
-    acc_ref: jax.Array,
-    omega_ref: jax.Array,
+    x_vest_sim: jax.Array,
+    y_vest_sim: jax.Array,
+    terminal_param: jax.Array,
 ) -> TrainState:
     """Apply control and references for new TrainState.
 
@@ -709,12 +640,12 @@ def apply_control(
         Current MPC state.
     control :
         New control to apply.
-    acc_ref :
-        Reference linear acceleration trajectory.
-        Shape: `(horizon_num, 3)`.
-    omega_ref :
-        Reference angular velocity trajectory.
-        Shape: `(horizon_num, 3)`.
+    x_vest_sim :
+        Internal states for simulated vestibular system.
+    y_vest_sim :
+        Observed states for simulated vestibular system.
+    terminal_param :
+        Parameter for terminal cost.
 
     Returns
     -------
@@ -761,18 +692,14 @@ def apply_control(
         vstate0=ts.vstate0_irl,
         return_eig_states=False,
     )
-    x_vest_sim, y_vest_sim = eigen_vstates(
-        spec=spec,
-        acc=acc_ref,
-        omega=omega_ref,
-        vstate0=ts.vstate0_sim,
-        return_eig_states=False,
-    )
 
     # bookkeeping
     prefilt0 = jnp.concatenate([x_pre[0], y_pre[0][-3:]])
     filt0 = jnp.vstack(
         [x_xyz[0], x_yaw[0].reshape(1, *x_yaw[0].shape), x_quat[0]]
+    )
+    y_vest_sim_hist = jnp.vstack(
+        [ts.y_vest_sim_hist[1:], jnp.atleast_2d(y_vest_sim[0])]
     )
     next_state = TrainState(
         control=control,
@@ -780,9 +707,12 @@ def apply_control(
         filt0=jnp.ravel(filt0),
         vstate0_irl=x_vest_irl[0],
         vstate0_sim=x_vest_sim[0],
+        y_vest_sim_hist=y_vest_sim_hist,
         xyz_hist=jnp.vstack([ts.xyz_hist[-1], y_xyz[0]]),
         yaw_hist=jnp.array([ts.yaw_hist[-1], y_yaw[0]]),
         quat_hist=jnp.vstack([ts.quat_hist[-1], y_quat[0]]),
+        terminal_param=terminal_param,
+        iter=ts.iter + 1,
         x_pre=x_pre,
         y_pre=y_pre,
         x_xyz=x_xyz,
@@ -845,9 +775,55 @@ def train_step_with_cost_jax(
     guess = jnp.vstack([guess, guess_last.reshape(1, -1)])
     guess_flat = jnp.ravel(guess)
 
+    # vestibular_prediction
+    assert acc_ref.shape == omega_ref.shape
+    assert acc_ref.shape[-1] == 3
+    x_vest_sim, y_vest_sim = eigen_vstates(
+        spec=spec,
+        acc=jnp.atleast_2d(acc_ref),
+        omega=jnp.atleast_2d(omega_ref),
+        vstate0=train_state.vstate0_sim,
+        return_eig_states=False,
+    )
+    if len(acc_ref.shape) == 1:
+        y_vest_sim_hist = jnp.vstack(
+            [
+                train_state.y_vest_sim_hist[1:],
+                jnp.atleast_2d(y_vest_sim[0]),
+            ]
+        )
+        x_vest_sim = jnp.tile(
+            x_vest_sim, reps=(train_state.x_vest_sim.shape[0], 1)
+        )
+
+        def running_pred():
+            pred_hist = functools.partial(
+                comp.pred_hist, spec.pred_n, spec.n, spec.dt, spec.pred_E
+            )
+            y_vest_sim = jax.vmap(pred_hist, in_axes=1)(y_vest_sim_hist)
+            return jnp.transpose(y_vest_sim)
+
+        def initial_pred():
+            return jnp.tile(
+                y_vest_sim, reps=(train_state.y_vest_sim.shape[0], 1)
+            )
+
+        y_vest_sim = jax.lax.cond(ts.iter > 50, running_pred, initial_pred)
+    else:
+        assert acc_ref.shape[0] == spec.n
+
+    # terminal param
+    tp0 = train_state.terminal_param
+    tp1 = jnp.sum(jnp.square(acc_ref)) + jnp.sum(jnp.square(omega_ref))
+    alpha = spec.alpha_terminal
+    terminal_param = (1 - alpha) * tp0 + alpha * tp1
+    # terminal_param = tp1
+
     # compute
+    opt_fun = functools.partial(
+        lbfgs_cost_and_grad, spec, train_state, y_vest_sim, terminal_param
+    )
     if not use_scipy:
-        opt_fun = functools.partial(lbfgs_cost_and_grad, spec)
         opt_params = lbfgs.OptParamsLBFGS(
             fun=opt_fun,
             max_iter=spec.max_iter,
@@ -859,24 +835,12 @@ def train_step_with_cost_jax(
         res = lbfgs.lbfgs(
             opt_params=opt_params,
             x0=guess_flat,
-            fun_params=(ts, acc_ref, omega_ref),
+            fun_params=None,
         )
         opt_control = res[0]
     else:
         res_sci = sci_opt.minimize(
-            fun=functools.partial(
-                cost_and_grad,
-                spec,
-                prefilt0=ts.prefilt0,
-                filt0=ts.filt0,
-                vstate0_irl=ts.vstate0_irl,
-                vstate0_sim=ts.vstate0_sim,
-                acc_ref=acc_ref,
-                omega_ref=omega_ref,
-                xyz_hist=ts.xyz_hist,
-                yaw_hist=ts.yaw_hist,
-                quat_hist=ts.quat_hist,
-            ),
+            fun=functools.partial(opt_fun, None),  # lbfgs library shenanigans
             x0=guess_flat,
             method="L-BFGS-B",
             jac=True,
@@ -889,14 +853,14 @@ def train_step_with_cost_jax(
         opt_control = res[0]
 
     next_state = apply_control(
-        spec, train_state, opt_control, acc_ref, omega_ref
+        spec, train_state, opt_control, x_vest_sim, y_vest_sim, terminal_param
     )
     return next_state, res
 
 
 train_step_with_cost_jit = jax.jit(
     train_step_with_cost_jax,
-    static_argnames=["spec", "use_scipy"],
+    static_argnames=["use_scipy"],
 )
 
 
@@ -913,10 +877,8 @@ def train_step_with_cost(
     ----------
     acc_ref :
         Reference linear acceleration trajectory.
-        Shape: ``(horizon_num, 3)``.
     omega_ref :
         Reference angular velocity trajectory.
-        Shape: ``(horizon_num, 3)``.
     train_state :
         Current MPC state.
     spec :
