@@ -101,7 +101,7 @@ _leg_safety_factor = 3.25
 dt = 0.01
 
 # prediction LQR
-def triple_E(alpha):
+def triple_E(alpha, dt):
     """Get integration matrix for jerk-controlled LQR."""
     alpha = np.eye(3) * -alpha
     A = np.array([[0, 1, 0], [0, 0, 1], [0, 0, 0]], dtype=float)
@@ -113,8 +113,15 @@ def triple_E(alpha):
     return E
 
 
-_pred_E = triple_E(1.5)
-_pred_n = 52
+# lander pred
+_alphas = [1.45, 1.6, 0.8, 0.85, 0.4, 0.4]
+_pred_E = jnp.stack([triple_E(a, dt) for a in _alphas])
+_pred_n = jnp.array([50, 46, 20, 42, 14, 30], dtype=jnp.int64)
+
+# rover pred
+# _alphas = [0.45, 0.6, 3.95, 1.85, 2.0, 0.25]
+# _pred_E = jnp.stack([triple_E(a, dt) for a in _alphas])
+# _pred_n = jnp.array([18, 22, 14, 30, 32, 30], dtype=jnp.int64)
 
 # vspec ref defs
 _s = ct.tf("s")
@@ -700,7 +707,7 @@ class MPCSpec:
 
     # prediction
     pred_E: jax.Array = _dyn_field(_pred_E)
-    pred_n: int = _static_field(_pred_n)  # TODO(jozbee): make dynamic
+    pred_n: jax.Array = _dyn_field(_pred_n)
 
     # robot geometry
     human_displacement: np.ndarray = _static_field(_human_displacement)

@@ -206,7 +206,7 @@ def head_dynamics(
         rot = comp.rot(q)
         return rot.T @ (acc + mpc_spec.gravity)
 
-    quat = jax.vmap(comp.inv_yt)(yaw, quat)
+    quat = jax.vmap(comp.inv_ty)(quat, yaw)
     xyz_head = jax.vmap(xyz_head_fun)(xyz, quat)
     acc_head = jax.vmap(acc_head_fun)(deriv(deriv(xyz_head)), quat[2:])
     omega_head = jax.vmap(comp.ang_vel, in_axes=[0, 0, None])(
@@ -269,7 +269,7 @@ def kinematics(
         rot_yaw = comp.rot_yaw(yaw)
         tops = spec.tops @ rot.T + xyz
         r_0_table = rot @ spec.r_0_table
-        r_0_rotary = rot_yaw @ rot @ spec.r_0_rotary
+        r_0_rotary = rot @ rot_yaw @ spec.r_0_rotary
 
         u = tops - spec.bots
         u_norm = jnp.linalg.norm(u, axis=1, keepdims=True)
