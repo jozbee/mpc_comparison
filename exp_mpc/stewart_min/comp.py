@@ -45,7 +45,7 @@ def rot(q: jax.Array) -> jax.Array:
     )
 
 
-def tilt_rot(t: jax.Array) -> jax.Array:
+def rot_tilt(t: jax.Array) -> jax.Array:
     r"""Rotation matrix from tilt quaternion.
 
     A tilt quaternion has zero z-component, i.e.,
@@ -61,7 +61,7 @@ def tilt_rot(t: jax.Array) -> jax.Array:
     Returns
     -------
     rot :
-        Rotation matrix
+        Rotation matrix.
     """
 
     assert t.shape == (3,)
@@ -73,6 +73,27 @@ def tilt_rot(t: jax.Array) -> jax.Array:
     x4 = 2 * t_1**2
     x5 = 2 * t_0 * t_1
     return jnp.array([[-x0, x2, x3], [x2, 1 - x4, -x5], [-x3, x5, -x0 - x4]])
+
+
+def rot_yaw(yaw: jax.Array) -> jax.Array:
+    """Rotation matrix from yaw angle.
+
+    Parameters
+    ----------
+    yaw :
+        Yaw angle for yaw-quaternion.
+
+    Returns
+    -------
+    rot :
+        Rotation matrix.
+    """
+    assert yaw.shape == ()
+    x0 = (1 / 2) * yaw
+    x1 = jnp.sin(x0)
+    x2 = 1 - 2 * x1**2
+    x3 = 2 * x1 * jnp.cos(x0)
+    return jnp.array([[x2, -x3, 0], [x3, x2, 0], [0, 0, 1]])
 
 
 def tilt2euler(t: jax.Array) -> jax.Array:
@@ -779,44 +800,134 @@ def velocity_jacobian(t: jax.Array, u: jax.Array) -> jax.Array:
     return jnp.hstack([u, t_cross_u])
 
 
-def a_f(
+def estop_a_f(
     gravity: jax.Array,
-    tops: jax.Array,
-    m_t: jax.Array,
-    m_r: jax.Array,
+    m: jax.Array,
     r_0: jax.Array,
-    u: jax.Array,
+    vel_jac_inv: jax.Array,
 ) -> jax.Array:
+    """Leg length accelerations in free-fall.
+
+    Parameters
+    ----------
+    gravity :
+        Earth gravity 3-vector (with negative z-component).
+    m :
+        Ratio of mass object mass to reflected inertia from a single leg.
+    r_0 :
+        Center of gravity with respect to table frame (wrt platform center).
+    vel_jac_inv :
+        Matrix inverse of velocity jacobian for Stewart platform at the
+        given time.
+    """
     twist = jnp.concatenate([gravity, jnp.cross(r_0, gravity)])
-    m = m_t / m_r
-    lam_inv = inv6(velocity_jacobian(tops, u))
-    a_f = m * lam_inv.T @ twist
+    a_f = m * vel_jac_inv.T @ twist
     return a_f
 
 
-def ell_M(
-    gravity: jax.Array,
-    m_t: jax.Array,
-    m_r: jax.Array,
+def estop_delta_ell(
     t_e: jax.Array,
     a_b: jax.Array,
-    tops: jax.Array,
-    r_0: jax.Array,
-    u: jax.Array,
-    ell_0: jax.Array,
+    leg_safety_factor: jax.Array,
     v_0: jax.Array,
+    a_f: jax.Array,
 ) -> jax.Array:
-    assert r_0.shape == (3,)
-    assert u.shape == (6, 3)
-    assert ell_0.shape == (6,)
+    """Lengths after drop.
+
+    Parameters
+    ----------
+    t_e :
+        Time between brakes applying and e-stop being pressed.
+    a_b :
+        Maximum deacceleration of legs once brakes are applied.
+    leg_safety_factor :
+        If `delta_ell` is the leg length difference after the estop is pressed,
+        then we with `leg_safety_factor * delta_ell + leg_safety`.
+    v_0 :
+        Initial velocity of legs, before estop.
+    a_f :
+        Initial acceleration.
+
+    Returns
+    -------
+    delta_ell :
+        Leg length change after estop is completed.
+    """
     assert v_0.shape == (6,)
+    assert a_f.shape == (6,)
 
     # note that jnp.sign(v_e) is defined to have zero gradient everywhere
     # this is the desired behavior for this function
 
-    af = a_f(gravity, tops, m_t, m_r, r_0, u)
-    v_e = v_0 + af * t_e
-    a_n = af - jnp.sign(v_e) * a_b
-    delta_ell = -(v_e**2) / (2 * a_n)
-    ell_M = ell_0 + v_0 * t_e + 0.5 * af * t_e**2
-    return ell_M + delta_ell
+    v_e = v_0 + a_f * t_e
+    a_n = a_f - jnp.sign(v_e) * a_b
+    delta_ell = v_0 * t_e + 0.5 * a_f * t_e**2 - (v_e**2) / (2 * a_n)
+    return delta_ell * leg_safety_factor
+
+
+def _propogate_pos(x0, E, n):
+    def scan_body(x0, _):
+        x1 = E @ x0
+        return x1, x1[0]
+
+    _, res = jax.lax.scan(scan_body, x0, length=n)
+    return res.flatten()
+
+
+def _diff(x, dt):
+    return jnp.diff(x) / dt
+
+
+def _taylor_coeffs(hist, dt):
+    assert hist.shape == (4,)
+    a0 = hist[3]
+    diff = functools.partial(_diff, dt=dt)
+    a1 = diff(hist[2:])
+    a2 = diff(diff(hist[1:])) / 2
+    a3 = diff(diff(diff(hist))) / 6
+    return a0, a1, a2, a3
+
+
+def _taylor_eval(hist, x, dt):
+    a0, a1, a2, a3 = _taylor_coeffs(hist, dt)
+    return a0 + a1 * x + a2 * x**2 + a3 * x**3
+
+
+def _taylor_evalp(hist, x, dt):
+    a0, a1, a2, a3 = _taylor_coeffs(hist, dt)
+    f0 = a0 + a1 * x + a2 * x**2 + a3 * x**3
+    f1 = a1 + 2 * a2 * x + 3 * a3 * x**2
+    f2 = 2 * a2 + 6 * a3 * x
+    return jnp.array([f0, f1, f2])
+
+
+@functools.partial(jax.jit, static_argnames=["n_taylor", "n"])
+def pred_hist(n_taylor, n, dt, E, hist):
+    """Predict horizon from history.
+
+    Parameters
+    ----------
+    n_taylor :
+        Number of samples to take from Taylor series extrapolation.
+    n :
+        Total horizon to predict.
+    dt :
+        Time step for history.
+    E :
+        LQR regularizing matrix.
+    hist :
+        History of previous data.
+        Need 4 previous data points.
+
+    Returns
+    -------
+    pred :
+        Predicted horizon.
+    """
+    assert n_taylor < n
+    t = jnp.arange(0, n_taylor, dtype=float) * dt
+    pred0 = _taylor_eval(hist, t, dt)
+    x0 = _taylor_evalp(hist, t[-1], dt)
+    pred1 = _propogate_pos(x0, E, n - n_taylor)
+    pred = jnp.concatenate([pred0, pred1])
+    return pred

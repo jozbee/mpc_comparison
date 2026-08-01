@@ -11,6 +11,7 @@ import control as ct
 import jax
 import jax.numpy as jnp
 import numpy as np
+import scipy.linalg as sci_lin
 
 from exp_mpc.stewart_min import quartic_cost, siso
 
@@ -18,15 +19,14 @@ jax.config.update("jax_enable_x64", True)
 
 
 # dataclass helpers
-def _default_elem(elem):
-    return dataclasses.field(default_factory=lambda: elem)
-
-
-def _init_field(arr: jax.Array) -> jax.Array:
-    """Initialize a field with the same shape as the input array."""
+def _static_field(val=None):
     return dataclasses.field(
-        default_factory=lambda: arr,
+        default_factory=lambda: val, metadata={"static": True}
     )
+
+
+def _dyn_field(val=None):
+    return dataclasses.field(default_factory=lambda: val)
 
 
 # constants useful in the same context as robots
@@ -89,16 +89,34 @@ _lengths_home = float(np.mean(np.linalg.norm(_tops_home - _bots, axis=1)))
 
 # safety info
 # see the MPCSpec notes for notation
-_r_0 = np.array([0.0, 0.0, 0.0])
-_m_t = 1500
-_m_r = 11.9 * 1e-3 * (2 * np.pi / 0.01) ** 2
+_r_0_table = jnp.array([0.0, 0.0, 0.0])  # center of gravity
+_m_table = 0.056  # mass ratio
+_r_0_rotary = jnp.array([-0.0626, -1.02e-05, 0.329])
+_m_rotary = 0.248
 _t_e = 0.18
 _a_b = 20 / (11.9 * 1e-3) / (2 * np.pi) * 0.01
+_leg_safety_factor = 3.25
 
-# vspec ref defs
-# dt = 0.005
+# time step
 dt = 0.01
 
+# prediction LQR
+def triple_E(alpha):
+    """Get integration matrix for jerk-controlled LQR."""
+    alpha = np.eye(3) * -alpha
+    A = np.array([[0, 1, 0], [0, 0, 1], [0, 0, 0]], dtype=float)
+    B = np.array([[0], [0], [1]], dtype=float)
+    Q = np.diag([1e0, 1e0, 1e0])
+    R = np.array([[1e-0]], dtype=float)
+    K, _, _ = ct.lqr(A - alpha, B, Q, R)
+    E = sci_lin.expm((A - B @ K) * dt)
+    return E
+
+
+_pred_E = triple_E(1.5)
+_pred_n = 52
+
+# vspec ref defs
 _s = ct.tf("s")
 transfer_acc0 = 0.911 * (_s + 0.0988)
 transfer_acc0 /= (_s + 0.133) * (_s + 1.95)
@@ -182,19 +200,19 @@ class Weights:
         Global scale for terminal robot state mismatch term.
     """
 
-    lin_dyn: jax.Array = _init_field(jnp.ones(3))
-    omega: jax.Array = _init_field(jnp.ones(3))
-    leg_pos: jax.Array = _init_field(jnp.ones(6))
-    leg_vel: jax.Array = _init_field(jnp.ones(6))
-    leg_ang: jax.Array = _init_field(jnp.ones(12))
-    roll: jax.Array = _init_field(jnp.ones(1))
-    pitch: jax.Array = _init_field(jnp.ones(1))
-    yaw: jax.Array = _init_field(jnp.ones(1))
-    yaw_ctrl: jax.Array = _init_field(jnp.ones(1))
-    yaw_dot: jax.Array = _init_field(jnp.ones(1))
-    control: jax.Array = _init_field(jnp.ones(6))
-    terminal_exp_scale: jax.Array = _init_field(jnp.array(10.0))
-    terminal_rt_scale: jax.Array = _init_field(jnp.array(0.1))
+    lin_dyn: jax.Array = _dyn_field(jnp.ones(3))
+    omega: jax.Array = _dyn_field(jnp.ones(3))
+    leg_pos: jax.Array = _dyn_field(jnp.ones(6))
+    leg_vel: jax.Array = _dyn_field(jnp.ones(6))
+    leg_ang: jax.Array = _dyn_field(jnp.ones(12))
+    roll: jax.Array = _dyn_field(jnp.ones(1))
+    pitch: jax.Array = _dyn_field(jnp.ones(1))
+    yaw: jax.Array = _dyn_field(jnp.ones(1))
+    yaw_ctrl: jax.Array = _dyn_field(jnp.ones(1))
+    yaw_dot: jax.Array = _dyn_field(jnp.ones(1))
+    control: jax.Array = _dyn_field(jnp.ones(6))
+    terminal_exp_scale: jax.Array = _dyn_field(jnp.array(10.0))
+    terminal_rt_scale: jax.Array = _dyn_field(jnp.array(0.1))
 
     def _time_scale(self, n: int, name: str) -> jax.Array:
         """Get time scale weights for flat array.
@@ -443,17 +461,17 @@ class ExpWeights(Weights):
     alternatively, ``alpha`` is the decay rate when time is normalized to unity.
     """
 
-    alpha_acc: jax.Array = _init_field(jnp.ones(1) * 4.0)
-    alpha_omega: jax.Array = _init_field(jnp.ones(1) * 4.0)
-    alpha_leg_pos: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_leg_vel: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_leg_ang: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_roll: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_pitch: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_yaw: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_yaw_ctrl: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_yaw_dot: jax.Array = _init_field(jnp.ones(1) * 0.0)
-    alpha_control: jax.Array = _init_field(jnp.ones(1) * 0.0)
+    alpha_acc: jax.Array = _dyn_field(jnp.ones(1) * 4.0)
+    alpha_omega: jax.Array = _dyn_field(jnp.ones(1) * 4.0)
+    alpha_leg_pos: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_leg_vel: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_leg_ang: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_roll: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_pitch: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_yaw: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_yaw_ctrl: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_yaw_dot: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
+    alpha_control: jax.Array = _dyn_field(jnp.ones(1) * 0.0)
 
     def _time_scale(self, n: int, name: str) -> jax.Array:
         """Get time scale weights for flat array."""
@@ -514,6 +532,7 @@ class CostTerms:
 #######################
 
 
+@jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class MPCLimits:
     """MPC limits (all in SI).
@@ -560,15 +579,16 @@ class MPCLimits:
     """
 
     # robot limits
-    leg_min: float = 1160.410000 * 1e-3 + 0.05
-    leg_max: float = 1770.010000 * 1e-3 - 0.05
+    # remark: leg_min and leg_max include safety margins
+    leg_min: float = 1160.410000 * 1e-3 + 0.05001
+    leg_max: float = 1770.010000 * 1e-3 - 0.05001
     joint_max_angle: float = float(np.deg2rad(42.0 - 5.0))
 
     max_euler: float = float(np.deg2rad(35.0))
     max_roll: float = max_euler
     max_pitch: float = max_euler
     max_yaw: float = max_euler
-    max_rotary_yaw: float = float(np.deg2rad(90.0))
+    max_rotary_yaw: float = float(np.deg2rad(85.0))
     max_rotary_yaw_control: float = np.pi
 
     max_leg_vel: float = 20.0 / 39.37
@@ -582,6 +602,7 @@ class MPCLimits:
     max_angle_acc: float = 2100.0
 
 
+@jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class MPCSpec:
     """MPC specification (all in SI).
@@ -599,6 +620,12 @@ class MPCSpec:
         Time step for real robot.
     n :
         Horizon length (steps of size `dt`).
+    pred_E :
+        LQR integration matrix for vestibular prediction.
+    pred_n :
+        Horizon length for series extrapolation for vestibular prediction.
+    delay_n :
+        Number of iterations of delay before apply prediction horizon routine.
     human_displacement :
         Cartesian translation vector from the robot frame to the human head
         frame.
@@ -618,16 +645,21 @@ class MPCSpec:
         Scalar of the (average) leg lengths in the home configuration.
     use_rotary :
         True if table has rotary top, and False otherwise.
-    r_0 :
-        Center of gravity of the cable and its accouterments.
-    m_t :
-        Mass of the table, including its accouterments.
-    m_r :
-        Reflected moment of inertia of each actuator.
+    r_0_table :
+        Center of gravity of table.
+    m_table :
+        Ratio of mass of turntable to reflected inertia from a single leg.
+    r_0_rotary :
+        Center of gravity of table top.
+    m_rotary :
+        Ratio of mass of rotary top to reflected inertia from a single leg.
     t_e :
         Time it takes for bakes to activate after estop.
     a_b :
         Deceleration achievable by leg brakes.
+    leg_safety_factor :
+        If `delta_ell` is the leg length difference after the estop is pressed,
+        then we penalize with `leg_safety_factor * delta_ell`.
     vspec_acc :
         Vestibular acceleration model, with integration time step ``dt``.
     vspec_jerk :
@@ -642,6 +674,8 @@ class MPCSpec:
         Control filtering for yaw angle, with discretization step ``dt``.
     qspec :
         Control filtering for quaternions, with discretization step ``dt``.
+    alpha_terminal :
+        Exponential decay factor for `terminal_param` filtering.
     max_iter :
         Maximum L-BFGS iterations.
     max_ls :
@@ -657,49 +691,58 @@ class MPCSpec:
     """
 
     # cost stuff
-    weights: Weights | None = None
-    cost_terms: CostTerms | None = None
+    weights: Weights | None = _dyn_field(None)
+    cost_terms: CostTerms | None = _dyn_field(None)
 
     # control
-    dt: float = dt
-    n: int = 200
+    dt: float = _static_field(dt)
+    n: int = _static_field(200)
+
+    # prediction
+    pred_E: jax.Array = _dyn_field(_pred_E)
+    pred_n: int = _static_field(_pred_n)  # TODO(jozbee): make dynamic
 
     # robot geometry
-    human_displacement: np.ndarray = _default_elem(_human_displacement)
-    bots: np.ndarray = _default_elem(_bots)
-    tops: np.ndarray = _default_elem(_tops)
-    bot_normals: np.ndarray = _default_elem(_bot_normals)
-    top_normals: np.ndarray = _default_elem(_top_normals)
-    cart_home: np.ndarray = _default_elem(_cart_home)
-    tops_home: np.ndarray = _default_elem(_tops_home)
-    lengths_home: float = _default_elem(_lengths_home)
-    use_rotary: bool = True
+    human_displacement: np.ndarray = _static_field(_human_displacement)
+    bots: np.ndarray = _static_field(_bots)
+    tops: np.ndarray = _static_field(_tops)
+    bot_normals: np.ndarray = _static_field(_bot_normals)
+    top_normals: np.ndarray = _static_field(_top_normals)
+    cart_home: np.ndarray = _static_field(_cart_home)
+    tops_home: np.ndarray = _static_field(_tops_home)
+    lengths_home: float = _static_field(_lengths_home)
+    use_rotary: bool = _static_field(True)
 
     # robot safety
-    r_0: np.ndarray = _default_elem(_r_0)
-    m_t: float = _default_elem(_m_t)
-    m_r: float = _default_elem(_m_r)
-    t_e: float = _default_elem(_t_e)
-    a_b: float = _default_elem(_a_b)
+    r_0_table: jax.Array = _dyn_field(_r_0_table)
+    m_table: float = _dyn_field(_m_table)
+    r_0_rotary: jax.Array = _dyn_field(_r_0_rotary)
+    m_rotary: float = _dyn_field(_m_rotary)
+    t_e: float = _dyn_field(_t_e)
+    a_b: float = _dyn_field(_a_b)
+    leg_safety_factor: float = _dyn_field(_leg_safety_factor)
 
     # vestibular specs
-    vspec_acc: siso.DiscreteEigSISO = _default_elem(vspec_acc0)
-    vspec_jerk: siso.DiscreteEigSISO = _default_elem(vspec_jerk0)
-    vspec_omega: siso.DiscreteEigSISO = _default_elem(vspec_omega0)
+    vspec_acc: siso.DiscreteEigSISO = _static_field(vspec_acc0)
+    vspec_jerk: siso.DiscreteEigSISO = _static_field(vspec_jerk0)
+    vspec_omega: siso.DiscreteEigSISO = _static_field(vspec_omega0)
 
     # control filtering spec
-    ctrlspec: siso.DiscreteSISO = _default_elem(cspec)
-    xyzspec: siso.DiscreteSISO = _default_elem(pspec)
-    yspec: siso.DiscreteSISO = _default_elem(rspec)
-    qspec: siso.DiscreteSISO = _default_elem(pspec)
+    ctrlspec: siso.DiscreteSISO = _static_field(cspec)
+    xyzspec: siso.DiscreteSISO = _static_field(pspec)
+    yspec: siso.DiscreteSISO = _static_field(rspec)
+    qspec: siso.DiscreteSISO = _static_field(pspec)
+
+    # terminal
+    alpha_terminal: float = _dyn_field(0.05)
 
     # optimization spec
-    max_iter: int = 4
-    max_ls: int = 2
-    unroll: bool = False
-    init_norm: float = 1.0
-    debug: bool = False
-    use_terminal: bool = True
+    max_iter: int = _static_field(4)
+    max_ls: int = _static_field(2)
+    unroll: bool = _static_field(False)
+    init_norm: float = _static_field(1.0)
+    debug: bool = _static_field(False)
+    use_terminal: bool = _static_field(True)
 
     # WARNING:
     # Our hashing and equality checking are super efficient, but not general.
