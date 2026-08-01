@@ -103,7 +103,7 @@ if __name__ == "__main__":
     )
     limits = mpc_spec.MPCLimits()
     spec = mpc_spec.MPCSpec.init_weight_margins(
-        weights, limits, max_iter=2, max_ls=1, use_terminal=True
+        weights, limits, max_iter=2, max_ls=1, use_terminal=True, init_norm=1e-1
     )
     zero_ts = opt.TrainState.zero_init(spec)
     fun = functools.partial(mpc_solver, spec, zero_ts)
