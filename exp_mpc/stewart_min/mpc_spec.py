@@ -96,6 +96,7 @@ _m_rotary = 0.248
 _t_e = 0.18
 _a_b = 20 / (11.9 * 1e-3) / (2 * np.pi) * 0.01
 _leg_safety_factor = 3.25
+_leg_safety = 0.06
 
 # time step
 dt = 0.01
@@ -658,8 +659,9 @@ class MPCSpec:
     a_b :
         Deceleration achievable by leg brakes.
     leg_safety_factor :
+    leg_safety :
         If `delta_ell` is the leg length difference after the estop is pressed,
-        then we penalize with `leg_safety_factor * delta_ell`.
+        then we penalize with `leg_safety_factor * delta_ell + or - leg_safety`.
     vspec_acc :
         Vestibular acceleration model, with integration time step ``dt``.
     vspec_jerk :
@@ -721,6 +723,7 @@ class MPCSpec:
     t_e: float = _dyn_field(_t_e)
     a_b: float = _dyn_field(_a_b)
     leg_safety_factor: float = _dyn_field(_leg_safety_factor)
+    leg_safety: float = _dyn_field(_leg_safety)
 
     # vestibular specs
     vspec_acc: siso.DiscreteEigSISO = _static_field(vspec_acc0)

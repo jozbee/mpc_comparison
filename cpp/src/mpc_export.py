@@ -74,9 +74,9 @@ def mpc_solver(
     mpc_ts.control = last_control
 
     res_ts = opt.train_step_with_cost_jax(spec, mpc_ts, acc_ref, omega_ref)[0]
-    u_xyz = res_ts.y_pre[0, :3]
-    u_yaw = jnp.atleast_1d(res_ts.y_pre[0, 3])
-    u_tilt = res_ts.y_pre[0, 4:]
+    u_xyz = res_ts.y_pre[-1, :3]
+    u_yaw = jnp.atleast_1d(res_ts.y_pre[-1, 3])
+    u_tilt = res_ts.y_pre[-1, 4:]
     return (
         u_xyz,  # 0
         u_yaw,  # 1
