@@ -580,8 +580,8 @@ class MPCLimits:
 
     # robot limits
     # remark: leg_min and leg_max include safety margins
-    leg_min: float = 1160.410000 * 1e-3 + 0.05001
-    leg_max: float = 1770.010000 * 1e-3 - 0.05001
+    leg_min: float = 1160.410000 * 1e-3 + 0.1
+    leg_max: float = 1770.010000 * 1e-3 - 0.1
     joint_max_angle: float = float(np.deg2rad(42.0 - 5.0))
 
     max_euler: float = float(np.deg2rad(35.0))
