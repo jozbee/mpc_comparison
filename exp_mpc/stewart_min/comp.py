@@ -829,7 +829,6 @@ def estop_delta_ell(
     t_e: jax.Array,
     a_b: jax.Array,
     leg_safety_factor: jax.Array,
-    leg_safety: jax.Array,
     v_0: jax.Array,
     a_f: jax.Array,
 ) -> jax.Array:
@@ -842,9 +841,8 @@ def estop_delta_ell(
     a_b :
         Maximum deacceleration of legs once brakes are applied.
     leg_safety_factor :
-    leg_safety :
         If `delta_ell` is the leg length difference after the estop is pressed,
-        then we with `leg_safety_factor * delta_ell`.
+        then we with `leg_safety_factor * delta_ell + leg_safety`.
     v_0 :
         Initial velocity of legs, before estop.
     a_f :

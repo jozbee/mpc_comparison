@@ -269,7 +269,7 @@ def kinematics(
         rot_yaw = comp.rot_yaw(yaw)
         tops = spec.tops @ rot.T + xyz
         r_0_table = rot @ spec.r_0_table
-        r_0_rotary = rot @ rot_yaw @ spec.r_0_rotary
+        r_0_rotary = rot_yaw @ rot @ spec.r_0_rotary
 
         u = tops - spec.bots
         u_norm = jnp.linalg.norm(u, axis=1, keepdims=True)
@@ -301,7 +301,6 @@ def kinematics(
         spec.t_e,
         spec.a_b,
         spec.leg_safety_factor,
-        spec.leg_safety,
     )
     leg_pos_estop_delta = jax.vmap(estop_delta_ell)(leg_vel, a_f[1:])
     leg_pos_estop = leg_pos[1:] + leg_pos_estop_delta

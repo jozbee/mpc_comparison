@@ -125,8 +125,8 @@ def _ik_cost(
     leg_pos_quart = leg_pos_fun(leg_pos.flatten()).reshape(-1, 6)
     leg_vel_quart = leg_vel_fun(leg_vel.flatten()).reshape(-1, 6)
     leg_ang_quart = leg_ang_fun(leg_ang.flatten()).reshape(-1, 12)
-    leg_pos_estop_quart = 0.5 * (leg_pos_fun(leg_pos_estop.flatten()+spec.leg_safety).reshape(-1, 6)
-                          + leg_pos_fun(leg_pos_estop.flatten()-spec.leg_safety).reshape(-1, 6))
+    leg_pos_estop_quart = leg_pos_fun(leg_pos_estop.flatten()).reshape(-1, 6)
+
     def mean(x):
         return jnp.sum(jnp.mean(x, axis=0))
 
