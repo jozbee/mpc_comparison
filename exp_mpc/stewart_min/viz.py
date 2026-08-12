@@ -206,9 +206,9 @@ def human_vel(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
         human frame.
     """
     I = np.eye(3)
-    q0 = comp.inv_yt(ts.y_yaw[0], ts.y_quat[0])
+    q0 = comp.inv_ty(ts.y_quat[0], ts.y_yaw[0])
     R0 = comp.rot(q0)
-    q1 = comp.inv_yt(ts.y_yaw[1], ts.y_quat[1])
+    q1 = comp.inv_ty(ts.y_quat[1], ts.y_yaw[1])
     R1 = comp.rot(q1)
     pos0 = ts.y_xyz[0] + (R0 - I) @ spec.human_displacement
     pos1 = ts.y_xyz[1] + (R1 - I) @ spec.human_displacement
@@ -233,11 +233,11 @@ def human_acc(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
         in the human frame.
     """
     I = np.eye(3)
-    q0 = comp.inv_yt(ts.y_yaw[0], ts.y_quat[0])
+    q0 = comp.inv_ty(ts.y_quat[0], ts.y_yaw[0])
     R0 = comp.rot(q0)
-    q1 = comp.inv_yt(ts.y_yaw[1], ts.y_quat[1])
+    q1 = comp.inv_ty(ts.y_quat[1], ts.y_yaw[1])
     R1 = comp.rot(q1)
-    q2 = comp.inv_yt(ts.y_yaw[2], ts.y_quat[2])
+    q2 = comp.inv_ty(ts.y_quat[2], ts.y_yaw[2])
     R2 = comp.rot(q2)
     pos0 = ts.y_xyz[0] + (R0 - I) @ spec.human_displacement
     pos1 = ts.y_xyz[1] + (R1 - I) @ spec.human_displacement
@@ -254,7 +254,7 @@ def _table_pos(ts: opt.TrainState) -> jax.Array:
 
 @functools.partial(jax.jit, static_argnames=["spec"])
 def _human_pos(ts: opt.TrainState, spec: mpc_spec.MPCSpec) -> jax.Array:
-    q = comp.inv_yt(ts.y_yaw[0], ts.y_quat[0])
+    q = comp.inv_ty(ts.y_quat[0], ts.y_yaw[0])
     R = comp.rot(q)
     I = np.eye(3)
     xyz = ts.y_xyz[0] + (R - I) @ spec.human_displacement

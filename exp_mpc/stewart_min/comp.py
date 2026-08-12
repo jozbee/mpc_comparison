@@ -162,40 +162,40 @@ def quat2euler(q):
     )
 
 
-def inv_yt(yaw: jax.Array, t: jax.Array) -> jax.Array:
-    r"""Get quaternion from yaw-tilt decomposition.
+def inv_ty(q, yaw):
+    r"""Get quaternion from tilt-yaw decomposition.
 
     The yaw vector is given by (`yaw` is a scalar)
     :math:`y = \cos(yaw / 2) + 0 \, i + 0 \, j + \sin(yaw / 2) \, k`.
     The tilt vector should be given by
     :math:`t = t_0 + t_1 \, i + t_2 \, j + 0 \, k`.
     The final quaternion is computed via the quaternion multiplication
-    :math:`y \, t`.
+    :math:`t \, y`.
     In practice, the tilt might have a slight nonzero component, which we
     account for.
 
     Parameters
     ----------
-    yaw :
-        Yaw angle.
     t :
         Unit (tilt) quaternion
+    yaw :
+        Yaw angle.
 
     Returns
     -------
     quat :
-        Quaternion representing the yaw-tilt composition.
+        Quaternion representing the tilt-yaw composition.
     """
-    assert t.shape == (4,)
-    q_0, q_1, q_2, q_3 = t
+    assert q.shape == (4,)
+    q_0, q_1, q_2, q_3 = q
     x0 = (1 / 2) * yaw
     x1 = jnp.cos(x0)
     x2 = jnp.sin(x0)
     return jnp.array(
         [
             q_0 * x1 - q_3 * x2,
-            q_1 * x1 - q_2 * x2,
-            q_1 * x2 + q_2 * x1,
+            q_1 * x1 + q_2 * x2,
+            -q_1 * x2 + q_2 * x1,
             q_0 * x2 + q_3 * x1,
         ]
     )
@@ -865,15 +865,6 @@ def estop_delta_ell(
     return delta_ell * leg_safety_factor
 
 
-def _propogate_pos(x0, E, n):
-    def scan_body(x0, _):
-        x1 = E @ x0
-        return x1, x1[0]
-
-    _, res = jax.lax.scan(scan_body, x0, length=n)
-    return res.flatten()
-
-
 def _diff(x, dt):
     return jnp.diff(x) / dt
 
@@ -881,27 +872,52 @@ def _diff(x, dt):
 def _taylor_coeffs(hist, dt):
     assert hist.shape == (4,)
     a0 = hist[3]
-    diff = functools.partial(_diff, dt=dt)
-    a1 = diff(hist[2:])
-    a2 = diff(diff(hist[1:])) / 2
-    a3 = diff(diff(diff(hist))) / 6
-    return a0, a1, a2, a3
+    d = functools.partial(_diff, dt=dt)
+    a1 = d(hist[2:])
+    a2 = d(d(hist[1:])) / 2
+    a3 = d(d(d(hist))) / 6
+    squee = jnp.squeeze
+    return squee(a0), squee(a1), squee(a2), squee(a3)
 
 
-def _taylor_eval(hist, x, dt):
+def _make_taylor_eval(hist, dt):
     a0, a1, a2, a3 = _taylor_coeffs(hist, dt)
-    return a0 + a1 * x + a2 * x**2 + a3 * x**3
+
+    def taylor_eval(x):
+        return a0 + a1 * x + a2 * x**2 + a3 * x**3
+
+    def taylor_evalp(x):
+        a0, a1, a2, a3 = _taylor_coeffs(hist, dt)
+        f0 = a0 + a1 * x + a2 * x**2 + a3 * x**3
+        f1 = a1 + 2 * a2 * x + 3 * a3 * x**2
+        f2 = 2 * a2 + 6 * a3 * x
+        return jnp.array([f0, f1, f2])
+
+    return taylor_eval, taylor_evalp
 
 
-def _taylor_evalp(hist, x, dt):
-    a0, a1, a2, a3 = _taylor_coeffs(hist, dt)
-    f0 = a0 + a1 * x + a2 * x**2 + a3 * x**3
-    f1 = a1 + 2 * a2 * x + 3 * a3 * x**2
-    f2 = 2 * a2 + 6 * a3 * x
-    return jnp.array([f0, f1, f2])
+def _update_taylor(taylor_eval, dt, m, res):
+    def taylor_fori(i, arr):
+        t = i * dt
+        arr = arr.at[i].set(taylor_eval(t))
+        return arr
+
+    res = jax.lax.fori_loop(0, m, taylor_fori, res)
+    return res
 
 
-@functools.partial(jax.jit, static_argnames=["n_taylor", "n"])
+def _update_lqr(x0, E, m, res):
+    def lqr_fori(i, carry):
+        x0, arr = carry
+        x1 = E @ x0
+        arr = arr.at[i].set(x1[0])
+        return x1, arr
+
+    _, res = jax.lax.fori_loop(m, res.size, lqr_fori, (x0, res))
+    return res
+
+
+@functools.partial(jax.jit, static_argnames=["n"])
 def pred_hist(n_taylor, n, dt, E, hist):
     """Predict horizon from history.
 
@@ -924,10 +940,10 @@ def pred_hist(n_taylor, n, dt, E, hist):
     pred :
         Predicted horizon.
     """
-    assert n_taylor < n
-    t = jnp.arange(0, n_taylor, dtype=float) * dt
-    pred0 = _taylor_eval(hist, t, dt)
-    x0 = _taylor_evalp(hist, t[-1], dt)
-    pred1 = _propogate_pos(x0, E, n - n_taylor)
-    pred = jnp.concatenate([pred0, pred1])
-    return pred
+    taylor_eval, taylor_evalp = _make_taylor_eval(hist, dt)
+    x0 = taylor_evalp(n_taylor * dt)
+
+    res = jnp.empty(n)
+    res = _update_taylor(taylor_eval, dt, n_taylor, res)
+    res = _update_lqr(x0, E, n_taylor, res)
+    return res

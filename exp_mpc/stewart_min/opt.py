@@ -506,8 +506,8 @@ class TrainState:
         quat_hist = jnp.tile(
             jnp.array([1.0, 0.0, 0.0, 0.0]).reshape(1, -1), reps=(2, 1)
         )
-        terminal_param = jnp.array(0.0, dtype=float)
-        iter = jnp.array(0, dtype=int)
+        terminal_param = jnp.array(0.0, dtype=jnp.float64)
+        iter = jnp.array(0, dtype=jnp.int64)
 
         x_pre = jnp.zeros((spec.n, spec.ctrlspec.n_state * 6))
         y_pre = jnp.zeros((spec.n, 7))
@@ -738,12 +738,92 @@ def apply_control(
     return next_state
 
 
+def predict_vestibular(
+    spec: mpc_spec.MPCSpec,
+    train_state: TrainState,
+    acc_ref: jax.Array,
+    omega_ref: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Predict vestibular states for prediction horizon.
+
+    There are two possible outputs.
+    If `acc_ref` and `omega_ref` are single inputs, i.e., only vectors of
+    length 3, then we predict the future vestibular horizon.
+    If `acc_ref` and `omega_ref` are given across the entire horizon, i.e.,
+    they each have shape `(n, 3)` where `n` is the prediction horizon length,
+    then the vestibular model is directl integrated using these reference
+    values.
+
+    Parameters
+    ----------
+    spec :
+        MPC specification.
+    train_state :
+        Current MPC state.
+    acc_ref :
+        Reference linear acceleration trajectory.
+    omega_ref :
+        Reference angular velocity trajectory.
+
+    Returns
+    -------
+    x_vest_sim :
+        Internal states for vestibular model.
+    y_vest_sim :
+        Observed (predicted) states for vestiubular model.
+    """
+    # setup
+    assert acc_ref.shape[-1] == 3
+    one_data = len(acc_ref.shape) == 1
+    if one_data:
+        acc_ref = jnp.tile(acc_ref.reshape(1, -1), reps=(spec.n, 1))
+        omega_ref = jnp.tile(omega_ref.reshape(1, -1), reps=(spec.n, 1))
+    assert acc_ref.shape == omega_ref.shape
+    assert acc_ref.shape[0] == spec.n
+    x_vest_sim, y_vest_sim = eigen_vstates(
+        spec=spec,
+        acc=acc_ref,
+        omega=omega_ref,
+        vstate0=train_state.vstate0_sim,
+        return_eig_states=False,
+    )
+
+    # predict into the future?
+    if one_data:
+        y_vest_sim_hist = jnp.vstack(
+            [
+                train_state.y_vest_sim_hist[1:],
+                jnp.atleast_2d(y_vest_sim[0]),
+            ]
+        )
+
+        def running_pred():
+            pred_hist = jax.vmap(
+                comp.pred_hist,
+                in_axes=[0, None, None, 0, 1],
+            )
+            y_vest_sim = pred_hist(
+                spec.pred_n, spec.n, spec.dt, spec.pred_E, y_vest_sim_hist
+            )
+            return jnp.transpose(y_vest_sim)
+
+        def initial_pred():
+            # too early?
+            return y_vest_sim
+
+        # the 50 constant can reasonably be made 3...
+        y_vest_sim = jax.lax.cond(
+            train_state.iter > 50, running_pred, initial_pred
+        )
+    return x_vest_sim, y_vest_sim
+
+
 def train_step_with_cost_jax(
     spec: mpc_spec.MPCSpec,
     train_state: TrainState,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    use_scipy: bool = False,
+    opt_scheme: str = "jax",
 ) -> tuple[TrainState, LBFGSResult]:
     """Run one MPC control cycle with JAX L-BFGS.
 
@@ -755,10 +835,11 @@ def train_step_with_cost_jax(
         Current MPC state.
     acc_ref :
         Reference linear acceleration trajectory.
-        Shape: `(horizon_num, 3)`.
     omega_ref :
         Reference angular velocity trajectory.
-        Shape: `(horizon_num, 3)`.
+    opt_scheme :
+        Determine which optimizer to use.
+        Valid options include `["jax", "scipy", "none"]`.
 
     Returns
     -------
@@ -776,41 +857,7 @@ def train_step_with_cost_jax(
     guess_flat = jnp.ravel(guess)
 
     # vestibular_prediction
-    assert acc_ref.shape == omega_ref.shape
-    assert acc_ref.shape[-1] == 3
-    x_vest_sim, y_vest_sim = eigen_vstates(
-        spec=spec,
-        acc=jnp.atleast_2d(acc_ref),
-        omega=jnp.atleast_2d(omega_ref),
-        vstate0=train_state.vstate0_sim,
-        return_eig_states=False,
-    )
-    if len(acc_ref.shape) == 1:
-        y_vest_sim_hist = jnp.vstack(
-            [
-                train_state.y_vest_sim_hist[1:],
-                jnp.atleast_2d(y_vest_sim[0]),
-            ]
-        )
-        x_vest_sim = jnp.tile(
-            x_vest_sim, reps=(train_state.x_vest_sim.shape[0], 1)
-        )
-
-        def running_pred():
-            pred_hist = functools.partial(
-                comp.pred_hist, spec.pred_n, spec.n, spec.dt, spec.pred_E
-            )
-            y_vest_sim = jax.vmap(pred_hist, in_axes=1)(y_vest_sim_hist)
-            return jnp.transpose(y_vest_sim)
-
-        def initial_pred():
-            return jnp.tile(
-                y_vest_sim, reps=(train_state.y_vest_sim.shape[0], 1)
-            )
-
-        y_vest_sim = jax.lax.cond(ts.iter > 50, running_pred, initial_pred)
-    else:
-        assert acc_ref.shape[0] == spec.n
+    x_vest_sim, y_vest_sim = predict_vestibular(spec, ts, acc_ref, omega_ref)
 
     # terminal param
     tp0 = train_state.terminal_param
@@ -823,7 +870,7 @@ def train_step_with_cost_jax(
     opt_fun = functools.partial(
         lbfgs_cost_and_grad, spec, train_state, y_vest_sim, terminal_param
     )
-    if not use_scipy:
+    if opt_scheme.lower() == "jax":
         opt_params = lbfgs.OptParamsLBFGS(
             fun=opt_fun,
             max_iter=spec.max_iter,
@@ -838,7 +885,7 @@ def train_step_with_cost_jax(
             fun_params=None,
         )
         opt_control = res[0]
-    else:
+    elif opt_scheme.lower() == "scipy":
         res_sci = sci_opt.minimize(
             fun=functools.partial(opt_fun, None),  # lbfgs library shenanigans
             x0=guess_flat,
@@ -851,6 +898,9 @@ def train_step_with_cost_jax(
         )
         res = (res_sci.x, res_sci.fun, res_sci.jac)
         opt_control = res[0]
+    else:
+        opt_control = ts.control  # just use the given control
+        res = None
 
     next_state = apply_control(
         spec, train_state, opt_control, x_vest_sim, y_vest_sim, terminal_param
@@ -860,16 +910,16 @@ def train_step_with_cost_jax(
 
 train_step_with_cost_jit = jax.jit(
     train_step_with_cost_jax,
-    static_argnames=["use_scipy"],
+    static_argnames=["opt_scheme"],
 )
 
 
 def train_step_with_cost(
+    spec: mpc_spec.MPCSpec,
+    train_state: TrainState,
     acc_ref: jax.Array,
     omega_ref: jax.Array,
-    train_state: TrainState,
-    spec: mpc_spec.MPCSpec,
-    use_scipy: bool = False,
+    opt_scheme: str = "jax",
 ) -> tuple[TrainState, LBFGSResult, float]:
     """Run one MPC control cycle with JAX L-BFGS, and measure wall time.
 
@@ -883,29 +933,32 @@ def train_step_with_cost(
         Current MPC state.
     spec :
         MPC specification.
+    opt_scheme :
+        Determine which optimizer to use.
+        Valid options include `["jax", "scipy", "none"]`.
 
     Returns
     -------
     next_state :
         Updated MPC state.
     lbfgs_res :
-        L-BFGS optimizer tuple ``(minimizer, value, gradient)``.
+        L-BFGS optimizer tuple `(minimizer, value, gradient)`.
     elapsed_time :
         Wall-time in seconds for calling the jit-ed
         :func:`train_step_with_cost_jax`.
     """
     t0 = time.time()
-    if use_scipy:
-        train_step = train_step_with_cost_jax
-    else:
+    if opt_scheme.lower() in ["jax", "none"]:
         train_step = train_step_with_cost_jit
+    else:
+        train_step = train_step_with_cost_jax
     res = train_step(
         acc_ref=acc_ref,
         omega_ref=omega_ref,
         train_state=train_state,
         spec=spec,
-        use_scipy=use_scipy,
+        opt_scheme=opt_scheme,
     )
-    res[0].filt0.block_until_ready()
+    res[0].filt0.block_until_ready()  # wait for computation for good timing
     t1 = time.time()
     return res[0], res[1], t1 - t0
