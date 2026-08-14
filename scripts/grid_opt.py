@@ -125,7 +125,8 @@ def single_sms(args: tuple) -> None:
         weights, limits, max_iter=2, max_ls=1, use_terminal=True
     )
     train_step = functools.partial(
-        opt.train_step_with_cost, spec=spec, use_scipy=False
+        opt.train_step_with_cost,
+        spec,
     )
 
     #######
@@ -138,9 +139,9 @@ def single_sms(args: tuple) -> None:
     res_list = []
     for i in range(num_steps):
         train_state, res, t_tot = train_step(
-            jnp.tile(acc_ref[begin + i], (n, 1)),
-            jnp.tile(omega_ref[begin + i], (n, 1)),
             train_state,
+            acc_ref[begin + i],
+            omega_ref[begin + i],
         )
         train_list.append(train_state)
         res_list.append(res)
