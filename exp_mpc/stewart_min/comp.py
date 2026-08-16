@@ -941,7 +941,7 @@ def pred_hist(n_taylor, n, dt, E, hist):
         Predicted horizon.
     """
     taylor_eval, taylor_evalp = _make_taylor_eval(hist, dt)
-    x0 = taylor_evalp(n_taylor * dt)
+    x0 = taylor_evalp((n_taylor - 1) * dt)
 
     res = jnp.empty(n)
     res = _update_taylor(taylor_eval, dt, n_taylor, res)

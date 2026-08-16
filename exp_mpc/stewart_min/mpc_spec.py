@@ -114,14 +114,9 @@ def triple_E(alpha, dt):
 
 
 # lander pred
-_alphas = [1.45, 1.6, 0.8, 0.85, 0.4, 0.4]
+_alphas = [1.7, 2.0, 2.8, 1.0, 0.75, 0.75]
 _pred_E = jnp.stack([triple_E(a, dt) for a in _alphas])
-_pred_n = jnp.array([50, 46, 20, 42, 14, 30], dtype=jnp.int64)
-
-# rover pred
-# _alphas = [0.45, 0.6, 3.95, 1.85, 2.0, 0.25]
-# _pred_E = jnp.stack([triple_E(a, dt) for a in _alphas])
-# _pred_n = jnp.array([18, 22, 14, 30, 32, 30], dtype=jnp.int64)
+_pred_n = jnp.array([4, 4, 0, 6, 6, 4], dtype=jnp.int64)
 
 # vspec ref defs
 _s = ct.tf("s")

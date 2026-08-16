@@ -816,37 +816,37 @@ def _plot_cartesian_trajectory_p(
     # references?
     angle_vel_ref = None
     if "angular-velocity" in references:
-        angle_vel_ref = references["angular-velocity"]
+        angle_vel_ref = jnp.rad2deg(references["angular-velocity"])
 
     # plot
     _simple_plot(
         axis=ax_omega_x_vel,
         time=times,
-        data=angle_vels[:, 0],
+        data=jnp.rad2deg(angle_vels[:, 0]),
         title="X Angular Velocity",
-        data_label="[rad/s]",
-        min_limit=-limits.max_angle_vel,
-        max_limit=limits.max_angle_vel,
+        data_label="[deg/s]",
+        min_limit=-jnp.rad2deg(limits.max_angle_vel),
+        max_limit=jnp.rad2deg(limits.max_angle_vel),
         reference=_reference_helper(angle_vel_ref, 0),
     )
     _simple_plot(
         axis=ax_omega_y_vel,
         time=times,
-        data=angle_vels[:, 1],
+        data=jnp.rad2deg(angle_vels[:, 1]),
         title="Y Angular Velocity",
-        data_label="[rad/s]",
-        min_limit=-limits.max_angle_vel,
-        max_limit=limits.max_angle_vel,
+        data_label="[deg/s]",
+        min_limit=-jnp.rad2deg(limits.max_angle_vel),
+        max_limit=jnp.rad2deg(limits.max_angle_vel),
         reference=_reference_helper(angle_vel_ref, 1),
     )
     _simple_plot(
         axis=ax_omega_z_vel,
         time=times,
-        data=angle_vels[:, 2],
+        data=jnp.rad2deg(angle_vels[:, 2]),
         title="Z Angular Velocity",
-        data_label="[rad/s]",
-        min_limit=-limits.max_angle_vel,
-        max_limit=limits.max_angle_vel,
+        data_label="[deg/s]",
+        min_limit=-jnp.rad2deg(limits.max_angle_vel),
+        max_limit=jnp.rad2deg(limits.max_angle_vel),
         reference=_reference_helper(angle_vel_ref, 2),
     )
 
@@ -915,29 +915,29 @@ def _plot_cartesian_trajectory_p(
     _simple_plot(
         axis=ax_omega_x_acc,
         time=times,
-        data=angle_accs[:, 0],
+        data=jnp.rad2deg(angle_accs[:, 0]),
         title="X Angular Acceleration",
-        data_label="[rad/s^2]",
-        min_limit=-limits.max_angle_acc,
-        max_limit=limits.max_angle_acc,
+        data_label="[deg/s^2]",
+        min_limit=-jnp.rad2deg(limits.max_angle_acc),
+        max_limit=jnp.rad2deg(limits.max_angle_acc),
     )
     _simple_plot(
         axis=ax_omega_y_acc,
         time=times,
-        data=angle_accs[:, 1],
+        data=jnp.rad2deg(angle_accs[:, 1]),
         title="Y Angular Acceleration",
-        data_label="[rad/s^2]",
-        min_limit=-limits.max_angle_acc,
-        max_limit=limits.max_angle_acc,
+        data_label="[deg/s^2]",
+        min_limit=-jnp.rad2deg(limits.max_angle_acc),
+        max_limit=jnp.rad2deg(limits.max_angle_acc),
     )
     _simple_plot(
         axis=ax_omega_z_acc,
         time=times,
-        data=angle_accs[:, 2],
+        data=jnp.rad2deg(angle_accs[:, 2]),
         title="Z Angular Acceleration",
-        data_label="[rad/s^2]",
-        min_limit=-limits.max_angle_acc,
-        max_limit=limits.max_angle_acc,
+        data_label="[deg/s^2]",
+        min_limit=-jnp.rad2deg(limits.max_angle_acc),
+        max_limit=jnp.rad2deg(limits.max_angle_acc),
     )
 
 
@@ -1066,32 +1066,32 @@ def plot_vestibular_trajectory(
     _simple_plot(
         axis=axes[0, 0],
         time=times,
-        data=omegas[:, 0],
+        data=jnp.rad2deg(omegas[:, 0]),
         title="X Angular Velocity",
-        data_label="[rad/s]",
-        min_limit=-limits.max_angle_vel,
-        max_limit=limits.max_angle_vel,
-        reference=omegas_ref[:, 0],
+        data_label="[deg/s]",
+        min_limit=-jnp.rad2deg(limits.max_angle_vel),
+        max_limit=jnp.rad2deg(limits.max_angle_vel),
+        reference=jnp.rad2deg(omegas_ref[:, 0]),
     )
     _simple_plot(
         axis=axes[0, 1],
         time=times,
-        data=omegas[:, 1],
+        data=jnp.rad2deg(omegas[:, 1]),
         title="Y Angular Velocity",
-        data_label="[rad/s]",
-        min_limit=-limits.max_angle_vel,
-        max_limit=limits.max_angle_vel,
-        reference=omegas_ref[:, 1],
+        data_label="[deg/s]",
+        min_limit=-jnp.rad2deg(limits.max_angle_vel),
+        max_limit=jnp.rad2deg(limits.max_angle_vel),
+        reference=jnp.rad2deg(omegas_ref[:, 1]),
     )
     _simple_plot(
         axis=axes[0, 2],
         time=times,
-        data=omegas[:, 2],
+        data=jnp.rad2deg(omegas[:, 2]),
         title="Z Angular Velocity",
-        data_label="[rad/s]",
-        min_limit=-limits.max_angle_vel,
-        max_limit=limits.max_angle_vel,
-        reference=omegas_ref[:, 2],
+        data_label="[deg/s]",
+        min_limit=-jnp.rad2deg(limits.max_angle_vel),
+        max_limit=jnp.rad2deg(limits.max_angle_vel),
+        reference=jnp.rad2deg(omegas_ref[:, 2]),
     )
 
     #######################

@@ -32,7 +32,7 @@ def load_clean_references(file_path: str) -> tuple[jax.Array, jax.Array]:
     assert omega_ref.shape[1] == 3
 
     # filt (butter)
-    s = ct.tf("s") / (2 * np.pi * 0.5)
+    s = ct.tf("s") / (2 * np.pi * 5.0)
     butter = siso.DiscreteSISO.cont2discrete(
         1 / (1 + 2 * s + 2 * s**2 + s**3), dt=mpc_spec.dt, method="bilinear"
     )
@@ -103,8 +103,8 @@ def pred_err(spec, pred_fun, data, hist_size):
 
     def err_body(hist, future, idx):
         pred = pred_fun(hist, t, idx)
-        return jnp.mean(jnp.square((pred - future) * 1e2))
-        # return jnp.mean(jnp.square((pred - future) * 1e2 * jnp.exp(-1.0 * t)))
+        # return jnp.mean(jnp.square((pred - future) * 1e2))
+        return jnp.mean(jnp.square((pred - future) * 1e2 * jnp.exp(-0.5 * t)))
         # return jnp.mean(jnp.square((pred - future) * 1e2)[:100])
 
     hist = part(data, hist_size)
@@ -134,8 +134,8 @@ def const_cost_fun(spec, lti_int, x_data, y_data, ctrl_data):
 
 def poly_opt(spec, lti_int, x_data, y_data, ctrl_data):
     res = {}
-    alphas = np.arange(0.2, 5.0, step=0.05)
-    n_taylors = range(10, 75, 2)
+    alphas = np.arange(0.2, 22.0, step=0.05)
+    n_taylors = range(0, 10, 2)
     lti_int = jax.jit(lti_int)
 
     for j in tqdm.tqdm(range(len(n_taylors))):
@@ -168,7 +168,7 @@ if __name__ == "__main__":
         "../data/clean_specific-forces-lander_motion_redes_manual.hdf",
         "../data/clean_specific-forces-lander_motion_redes_auto.hdf",
     ]
-    file_path = file_paths[0]
+    file_path = file_paths[2]
     acc_ref, omega_ref = load_clean_references(file_path)
 
     # setup

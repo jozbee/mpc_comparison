@@ -50,19 +50,12 @@ class PersonelMode:
 class PredictionMode:
     CONSTANT: int = 0
     LANDER: int = 1
-    ROVER: int = 2
 
     lander_alpha: jax.Array = jnp.array([1.45, 1.6, 0.8, 0.85, 0.4, 0.4])
     lander_E: jax.Array = jnp.stack(
         [mpc_spec.triple_E(a, mpc_spec.dt) for a in lander_alpha]
     )
     lander_n: jax.Array = jnp.array([50, 46, 20, 42, 14, 30], dtype=jnp.int64)
-
-    rover_alpha: jax.Array = jnp.array([0.45, 0.6, 3.95, 1.85, 2.0, 0.25])
-    rover_E: jax.Array = jnp.stack(
-        [mpc_spec.triple_E(a, mpc_spec.dt) for a in rover_alpha]
-    )
-    rover_n: jax.Array = jnp.array([18, 22, 14, 30, 32, 30], dtype=jnp.int64)
 
     def process_idx(self, ts, spec, idx):
         idx = round(idx)
@@ -81,12 +74,9 @@ class PredictionMode:
         def lander_pred():
             return self.lander_E, self.lander_n, ts.iter
 
-        def rover_pred():
-            return self.rover_E, self.rover_n, ts.iter
-
         pred_E, pred_n, iter = jax.lax.switch(
             idx,
-            [constant_pred, lander_pred, rover_pred],
+            [constant_pred, lander_pred],
         )
         spec.pred_E = pred_E
         spec.pred_n = pred_n
@@ -97,20 +87,15 @@ class PredictionMode:
         lander_E = jnp.stack(
             [mpc_spec.triple_E(a, mpc_spec.dt) for a in cls.lander_alpha]
         )
-        rover_E = jnp.stack(
-            [mpc_spec.triple_E(a, mpc_spec.dt) for a in cls.rover_alpha]
-        )
         res = cls()
         res.lander_E = lander_E
-        res.rover_E = rover_E
         return res
 
 
 class WeightMode:
     CONSTANT: int = 0
-    LANDER: int = 1
-    ROVER_00: int = 2
-    ROVER_01: int = 3
+    LANDER_00: int = 1
+    LANDER_01: int = 2
 
     constant_weights: mpc_spec.ExpWeights = mpc_spec.ExpWeights(
         lin_dyn=jnp.ones(3) * 1e4,
@@ -119,26 +104,19 @@ class WeightMode:
         alpha_acc=jnp.array([0.0]),
         alpha_omega=jnp.array([0.0]),
     )
-    lander_weights: mpc_spec.ExpWeights = mpc_spec.ExpWeights(
+    lander_weights_00: mpc_spec.ExpWeights = mpc_spec.ExpWeights(  # lander_acc
         lin_dyn=jnp.ones(3) * 1e5,
-        omega=jnp.ones(3) * 5e5,
-        control=jnp.ones(6) * 1e-2,
-        alpha_acc=jnp.array([2.0]),
-        alpha_omega=jnp.array([1.0]),
+        omega=jnp.array([1e0, 1e0, 1e2]) * 1e5,
+        control=jnp.ones(6) * 1e-3,
+        alpha_acc=jnp.array([1.0]),
+        alpha_omega=jnp.array([0.0]),
     )
-    rover_weights_00: mpc_spec.ExpWeights = mpc_spec.ExpWeights(
+    lander_weights_01: mpc_spec.ExpWeights = mpc_spec.ExpWeights(  # lander_ome
         lin_dyn=jnp.ones(3) * 1e5,
-        omega=jnp.ones(3) * 5e5,
+        omega=jnp.array([1e0, 1e0, 1e2]) * 5e5,
         control=jnp.ones(6) * 1e-1,
-        alpha_acc=jnp.array([1.0]),
-        alpha_omega=jnp.array([1.0]),
-    )
-    rover_weights_01: mpc_spec.ExpWeights = mpc_spec.ExpWeights(
-        lin_dyn=jnp.ones(3) * 1e5,
-        omega=jnp.ones(3) * 5e4,
-        control=jnp.ones(6) * 1e-2,
-        alpha_acc=jnp.array([1.0]),
-        alpha_omega=jnp.array([8.0]),
+        alpha_acc=jnp.array([0.0]),
+        alpha_omega=jnp.array([0.0]),
     )
 
     def process_idx(self, ts, spec, idx):
@@ -147,9 +125,8 @@ class WeightMode:
             idx,
             [
                 lambda: self.constant_weights,
-                lambda: self.lander_weights,
-                lambda: self.rover_weights_00,
-                lambda: self.rover_weights_01,
+                lambda: self.lander_weights_00,
+                lambda: self.lander_weights_01,
             ],
         )
 
