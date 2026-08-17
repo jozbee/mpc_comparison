@@ -41,7 +41,7 @@ def load_clean_references(
     assert omega_ref.shape[1] == 3
 
     # filt (butter)
-    s = ct.tf("s") / (2 * np.pi * 0.5)
+    s = ct.tf("s") / (2 * np.pi * 5.0)
     butter = siso.DiscreteSISO.cont2discrete(
         1 / (1 + 2 * s + 2 * s**2 + s**3), dt=dt, method="bilinear"
     )
@@ -125,7 +125,8 @@ def single_sms(args: tuple) -> None:
         weights, limits, max_iter=2, max_ls=1, use_terminal=True
     )
     train_step = functools.partial(
-        opt.train_step_with_cost, spec=spec, use_scipy=False
+        opt.train_step_with_cost,
+        spec,
     )
 
     #######
@@ -138,9 +139,9 @@ def single_sms(args: tuple) -> None:
     res_list = []
     for i in range(num_steps):
         train_state, res, t_tot = train_step(
-            jnp.tile(acc_ref[begin + i], (n, 1)),
-            jnp.tile(omega_ref[begin + i], (n, 1)),
             train_state,
+            acc_ref[begin + i],
+            omega_ref[begin + i],
         )
         train_list.append(train_state)
         res_list.append(res)
@@ -248,13 +249,14 @@ if __name__ == "__main__":
         np.ones(3) * 1e4,
         np.ones(3) * 1e5,
     ]
+    omega_ones = jnp.array([1e0, 1e0, 1e2])  # weight z-vel more
     omega_grid = [
-        # np.ones(3) * 1e3,  # x, y, z, ang vel weights
-        # np.ones(3) * 5e3,
-        np.ones(3) * 1e4,
-        np.ones(3) * 5e4,
-        np.ones(3) * 1e5,
-        np.ones(3) * 5e5,
+        # omega_ones * 1e3,  # x, y, z, ang vel weights
+        # omega_ones * 5e3,
+        omega_ones * 1e4,
+        omega_ones * 5e4,
+        omega_ones * 1e5,
+        omega_ones * 5e5,
     ]
     ctrl_grid = [
         # np.ones(6) * 1e0,
@@ -262,8 +264,8 @@ if __name__ == "__main__":
         np.ones(6) * 1e-2,
         np.ones(6) * 1e-3,
     ]
-    alpha_acc_grid = [0.0, 1.0, 2.0, 4.0, 8.0]  # exponential decay factor, acc
-    alpha_omega_grid = [0.0, 1.0, 2.0, 4.0, 8.0]  # exp decay factor, ang vel
+    alpha_acc_grid = [0.0, 1.0, 2.0, 4.0]  # exponential decay factor, acc
+    alpha_omega_grid = [0.0, 1.0, 2.0, 4.0]  # exp decay factor, ang vel
     horizon_grid = [200]
 
     #######

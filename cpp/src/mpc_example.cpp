@@ -21,14 +21,12 @@ enum class PersonelMode {
 enum class PredictionMode {
   CONSTANT = 0,
   LANDER = 1,
-  ROVER = 2,
 };
 
 enum class WeightMode {
   CONSTANT = 0,
-  LANDER = 1,
-  ROVER_00 = 2,
-  ROVER_01 = 3,
+  LANDER_00 = 1,
+  LANDER_01 = 2,
 };
 
 int main() {

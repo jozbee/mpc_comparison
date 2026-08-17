@@ -17,6 +17,8 @@ jax.config.update("jax_enable_x64", True)
 # data #
 ########
 
+dt = mpc_spec.dt
+
 
 # load data
 def load_clean_references(file_path: str) -> tuple[jax.Array, jax.Array]:
@@ -24,9 +26,9 @@ def load_clean_references(file_path: str) -> tuple[jax.Array, jax.Array]:
     return data[:, 1:4], data[:, 4:]
 
 
-# file_path = "../../data/clean_00_sms_drive.hdf"
+file_path = "../../data/clean_00_sms_drive.hdf"
 # file_path = "../../data/clean_specific-forces-standard-road-v2.hdf"
-file_path = "../../data/clean_specific-forces-lander_motion_redes_manual.hdf"
+# file_path = "../../data/clean_specific-forces-lander_motion_redes_manual.hdf"
 # file_path = "../../data/clean_specific-forces-lander_motion_redes_auto.hdf"
 acc_ref, omega_ref = load_clean_references(file_path)
 
@@ -39,7 +41,7 @@ assert acc_ref.shape[1] == 3
 assert omega_ref.shape[1] == 3
 
 # filt (butter)
-s = ct.tf("s") / (2 * np.pi * 0.5)
+s = ct.tf("s") / (2 * np.pi * 5.0)
 butter = siso.DiscreteSISO.cont2discrete(
     1 / (1 + 2 * s + 2 * s**2 + s**3), dt=mpc_spec.dt, method="bilinear"
 )
